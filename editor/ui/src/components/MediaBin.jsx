@@ -1,5 +1,6 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
+import { openImageDialog } from '../utils/tauriCompat.js'
 
 export default function MediaBin() {
   const media = useEditorStore((s) => s.project?.media || [])
@@ -9,9 +10,7 @@ export default function MediaBin() {
 
   const onImportImage = async () => {
     try {
-      const dialog = window.__TAURI__?.dialog
-      if (!dialog) { alert('Tauri dialog not available'); return }
-      const filePath = await dialog.open({ multiple: false, filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'] }] })
+      const filePath = await openImageDialog()
       if (!filePath) return
       const name = String(filePath).split(/[\\\/]/).pop()
       const uri = toFileUri(String(filePath))
@@ -31,7 +30,16 @@ export default function MediaBin() {
       {!media.length && <div style={{ opacity: 0.7 }}>No media yet.</div>}
       <div style={{ display:'grid', gap: 6 }}>
         {media.map((m) => (
-          <div key={m.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 8px', background:'#0f1115', border:'1px solid #232636', borderRadius:4 }}>
+          <div
+            key={m.id}
+            draggable
+            onDragStart={(e)=>{
+              // Transfer the clip id for timeline drop
+              e.dataTransfer.setData('application/x-constellation-clip-id', m.id)
+              e.dataTransfer.setData('text/plain', m.id)
+              e.dataTransfer.effectAllowed = 'copyMove'
+            }}
+            style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 8px', background:'#0f1115', border:'1px solid #232636', borderRadius:4, cursor:'grab' }}>
             <div style={{ flex: 1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={m.uri}>
               <div style={{ fontWeight:600 }}>{m.name || m.id}</div>
               <div style={{ fontSize:12, opacity:0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
@@ -50,4 +58,3 @@ function toFileUri(p) {
   if (norm.startsWith('/')) return `file://${norm}`
   return `file://${norm}`
 }
-

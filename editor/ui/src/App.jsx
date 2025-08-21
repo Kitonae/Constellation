@@ -4,6 +4,7 @@ import Viewport from './components/Viewport.jsx'
 import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
 import Inspector from './components/Inspector.jsx'
+import { openImageDialog } from './utils/tauriCompat.js'
 
 export default function App() {
   const fileRef = useRef(null)
@@ -88,9 +89,7 @@ function buildProjectWrapper(project, scene){
 async function onAddImage() {
   try {
     // Use Tauri dialog to get a file path for the image
-    const dialog = window.__TAURI__?.dialog
-    if (!dialog) { alert('Tauri dialog not available'); return }
-    const filePath = await dialog.open({ multiple: false, filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'] }] })
+    const filePath = await openImageDialog()
     if (!filePath) return
     // Infer name from path
     const name = String(filePath).split(/[\\\/]/).pop()

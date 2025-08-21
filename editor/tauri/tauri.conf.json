@@ -10,6 +10,11 @@
     "distDir": "../ui/dist"
   },
   "tauri": {
+    "allowlist": {
+      "dialog": {
+        "all": true
+      }
+    },
     "bundle": { 
       "identifier": "com.constellation.editor",
       "icon": ["icon.ico"]
@@ -19,4 +24,3 @@
     ]
   }
 }
-
