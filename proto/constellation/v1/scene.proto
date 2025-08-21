@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package constellation.v1;
+
+// Basic math and color types
+message Vec3 { float x = 1; float y = 2; float z = 3; }
+message Quat { float x = 1; float y = 2; float z = 3; float w = 4; }
+message Transform { Vec3 position = 1; Quat rotation = 2; Vec3 scale = 3; }
+message ColorRGBA { float r = 1; float g = 2; float b = 3; float a = 4; }
+
+// Materials & meshes
+message TextureRef { string uri = 1; }
+message MaterialPBR {
+  string id = 1;
+  string name = 2;
+  ColorRGBA base_color = 3;
+  TextureRef base_color_tex = 4;
+  float metallic = 5;
+  float roughness = 6;
+  TextureRef mr_tex = 7; // packed metallic/roughness optional
+  ColorRGBA emissive = 8;
+  TextureRef emissive_tex = 9;
+}
+
+message MeshRef {
+  string id = 1;
+  string uri = 2; // e.g., file:///assets/stage.glb
+  string node = 3; // optional node path inside asset
+}
+
+// Components attached to nodes
+message MeshComponent { MeshRef mesh = 1; string material_id = 2; }
+
+message LightComponent {
+  enum Type { POINT = 0; DIRECTIONAL = 1; SPOT = 2; }
+  Type type = 1;
+  ColorRGBA color = 2;
+  float intensity = 3; // in lumens-ish units
+  float range = 4; // meters
+  float spot_angle = 5; // degrees (for SPOT)
+}
+
+message ScreenComponent {
+  int32 pixels_x = 1;
+  int32 pixels_y = 2;
+  // Optional mapping hints, reserved for future
+}
+
+message CameraComponent {
+  float fov_deg = 1; // vertical FOV
+  float near = 2;
+  float far = 3;
+}
+
+message Node {
+  string id = 1;
+  string name = 2;
+  Transform transform = 3;
+  repeated Node children = 4;
+  oneof comp0 { MeshComponent mesh = 10; LightComponent light = 11; ScreenComponent screen = 12; CameraComponent camera = 13; }
+  // Additional components can be added via repeated any in future
+}
+
+message Scene {
+  string id = 1;
+  string name = 2;
+  repeated MaterialPBR materials = 3;
+  repeated MeshRef meshes = 4;
+  repeated Node roots = 5;
+}
+
+// Media & timeline
+message MediaClip {
+  string id = 1;
+  string name = 2;
+  string uri = 3; // file/ndi/etc
+  double duration_seconds = 4;
+}
+
+message TimelineEvent {
+  double t = 1; // seconds
+  string action = 2; // e.g., "play", "pause", "set_opacity"
+  map<string, string> params = 3; // typed params can be added later
+}
+
+message TrackMedia {
+  string target_node_id = 1; // typically a ScreenComponent holder
+  string clip_id = 2;
+  double in_seconds = 3;
+  double out_seconds = 4;
+  double start_at_seconds = 5; // on timeline
+}
+
+message TrackTransformKey {
+  double t = 1;
+  Transform transform = 2;
+}
+
+message TrackTransform { string target_node_id = 1; repeated TrackTransformKey keys = 2; }
+
+message TimelineTrack { oneof kind { TrackMedia media = 1; TrackTransform transform = 2; } }
+
+message Timeline {
+  string id = 1;
+  string name = 2;
+  repeated TimelineTrack tracks = 3;
+  repeated TimelineEvent events = 4;
+  double duration_seconds = 5;
+}
+
+message Project {
+  string id = 1;
+  string name = 2;
+  Scene scene = 3;
+  repeated MediaClip media = 4;
+  Timeline timeline = 5;
+}
+

@@ -1,0 +1,26 @@
+[package]
+name = "constellation-display"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tonic = "0.11"
+prost = "0.12"
+prost-types = "0.12"
+tokio-stream = { version = "0.1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+wgpu = "0.19"
+winit = "0.29"
+pollster = "0.3"
+anyhow = "1"
+glam = { version = "0.25", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+async-stream = "0.3"
+futures-core = "0.3"
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico", "pnm", "tga", "tiff", "webp"] }
+url = "2"
+
+[build-dependencies]
+tonic-build = "0.11"
+protoc-bin-vendored = "3"

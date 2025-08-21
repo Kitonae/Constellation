@@ -1,0 +1,22 @@
+{
+  "package": {
+    "productName": "Constellation Editor",
+    "version": "0.1.0"
+  },
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "npm run build --prefix ../ui",
+    "devPath": "http://localhost:5173",
+    "distDir": "../ui/dist"
+  },
+  "tauri": {
+    "bundle": { 
+      "identifier": "com.constellation.editor",
+      "icon": ["icon.ico"]
+    },
+    "windows": [
+      { "title": "Constellation Editor", "width": 1440, "height": 900 }
+    ]
+  }
+}
+
