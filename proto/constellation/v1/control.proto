@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package constellation.v1;
+
+import "proto/constellation/v1/scene.proto";
+
+message Ack { bool ok = 1; string message = 2; }
+
+// Transport and control messages
+message LoadProjectRequest { Project project = 1; }
+message LoadSceneRequest { Scene scene = 1; }
+message ActivateTimelineRequest { string timeline_id = 1; }
+
+message PlayRequest { double at_seconds = 1; }
+message PauseRequest {}
+message StopRequest {}
+message SeekRequest { double to_seconds = 1; }
+message SetRateRequest { double rate = 1; }
+
+message SubscribeRequest { bool include_metrics = 1; }
+
+message TransportState {
+  enum Status { STOPPED = 0; PLAYING = 1; PAUSED = 2; }
+  Status status = 1;
+  double time_seconds = 2;
+  double rate = 3;
+}
+
+message Metrics { double fps = 1; double dropped_frames = 2; }
+
+message StateUpdate {
+  TransportState transport = 1;
+  Metrics metrics = 2;
+}
+
+service DisplayControl {
+  rpc LoadProject(LoadProjectRequest) returns (Ack);
+  rpc LoadScene(LoadSceneRequest) returns (Ack);
+  rpc ActivateTimeline(ActivateTimelineRequest) returns (Ack);
+
+  rpc Play(PlayRequest) returns (Ack);
+  rpc Pause(PauseRequest) returns (Ack);
+  rpc Stop(StopRequest) returns (Ack);
+  rpc Seek(SeekRequest) returns (Ack);
+  rpc SetRate(SetRateRequest) returns (Ack);
+
+  rpc SubscribeState(SubscribeRequest) returns (stream StateUpdate);
+}
+
