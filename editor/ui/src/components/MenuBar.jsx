@@ -18,6 +18,8 @@ function useClickAway(ref, onAway) {
 export default function MenuBar({
   onOpenProject,
   onAddImage,
+  onAddScreen,
+  onSaveShow,
   viewMode,
   setViewMode,
   gizmoMode,
@@ -29,6 +31,8 @@ export default function MenuBar({
   onRemotePlay,
   onRemotePause,
   onRemoteStop,
+  showOutputOverlay,
+  toggleOutputOverlay,
 }) {
   const [open, setOpen] = useState(null) // 'file' | 'view' | 'remote' | null
   const wrapRef = useRef(null)
@@ -58,6 +62,8 @@ export default function MenuBar({
       <Menu id="file" title="File">
         <Item onClick={onOpenProject}>Open Project…</Item>
         <Item onClick={onAddImage}>Add Image…</Item>
+        <Item onClick={onAddScreen}>Add Screen…</Item>
+        <Item onClick={onSaveShow}>Save Show…</Item>
       </Menu>
 
       <Menu id="view" title="View">
@@ -65,6 +71,9 @@ export default function MenuBar({
         <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems:'center' }}>
           <button onClick={() => { setOpen(null); setViewMode('2d') }} style={{ opacity: viewMode === '2d' ? 1 : 0.7 }}>2D</button>
           <button onClick={() => { setOpen(null); setViewMode('3d') }} style={{ opacity: viewMode === '3d' ? 1 : 0.7 }}>3D</button>
+        </div>
+        <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems:'center' }}>
+          <button type="button" onPointerDown={() => { setOpen(null); toggleOutputOverlay?.() }} onClick={(e)=>e.preventDefault()} style={{ opacity: showOutputOverlay ? 1 : 0.6 }}>Output Overlay</button>
         </div>
         <SectionTitle>Gizmo</SectionTitle>
         <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems:'center' }}>

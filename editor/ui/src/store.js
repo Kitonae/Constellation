@@ -7,6 +7,7 @@ export const useEditorStore = create((set, get) => ({
   time: 0,
   playing: false,
   viewMode: '2d', // '2d' | '3d'
+  showOutputOverlay: true,
   selectedId: null,
   selectedClipId: null, // timeline selection
   gizmoMode: 'translate',
@@ -29,6 +30,27 @@ export const useEditorStore = create((set, get) => ({
   toggleConsole: () => set((s) => ({ consoleOpen: !s.consoleOpen })),
   setViewMode: (mode) => set({ viewMode: mode === '3d' ? '3d' : '2d' }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === '2d' ? '3d' : '2d' })),
+  toggleOutputOverlay: () => set((s) => ({ showOutputOverlay: !s.showOutputOverlay })),
+  addScreenNode: ({ name, pixels, position, scale }) => set((s) => {
+    const px = pixels || [1920, 1080]
+    const scene = s.scene || { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
+    const id = `screen-${Math.random().toString(36).slice(2, 8)}`
+    const node = {
+      id,
+      name: name || `Screen ${scene.roots.length + 1}`,
+      transform: {
+        position: position || { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0, w: 1 },
+        scale: scale || { x: 1, y: 1, z: 1 },
+      },
+      children: [],
+      kind: { type: 'screen', pixels: [px[0] | 0, px[1] | 0], enabled: true },
+    }
+    const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
+    // Ensure a project exists so Apply can work
+    const proj = s.project || defaultProject(nextScene)
+    return { scene: nextScene, project: proj, selectedId: id }
+  }),
   loadProject: (json) => {
     const proj = parseProject(json)
     set({ project: proj, scene: proj.scene, selectedId: null, time: 0 })
@@ -61,7 +83,8 @@ export const useEditorStore = create((set, get) => ({
       out_seconds: dur,
       start_at_seconds: startAt ?? (s.time || 0),
       position: { x: 0, y: 0 },
-      scale: { x: 1, y: 1 },
+      // 0 means use natural dimensions; renderer falls back to image width/height
+      scale: { x: 0, y: 0 },
     }
     const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + dur) }
     const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
@@ -83,7 +106,8 @@ export const useEditorStore = create((set, get) => ({
       out_seconds: duration,
       start_at_seconds: s.time || 0,
       position: { x: 0, y: 0 },
-      scale: { x: 1, y: 1 },
+      // 0 means use natural dimensions; renderer falls back to image width/height
+      scale: { x: 0, y: 0 },
     }
     const nextTimeline = baseProj.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + duration) }
     const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
@@ -142,6 +166,31 @@ export const useEditorStore = create((set, get) => ({
         scale: next.scale ?? node.transform.scale,
       }
     })))
+  } })),
+  // Remove a clip from the timeline by id
+  removeClip: (clipId) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tracks = (s.project.timeline.tracks || []).filter((t) => !(t.media && t.media.clip_id === clipId))
+    const nextTl = { ...(s.project.timeline || {}), tracks }
+    return { project: { ...s.project, timeline: nextTl }, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId }
+  }),
+  updateScreenPixels: (id, pixels) => set((s) => ({ scene: {
+    ...s.scene,
+    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+      if (node.kind?.type === 'screen') {
+        return { ...node, kind: { ...node.kind, pixels: [pixels[0] | 0, pixels[1] | 0] } }
+      }
+      return node
+    }))
+  } })),
+  updateScreenEnabled: (id, enabled) => set((s) => ({ scene: {
+    ...s.scene,
+    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+      if (node.kind?.type === 'screen') {
+        return { ...node, kind: { ...node.kind, enabled: !!enabled } }
+      }
+      return node
+    }))
   } })),
 }))
 
