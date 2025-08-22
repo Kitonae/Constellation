@@ -14,6 +14,8 @@ export default function Inspector() {
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const updateClipTransform = useEditorStore((s) => s.updateClipTransform)
   const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform)
+  const updateScreenPixels = useEditorStore((s) => s.updateScreenPixels)
+  const updateScreenEnabled = useEditorStore((s) => s.updateScreenEnabled)
   const project = useEditorStore((s) => s.project)
   const [keepAR, setKeepAR] = useState(true)
   const [naturalSize, setNaturalSize] = useState(null) // { w, h }
@@ -65,12 +67,40 @@ export default function Inspector() {
       <div style={{ fontWeight: 600, marginBottom: 8 }}>Inspector</div>
       {!selectedNode && !selectedMedia && <div style={{ opacity: 0.7 }}>No selection.</div>}
 
+      {selectedNode?.kind?.type === 'screen' && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>Screen</div>
+          <div style={{ display:'grid', gap:8 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <input type="checkbox" checked={(selectedNode.kind?.enabled ?? true)} onChange={(e)=>updateScreenEnabled(selectedNode.id, e.target.checked)} />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div>
+              <div style={{ marginBottom:4, opacity:0.8 }}>Position (X, Y px)</div>
+              <div style={{ display:'flex', gap:6 }}>
+                <NumberInput value={selectedNode.transform.position.x} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
+                <NumberInput value={selectedNode.transform.position.y} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
+              </div>
+            </div>
+            <div>
+              <div style={{ marginBottom:4, opacity:0.8 }}>Resolution (W, H px)</div>
+              <div style={{ display:'flex', gap:6 }}>
+                <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v)=>updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
+                <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v)=>updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedMedia && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Clip</div>
           <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>ID: {selectedMedia.clip_id}</div>
           <div>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Position (X, Y)</div>
+            <div style={{ marginBottom:4, opacity:0.8 }}>Position (X, Y px)</div>
             <div style={{ display:'flex', gap:6 }}>
               <NumberInput value={selectedMedia.position?.x ?? 0} onChange={(v)=>updateClipTransform({ clipId: selectedMedia.clip_id, position: { x: v } })} />
               <NumberInput value={selectedMedia.position?.y ?? 0} onChange={(v)=>updateClipTransform({ clipId: selectedMedia.clip_id, position: { y: v } })} />

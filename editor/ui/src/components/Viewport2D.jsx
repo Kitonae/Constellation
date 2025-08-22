@@ -10,9 +10,11 @@ export default function Viewport2D() {
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
   const selectedId = useEditorStore((s) => s.selectedId)
   const setSelected = useEditorStore((s) => s.setSelected)
+  const showOutputOverlay = useEditorStore((s) => s.showOutputOverlay)
   const scrollRef = useRef(null)
   const [containerSize, setContainerSize] = useState({ w: 100, h: 100 })
-  const [zoom, setZoom] = useState(1.0) // 1.0 = 100%
+  // Default zoomed way out; neutral (1:1 px) is 20%
+  const [zoom, setZoom] = useState(0.02)
   const [pan, setPan] = useState(null) // { startX, startY, startLeft, startTop }
   const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
 
@@ -28,8 +30,9 @@ export default function Viewport2D() {
     return () => ro.disconnect()
   }, [])
 
-  const BASE_SCALE = 50 // pixels per scene unit at 100%
-  const scale = BASE_SCALE * zoom
+  const BASE_SCALE = 50 // pixels per scene unit at neutral zoom
+  const Z_NEUTRAL = 0.2
+  const scale = BASE_SCALE * (zoom / Z_NEUTRAL)
   const STAGE_W = 4000
   const STAGE_H = 3000
   const center = { x: STAGE_W / 2, y: STAGE_H / 2 }
@@ -134,9 +137,9 @@ export default function Viewport2D() {
 
     // Compute next zoom
     const factor = Math.exp(-e.deltaY * 0.0015)
-    const nextZoom = clamp(zoom * factor, 0.2, 6)
+    const nextZoom = clamp(zoom * factor, 0.01, 20)
     if (nextZoom === zoom) return
-    const nextScale = BASE_SCALE * nextZoom
+    const nextScale = BASE_SCALE * (nextZoom / Z_NEUTRAL)
     setZoom(nextZoom)
 
     // Compute new content pixel for the same world point
@@ -186,9 +189,9 @@ export default function Viewport2D() {
       const worldY = (center.y - contentTop) / scale
 
       const step = 1.1
-      const nextZoom = clamp(zoom * (plus ? step : 1/step), 0.2, 6)
+      const nextZoom = clamp(zoom * (plus ? step : 1/step), 0.01, 20)
       if (nextZoom === zoom) return
-      const nextScale = BASE_SCALE * nextZoom
+      const nextScale = BASE_SCALE * (nextZoom / Z_NEUTRAL)
       setZoom(nextZoom)
 
       const newPx = center.x + worldX * nextScale
@@ -208,7 +211,10 @@ export default function Viewport2D() {
       onPointerUp={onPointerUp}
       style={{ position:'relative', width: '100%', height: '100%', overflow: 'auto', background:'#0b0d12', cursor: pan ? 'grabbing' : 'default', overscrollBehavior: 'contain' }}
     >
-      <div style={{ position:'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, scale) }}>
+      <div
+        style={{ position:'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
+        onClick={() => { setSelected(null); setSelectedClip(null) }}
+      >
         {/* axes */}
         <div style={{ position:'absolute', left: center.x, top: 0, bottom: 0, width: 1, background: '#3a4e85' }} />
         <div style={{ position:'absolute', top: center.y, left: 0, right: 0, height: 1, background: '#3a4e85' }} />
@@ -217,6 +223,23 @@ export default function Viewport2D() {
         {nodes.map((n) => (
           <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected} />
         ))}
+
+        {/* Output overlay: represent each screen's pixel output area */}
+        {showOutputOverlay && nodes.map((n) => n).filter(n => n.kind?.type === 'screen' && (n.kind?.enabled ?? true)).map((screen) => {
+          const spos = screen.transform?.position || { x: 0, y: 0, z: 0 }
+          const cx = center.x + (spos.x || 0) * scale
+          const cy = center.y - (spos.y || 0) * scale
+          const px = screen.kind?.pixels?.[0] || 0
+          const py = screen.kind?.pixels?.[1] || 0
+          const ratio = (zoom / Z_NEUTRAL)
+          const w = Math.max(2, px * ratio)
+          const h = Math.max(2, py * ratio)
+          const left = cx - w / 2
+          const top = cy - h / 2
+          return (
+            <div key={`out-${screen.id}`} style={{ position:'absolute', left, top, width:w, height:h, border:'1px dashed #6aa0ff', background:'rgba(90,120,255,0.07)', zIndex:50, pointerEvents:'none' }} title={`Output ${px}x${py}`} />
+          )
+        })}
 
         {activePlacements.map(({ tm, screen, clip }, idx) => {
           const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
@@ -228,10 +251,11 @@ export default function Viewport2D() {
           const baseH = meta?.h || 100
           const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
           const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
-          const w = Math.max(2, targetWpx * zoom)
-          const h = Math.max(2, targetHpx * zoom)
-          const left = cx + (mpos.x || 0) * scale - w / 2
-          const top = cy - (mpos.y || 0) * scale - h / 2
+          const ratio = (zoom / Z_NEUTRAL)
+          const w = Math.max(2, targetWpx * ratio)
+          const h = Math.max(2, targetHpx * ratio)
+          const left = cx + (mpos.x || 0) * ratio - w / 2
+          const top = cy - (mpos.y || 0) * ratio - h / 2
           const isSel = selectedClipId === tm.clip_id
           return (
             <div key={idx}
@@ -249,16 +273,19 @@ export default function Viewport2D() {
             </div>
           )
         })}
+        {/* Selection label (top-left of stage) */}
+        <SelectionOverlay nodes={nodes} nodeIndex={nodeIndex} mediaById={mediaById} selectedId={selectedId} selectedClipId={selectedClipId} />
 
-      </div>
-      {/* Zoom indicators anchored to the viewport (window fixed) */}
-      <div style={{ position:'fixed', top: 12, right: 12, display:'grid', gap:6, justifyItems:'end', zIndex: 9999, pointerEvents: 'none' }}>
-        <div style={{ padding:'2px 6px', fontSize:12, color:'#b9c3d6', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
-          {Math.round(zoom * 100)}%
+        {/* Zoom overlay (top-right of stage) */}
+        <div style={{ position:'absolute', top: 8, right: 8, display:'grid', gap:6, justifyItems:'end', zIndex: 10, pointerEvents: 'none' }}>
+          <div style={{ padding:'2px 6px', fontSize:12, color:'#b9c3d6', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
+            {Math.round(zoom * 100)}%
+          </div>
+          <div style={{ pointerEvents: 'auto' }}>
+            <ZoomLevelBar zoom={zoom} />
+          </div>
         </div>
-        <div style={{ pointerEvents: 'auto' }}>
-          <ZoomLevelBar zoom={zoom} />
-        </div>
+
       </div>
     </div>
   )
@@ -266,8 +293,10 @@ export default function Viewport2D() {
 
 function Node2D({ node, center, scale, selectedId, onSelect }) {
   const t = node.transform
-  const x = (t?.position?.x ?? 0) * scale + center.x
-  const y = center.y - (t?.position?.y ?? 0) * scale
+  const Z_NEUTRAL = 0.2
+  const ratio = scale / 50 // since scale already includes zoom/Z_NEUTRAL, and BASE_SCALE is 50
+  const x = (t?.position?.x ?? 0) * (ratio) + center.x
+  const y = center.y - (t?.position?.y ?? 0) * (ratio)
   const s = t?.scale ?? { x: 1, y: 1, z: 1 }
   const isSelected = node.id === selectedId
 
@@ -276,8 +305,10 @@ function Node2D({ node, center, scale, selectedId, onSelect }) {
   ))
 
   if (node.kind?.type === 'screen') {
-    const w = Math.max(0.2, s.x) * scale
-    const h = Math.max(0.2, s.y) * scale
+    const px = node.kind?.pixels?.[0] || 0
+    const py = node.kind?.pixels?.[1] || 0
+    const w = Math.max(2, px * (ratio))
+    const h = Math.max(2, py * (ratio))
     return (
       <>
         <div
@@ -304,11 +335,12 @@ function gridBg() {
   return {}
 }
 
-function dotGridBg(center, scale) {
-  // Dots spaced in world units so spacing scales with zoom
-  const worldMinor = 0.2 // world units between minor dots (10px at 1x with BASE_SCALE=50)
-  const minorStep = Math.max(2, Math.round(scale * worldMinor))
-  const majorStep = minorStep * 10
+function dotGridBg(center, zoom) {
+  // Grid spacing scales with zoom relative to neutral 20%
+  const Z_NEUTRAL = 0.2
+  const factor = (zoom || Z_NEUTRAL) / Z_NEUTRAL
+  const minorStep = Math.max(1, Math.round(100 * factor))
+  const majorStep = Math.max(1, Math.round(1000 * factor))
   const mod = (v, m) => ((v % m) + m) % m
   // radial-gradient dot sits at the center of each tile -> subtract half step
   const offXMinor = mod(center.x - minorStep / 2, minorStep)
@@ -325,13 +357,14 @@ function dotGridBg(center, scale) {
 }
 
 function ZoomLevelBar({ zoom }) {
-  // Discrete levels to visualize progression across the range (0.2x–6x)
-  const levels = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6]
+  // Discrete levels with neutral at 20%; include deeper zoom-out
+  const NEUTRAL = 0.2
+  const levels = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 4, 10]
   return (
     <div style={{ display:'flex', gap:4, padding:'2px 4px', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
       {levels.map((lv) => {
         const filled = zoom >= lv * 0.98 // small tolerance
-        const isOne = Math.abs(lv - 1) < 1e-6
+        const isNeutral = Math.abs(lv - NEUTRAL) < 1e-6
         return (
           <div key={lv}
             title={`${Math.round(lv*100)}%`}
@@ -339,7 +372,7 @@ function ZoomLevelBar({ zoom }) {
               width: 10,
               height: 8,
               background: filled ? '#6aa0ff' : '#2a3148',
-              border: `1px solid ${isOne ? '#89b4ff' : '#3a4060'}`,
+              border: `1px solid ${isNeutral ? '#89b4ff' : '#3a4060'}`,
               borderRadius: 2,
             }}
           />
@@ -350,3 +383,23 @@ function ZoomLevelBar({ zoom }) {
 }
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
+
+function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedClipId }) {
+  let text = ''
+  if (selectedClipId) {
+    const clip = mediaById[selectedClipId]
+    text = clip?.name || selectedClipId
+  } else if (selectedId) {
+    const n = nodeIndex.get(selectedId)
+    if (n) {
+      const prefix = n.kind?.type === 'screen' ? 'Screen' : 'Node'
+      text = `${prefix}: ${n.name || n.id}`
+    }
+  }
+  if (!text) return null
+  return (
+    <div style={{ position:'absolute', top:8, left:8, zIndex:10, pointerEvents:'none', padding:'2px 6px', fontSize:12, color:'#b9c3d6', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
+      {text}
+    </div>
+  )
+}

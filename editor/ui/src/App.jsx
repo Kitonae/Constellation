@@ -9,10 +9,11 @@ import { openImageDialog } from './utils/tauriCompat.js'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
+import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
 
 export default function App() {
   const fileRef = useRef(null)
-  const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode } = useEditorStore()
+  const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode, showOutputOverlay, toggleOutputOverlay, addScreenNode } = useEditorStore()
   const [fileName, setFileName] = useState('')
   const [addr, setAddr] = useState('http://127.0.0.1:50051')
   const [status, setStatus] = useState('')
@@ -29,10 +30,39 @@ export default function App() {
         e.preventDefault()
         toggleConsole()
       }
+      // Delete selected timeline clip with Delete key
+      if (e.key === 'Delete') {
+        const t = e.target
+        const tag = (t?.tagName || '').toLowerCase()
+        const isEditable = t?.isContentEditable || tag === 'input' || tag === 'textarea'
+        if (isEditable) return
+        const { selectedClipId, removeClip } = useEditorStore.getState()
+        if (selectedClipId) {
+          e.preventDefault()
+          removeClip(selectedClipId)
+        }
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleConsole])
+
+  // Open/close display windows based on enabled screens
+  useEffect(() => {
+    const roots = scene?.roots || []
+    for (const n of roots) {
+      if (n.kind?.type === 'screen') {
+        const enabled = (n.kind?.enabled ?? true)
+        const px = n.kind?.pixels?.[0] || 0
+        const py = n.kind?.pixels?.[1] || 0
+        if (enabled && px > 0 && py > 0) {
+          openDisplayWindow(n.id, px, py)
+        } else {
+          closeDisplayWindow(n.id)
+        }
+      }
+    }
+  }, [scene])
 
   const onFile = async (e) => {
     const f = e.target.files?.[0]
@@ -53,6 +83,34 @@ export default function App() {
         <MenuBar
           onOpenProject={() => fileRef.current?.click()}
           onAddImage={onAddImage}
+          onAddScreen={() => {
+            const name = window.prompt('Screen name?', 'Screen') || 'Screen'
+            const wStr = window.prompt('Pixels width?', '1920') || '1920'
+            const hStr = window.prompt('Pixels height?', '1080') || '1080'
+            const w = Math.max(1, parseInt(wStr, 10) || 1920)
+            const h = Math.max(1, parseInt(hStr, 10) || 1080)
+            addScreenNode({ name, pixels: [w, h] })
+          }}
+          onSaveShow={async () => {
+            try {
+              const wrapper = buildProjectWrapper(project, scene)
+              if (!window.__TAURI__) { alert('Saving requires Tauri environment'); return }
+              const { save } = await import('@tauri-apps/api/dialog')
+              const { writeTextFile } = await import('@tauri-apps/api/fs')
+              const path = await save({
+                title: 'Save Show',
+                defaultPath: 'show.json',
+                filters: [{ name: 'JSON', extensions: ['json'] }]
+              })
+              if (!path) return
+              await writeTextFile(path, JSON.stringify(wrapper, null, 2))
+              setStatus('Saved: ' + path)
+              addLog({ level: 'info', message: 'Saved show to ' + path })
+            } catch (e) {
+              setStatus('Save failed: ' + e)
+              addLog({ level: 'error', message: 'Save failed: ' + e })
+            }
+          }}
           viewMode={viewMode}
           setViewMode={setViewMode}
           gizmoMode={gizmoMode}
@@ -60,6 +118,8 @@ export default function App() {
           onDeselect={() => setSelected(null)}
           addr={addr}
           setAddr={setAddr}
+          showOutputOverlay={showOutputOverlay}
+          toggleOutputOverlay={toggleOutputOverlay}
           onApply={async ()=>{
             try {
               const wrapper = buildProjectWrapper(project, scene)
@@ -76,11 +136,6 @@ export default function App() {
           onRemoteStop={async ()=>{ try { const msg = await window.__TAURI__.invoke('stop', { addr }); setStatus('Stop: '+msg) } catch(e){ setStatus('Stop failed: '+e) } }}
         />
         <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />
-        <div style={{marginTop:6, fontSize:12, opacity:0.8, display:'flex', gap:12}}>
-          {selectedId && <div>Selected: {selectedId}</div>}
-          {fileName && <div style={{opacity:0.7}}>{fileName}</div>}
-          {status && <div style={{marginLeft:'auto'}}>{status}</div>}
-        </div>
       </header>
       <main>
         <div className="panel">{viewMode === '2d' ? <Viewport2D /> : <Viewport3D />}</div>
