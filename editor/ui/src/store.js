@@ -6,22 +6,46 @@ export const useEditorStore = create((set, get) => ({
   scene: null,
   time: 0,
   playing: false,
+  viewMode: '2d', // '2d' | '3d'
   selectedId: null,
+  selectedClipId: null, // timeline selection
   gizmoMode: 'translate',
+  // Console/logging state
+  logs: [], // { id, level, message, time }
+  consoleOpen: false,
+  addLog: ({ level = 'info', message }) => set((s) => {
+    const entry = {
+      id: `log-${Math.random().toString(36).slice(2, 9)}`,
+      level,
+      message: String(message ?? ''),
+      time: Date.now(),
+    }
+    const next = [...s.logs, entry]
+    // keep last 500 entries
+    const pruned = next.length > 500 ? next.slice(next.length - 500) : next
+    return { logs: pruned }
+  }),
+  clearLogs: () => set({ logs: [] }),
+  toggleConsole: () => set((s) => ({ consoleOpen: !s.consoleOpen })),
+  setViewMode: (mode) => set({ viewMode: mode === '3d' ? '3d' : '2d' }),
+  toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === '2d' ? '3d' : '2d' })),
   loadProject: (json) => {
     const proj = parseProject(json)
     set({ project: proj, scene: proj.scene, selectedId: null, time: 0 })
   },
   // Add a generic media clip to the project's media bin
   addMediaClip: ({ id, name, uri, duration_seconds }) => set((s) => {
-    if (!s.project) return {}
     const clip = {
       id: id || `clip-${Math.random().toString(36).slice(2, 8)}`,
       name: name || 'Clip',
       uri,
       duration_seconds: duration_seconds ?? 10,
     }
-    return { project: { ...s.project, media: [...(s.project.media ?? []), clip] } }
+    const baseProj = s.project ?? defaultProject(s.scene)
+    const nextProj = { ...baseProj, media: [...(baseProj.media ?? []), clip] }
+    queueLog('info', `Imported media: ${clip.name}`)
+    // If we had to create a default project, also ensure scene is set in store
+    return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
   }),
   // Insert an existing clip onto the timeline
   addClipToTimeline: ({ clipId, startAt, duration, targetNodeId }) => set((s) => {
@@ -30,45 +54,83 @@ export const useEditorStore = create((set, get) => ({
     if (!clip) return {}
     const dur = duration ?? clip.duration_seconds ?? 10
     const target = targetNodeId || pickScreenTarget(s.scene, s.selectedId) || ''
-    const tm = { target_node_id: target, clip_id: clipId, in_seconds: 0, out_seconds: dur, start_at_seconds: startAt ?? (s.time || 0) }
+    const tm = {
+      target_node_id: target,
+      clip_id: clipId,
+      in_seconds: 0,
+      out_seconds: dur,
+      start_at_seconds: startAt ?? (s.time || 0),
+      position: { x: 0, y: 0 },
+      scale: { x: 1, y: 1 },
+    }
     const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + dur) }
     const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
     const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, tm.start_at_seconds + dur)
+    queueLog('info', `Inserted clip '${clip.name}' at ${tm.start_at_seconds.toFixed(2)}s`)
     return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } } }
   }),
   // Add an image media clip and a timeline track targeting a screen
   addImageToShow: ({ filePath, name, duration = 10 }) => set((s) => {
-    if (!s.project) return {}
+    const baseProj = s.project ?? defaultProject(s.scene)
     const id = `img-${Math.random().toString(36).slice(2, 8)}`
     const clip = { id, name: name || id, uri: toFileUri(String(filePath)), duration_seconds: duration }
     // pick target screen: selected if it's a screen, otherwise first screen in scene
-    const target = pickScreenTarget(s.scene, s.selectedId)
+    const target = pickScreenTarget(s.scene ?? baseProj.scene, s.selectedId)
     const tm = {
       target_node_id: target ?? '',
       clip_id: id,
       in_seconds: 0,
       out_seconds: duration,
       start_at_seconds: s.time || 0,
+      position: { x: 0, y: 0 },
+      scale: { x: 1, y: 1 },
     }
-    const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + duration) }
+    const nextTimeline = baseProj.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + duration) }
     const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
     const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, tm.start_at_seconds + duration)
-    return {
-      project: {
-        ...s.project,
-        media: [...(s.project.media ?? []), clip],
-        timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds },
-      }
+    queueLog('info', `Added image '${clip.name}' targeting ${tm.target_node_id || 'scene'} at ${tm.start_at_seconds.toFixed(2)}s`)
+    const nextProj = {
+      ...baseProj,
+      media: [...(baseProj.media ?? []), clip],
+      timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds },
     }
+    return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
+  }),
+  // Update a timeline clip's 2D transform parameters
+  updateClipTransform: ({ clipId, position, scale }) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tracks = (s.project.timeline.tracks || []).map((t) => {
+      if (!t.media || t.media.clip_id !== clipId) return t
+      const m = t.media
+      return {
+        media: {
+          ...m,
+          position: position ? { x: position.x ?? m.position?.x ?? 0, y: position.y ?? m.position?.y ?? 0 } : (m.position ?? { x: 0, y: 0 }),
+          scale: scale ? { x: scale.x ?? m.scale?.x ?? 1, y: scale.y ?? m.scale?.y ?? 1 } : (m.scale ?? { x: 1, y: 1 }),
+        }
+      }
+    })
+    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
   }),
   tick: (dt) => {
     if (!get().playing) return
     set((s) => ({ time: s.time + dt }))
   },
-  play: () => set({ playing: true }),
-  pause: () => set({ playing: false }),
+  play: () => {
+    queueLog('info', 'Local: play')
+    set({ playing: true })
+  },
+  pause: () => {
+    queueLog('info', 'Local: pause')
+    set({ playing: false })
+  },
+  stop: () => {
+    queueLog('info', 'Local: stop')
+    set({ playing: false, time: 0 })
+  },
   seek: (t) => set({ time: t }),
   setSelected: (id) => set({ selectedId: id }),
+  setSelectedClip: (clipId) => set({ selectedClipId: clipId }),
   setGizmoMode: (mode) => set({ gizmoMode: mode }),
   updateNodeTransform: (id, next) => set((s) => ({ scene: {
     ...s.scene,
@@ -82,6 +144,25 @@ export const useEditorStore = create((set, get) => ({
     })))
   } })),
 }))
+
+// Helper to enqueue a log entry without needing a store setter in scope
+function queueLog(level, message) {
+  try {
+    const fn = useEditorStore.getState().addLog
+    if (fn) fn({ level, message })
+  } catch {}
+}
+
+function defaultProject(scene) {
+  const baseScene = scene ?? { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
+  return {
+    id: 'untitled',
+    name: 'Untitled',
+    scene: baseScene,
+    media: [],
+    timeline: { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: 60 },
+  }
+}
 
 function updateNode(node, id, fn) {
   if (node.id === id) return fn(node)
