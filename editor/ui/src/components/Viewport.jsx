@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { Canvas } from '@react-three/fiber'
 import { OrbitControls, TransformControls, Edges } from '@react-three/drei'
 import { useEditorStore } from '../store.js'
 
@@ -90,12 +90,6 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
   return content
 }
 
-function Ticker() {
-  const tick = useEditorStore((s) => s.tick)
-  useFrame((_, dt) => tick(dt))
-  return null
-}
-
 export default function Viewport() {
   const scene = useEditorStore((s) => s.scene)
   const selectedId = useEditorStore((s) => s.selectedId)
@@ -113,7 +107,6 @@ export default function Viewport() {
       ))}
       <gridHelper args={[50, 50, '#333', '#222']} />
       <OrbitControls makeDefault />
-      <Ticker />
     </Canvas>
   )
 }

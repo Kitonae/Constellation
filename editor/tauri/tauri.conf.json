@@ -11,9 +11,7 @@
   },
   "tauri": {
     "allowlist": {
-      "dialog": {
-        "all": true
-      }
+      "all": true
     },
     "bundle": { 
       "identifier": "com.constellation.editor",
