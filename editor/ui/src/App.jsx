@@ -6,10 +6,13 @@ import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
 import Inspector from './components/Inspector.jsx'
 import { openImageDialog } from './utils/tauriCompat.js'
+import { cacheMediaFromPath, relinkProjectMediaToCache } from './utils/cacheMedia.js'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
-import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
+import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
+import { emit } from '@tauri-apps/api/event'
+import LoadingOverlay from './components/LoadingOverlay.jsx'
 
 export default function App() {
   const fileRef = useRef(null)
@@ -62,7 +65,14 @@ export default function App() {
         }
       }
     }
+    // Emit a snapshot once on scene change to update paused display windows
+    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch {}
   }, [scene])
+
+  // Emit snapshot once when project changes
+  useEffect(() => {
+    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch {}
+  }, [project])
 
   const onFile = async (e) => {
     const f = e.target.files?.[0]
@@ -71,6 +81,13 @@ export default function App() {
     const text = await f.text()
     try {
       const data = JSON.parse(text)
+      // If running in Tauri, import any external media into local cache and relink
+      if (window.__TAURI__ && data?.project?.media?.length) {
+        try {
+          const updated = await relinkProjectMediaToCache(data.project)
+          if (updated !== data.project) data.project = updated
+        } catch {}
+      }
       loadProject(data)
     } catch (err) {
       alert('Invalid JSON: ' + err)
@@ -84,12 +101,8 @@ export default function App() {
           onOpenProject={() => fileRef.current?.click()}
           onAddImage={onAddImage}
           onAddScreen={() => {
-            const name = window.prompt('Screen name?', 'Screen') || 'Screen'
-            const wStr = window.prompt('Pixels width?', '1920') || '1920'
-            const hStr = window.prompt('Pixels height?', '1080') || '1080'
-            const w = Math.max(1, parseInt(wStr, 10) || 1920)
-            const h = Math.max(1, parseInt(hStr, 10) || 1080)
-            addScreenNode({ name, pixels: [w, h] })
+            // Create a default screen without prompting
+            addScreenNode({ pixels: [1920, 1080] })
           }}
           onSaveShow={async () => {
             try {
@@ -146,6 +159,7 @@ export default function App() {
       </main>
       <footer className="panel timeline"><Timeline /></footer>
       <TopConsoleDrawer />
+      <LoadingOverlay />
       <GlobalTicker />
     </div>
   )
@@ -172,12 +186,22 @@ async function onAddImage() {
     if (!filePath) return
     // Infer name from path
     const name = String(filePath).split(/[\\\/]/).pop()
-    // Dispatch into store
-    useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
+    // Cache the media locally (Tauri) and reference the cached URI
+    useEditorStore.getState().beginImport()
+    let uri = null
+    try { uri = await cacheMediaFromPath(String(filePath)) } catch {}
+    // Dispatch into store with cached URI when available
+    if (uri) {
+      useEditorStore.getState().addImageToShow({ uri, name, duration: 10 })
+    } else {
+      useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
+    }
     useEditorStore.getState().addLog({ level:'info', message:`Added image: ${name}` })
   } catch (e) {
     console.error(e)
     useEditorStore.getState().addLog({ level:'error', message:`Failed to add image: ${e}` })
     alert('Failed to add image: ' + e)
+  } finally {
+    useEditorStore.getState().endImport()
   }
 }

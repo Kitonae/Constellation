@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import Spinner from './Spinner.jsx'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -42,15 +43,30 @@ export async function resolveImageSrc(uri, mimeHint = 'image/*') {
       // On Windows, pathname like "/C:/..." -> strip leading slash
       if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
       if (typeof window !== 'undefined' && window.__TAURI__) {
-        const { readBinaryFile } = await import('@tauri-apps/api/fs')
-        const data = await readBinaryFile(p)
-        const b64 = u8ToBase64(Uint8Array.from(data))
-        const ext = extFromUri(u)
-        const mime = MIME_BY_EXT[ext] || mimeHint || 'image/*'
-        return `data:${mime};base64,${b64}`
+        // In dev (http dev server), avoid convertFileSrc to prevent asset.localhost 403s.
+        const isDevHttp = typeof location !== 'undefined' && /^https?:/.test(location.protocol)
+        if (!isDevHttp) {
+          try {
+            const { convertFileSrc } = await import('@tauri-apps/api/tauri')
+            const src = convertFileSrc(p)
+            if (src) return src
+          } catch {}
+        }
+        // Inline as data URL (works in dev/prod and avoids 403s)
+        try {
+          const { readBinaryFile } = await import('@tauri-apps/api/fs')
+          const data = await readBinaryFile(p)
+          const b64 = u8ToBase64(Uint8Array.from(data))
+          const ext = extFromUri(u)
+          const mime = MIME_BY_EXT[ext] || mimeHint || 'image/*'
+          return `data:${mime};base64,${b64}`
+        } catch {
+          return null
+        }
       }
-      // Fallback: let the webview try to load file:// directly
-      return u
+      // Fallback for non-Tauri web: browsers generally block file://; return null
+      // so callers can show a placeholder.
+      return null
     } catch {
       return null
     }
@@ -58,15 +74,34 @@ export async function resolveImageSrc(uri, mimeHint = 'image/*') {
   return u
 }
 
+export async function inlineFromUri(uri, mimeHint = 'image/*') {
+  try {
+    const u = String(uri)
+    if (!u.startsWith('file://')) return null
+    const url = new URL(u)
+    let p = decodeURI(url.pathname)
+    if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
+    const { readBinaryFile } = await import('@tauri-apps/api/fs')
+    const data = await readBinaryFile(p)
+    const b64 = u8ToBase64(Uint8Array.from(data))
+    const ext = extFromUri(u)
+    const mime = MIME_BY_EXT[ext] || mimeHint || 'image/*'
+    return `data:${mime};base64,${b64}`
+  } catch { return null }
+}
+
 export default function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
   const [src, setSrc] = useState(null)
   const [error, setError] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const mime = useMemo(() => MIME_BY_EXT[extFromUri(uri)] || 'image/*', [uri])
+  const [triedInlineFallback, setTriedInlineFallback] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     setError(false)
-
+    setLoaded(false)
+    
     async function load() {
       const resolved = await resolveImageSrc(uri, mime)
       if (cancelled) return
@@ -90,14 +125,45 @@ export default function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
       flex: '0 0 auto',
     }}>
       {src && !error ? (
-        <img
-          src={src}
-          alt={alt}
-          onError={() => setError(true)}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        />
+        loaded ? (
+          <img
+            src={src}
+            alt={alt}
+            onLoad={() => setLoaded(true)}
+            onError={async () => {
+              // Attempt inline fallback on asset protocol 403s
+              if (window.__TAURI__ && !triedInlineFallback) {
+                setTriedInlineFallback(true)
+                const inlined = await inlineFromUri(uri, mime)
+                if (inlined) { setSrc(inlined); setLoaded(false); return }
+              }
+              setError(true)
+            }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        ) : (
+          // Show spinner while the image source is resolving or loading
+          <>
+            <Spinner size={16} />
+            {/* Preload image invisibly to detect onLoad */}
+            <img
+              src={src}
+              alt={alt}
+              onLoad={() => setLoaded(true)}
+              onError={async () => {
+                if (window.__TAURI__ && !triedInlineFallback) {
+                  setTriedInlineFallback(true)
+                  const inlined = await inlineFromUri(uri, mime)
+                  if (inlined) { setSrc(inlined); setLoaded(false); return }
+                }
+                setError(true)
+              }}
+              style={{ display: 'none' }}
+            />
+          </>
+        )
       ) : (
-        <div style={{ width: '60%', height: '60%', background: '#1b2233', borderRadius: 3 }} />
+        <Spinner size={16} />
       )}
     </div>
   )

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useEditorStore } from '../store.js'
-import { emit } from '@tauri-apps/api/event'
+import { broadcastToDisplays } from '../display/displayManager.js'
 
 export default function GlobalTicker() {
   const tick = useEditorStore((s) => s.tick)
@@ -13,11 +13,15 @@ export default function GlobalTicker() {
       const dt = Math.max(0, (now - lastRef.current) / 1000)
       lastRef.current = now
       tick(dt)
-      // Emit snapshot for display windows
+      // Throttle display updates: only when playing and at ~20fps
       try {
         const s = useEditorStore.getState()
-        const payload = { project: s.project, scene: s.scene, time: s.time }
-        emit('display:snapshot', payload)
+        if (s.playing) {
+          if (!loop._lastEmitAt || now - loop._lastEmitAt > 50) {
+            try { broadcastToDisplays('display:snapshot', { project: s.project, scene: s.scene, time: s.time }) } catch {}
+            loop._lastEmitAt = now
+          }
+        }
       } catch {}
       rafRef.current = requestAnimationFrame(loop)
     }
