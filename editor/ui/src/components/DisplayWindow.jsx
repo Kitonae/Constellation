@@ -23,16 +23,13 @@ export default function DisplayWindow() {
     if (!snapshot) return []
     const { project, scene, time } = snapshot
     const mediaById = Object.fromEntries((project?.media || []).map((m) => [m.id, m]))
-    const nodeIndex = new Map()
-    function walk(n) { if (!n) return; nodeIndex.set(n.id, n); (n.children||[]).forEach(walk) }
-    ;(scene?.roots || []).forEach(walk)
+    // No per-screen filtering; render all active clips
     const res = []
     for (const t of project?.timeline?.tracks || []) {
       if (!t.media) continue
       const m = t.media
-      if ((m.target_node_id || '') !== screenId) continue
-      const start = m.start_at_seconds || 0
-      const dur = Math.max(0, (m.out_seconds - m.in_seconds) || 0)
+      const start = (m.start ?? m.start_at_seconds) || 0
+      const dur = Math.max(0, m.duration ?? ((m.out_seconds - m.in_seconds) || 0))
       if (time < start || time > start + dur) continue
       const clip = mediaById[m.clip_id]
       res.push({ tm: m, clip })
@@ -79,7 +76,30 @@ export default function DisplayWindow() {
           </div>
         )
       })}
+      {/* Debug overlay: timeline time + list of rendered media with position & size */}
+      <DebugOverlay active={active} imageMeta={imageMeta} container={{ width, height }} time={snapshot?.time || 0} />
     </div>
   )
 }
 
+function DebugOverlay({ active, imageMeta, container, time }) {
+  // Build list of items with computed layout identical to render logic
+  const lines = []
+  const cx = container.width / 2
+  const cy = container.height / 2
+  active.forEach(({ tm, clip }, idx) => {
+    const meta = imageMeta[tm.clip_id]
+    const baseW = meta?.w || 100
+    const baseH = meta?.h || 100
+    const w = Math.max(2, (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW)
+    const h = Math.max(2, (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH)
+    const left = cx + (tm.position?.x || 0) - w/2
+    const top = cy - (tm.position?.y || 0) - h/2
+    lines.push(`${idx+1}. ${(clip?.name || tm.clip_id)} id=${tm.clip_id} x=${left.toFixed(1)} y=${top.toFixed(1)} w=${w.toFixed(1)} h=${h.toFixed(1)}`)
+  })
+  return (
+    <div style={{ position:'absolute', top:4, left:4, padding:'6px 8px', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4, fontSize:11, lineHeight:1.3, color:'#c7cfdb', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', maxWidth:'40%', pointerEvents:'none', whiteSpace:'pre' }}>
+      {`Time: ${time.toFixed(3)}s\nMedia (${lines.length}):\n${lines.join('\n')}`}
+    </div>
+  )
+}

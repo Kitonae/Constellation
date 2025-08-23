@@ -27,12 +27,39 @@ function parseNode(n) {
     name: n.name,
     transform: t,
     children: (n.children ?? []).map(parseNode),
-    kind: null
+    kind: null,
   }
-  if (n.screen) node.kind = { type: 'screen', pixels: [n.screen.pixels_x, n.screen.pixels_y] }
-  if (n.light) node.kind = { type: 'light', light: n.light }
-  if (n.camera) node.kind = { type: 'camera', cam: n.camera }
-  if (n.mesh) node.kind = { type: 'mesh', mesh: n.mesh }
+  // New schema: node.kind with type discriminator
+  if (n.kind?.type) {
+    const k = n.kind
+    switch (k.type) {
+      case 'screen':
+        node.kind = {
+          type: 'screen',
+          pixels: Array.isArray(k.pixels) ? [k.pixels[0] | 0, k.pixels[1] | 0] : [0, 0],
+          enabled: k.enabled ?? true,
+        }
+        break
+      case 'light':
+        node.kind = { type: 'light', light: k.light }
+        break
+      case 'camera':
+        node.kind = { type: 'camera', cam: k.cam ?? k.camera }
+        break
+      case 'mesh':
+        node.kind = { type: 'mesh', mesh: k.mesh }
+        break
+      default:
+        // Pass through unknown kinds to avoid data loss
+        node.kind = k
+        break
+    }
+  } else {
+    // Legacy schema compatibility
+    if (n.screen) node.kind = { type: 'screen', pixels: [n.screen.pixels_x, n.screen.pixels_y], enabled: n.screen.enabled ?? true }
+    if (n.light) node.kind = { type: 'light', light: n.light }
+    if (n.camera) node.kind = { type: 'camera', cam: n.camera }
+    if (n.mesh) node.kind = { type: 'mesh', mesh: n.mesh }
+  }
   return node
 }
-

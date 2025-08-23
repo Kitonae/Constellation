@@ -11,7 +11,23 @@
   },
   "tauri": {
     "allowlist": {
-      "all": true
+      "all": true,
+      "fs": {
+        "scope": [
+          "$APPCACHE/*",
+          "$APPCACHE/**",
+          "$APPLOCALDATA/*",
+          "$APPLOCALDATA/**",
+          "$HOME/*",
+          "$HOME/**",
+          "$PICTURE/*",
+          "$PICTURE/**",
+          "$DOCUMENT/*",
+          "$DOCUMENT/**",
+          "$DOWNLOAD/*",
+          "$DOWNLOAD/**"
+        ]
+      }
     },
     "bundle": { 
       "identifier": "com.constellation.editor",

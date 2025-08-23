@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useEditorStore } from '../store.js'
-import { resolveImageSrc } from './MediaThumb.jsx'
+import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 
 function NumberInput({ value, onChange, step = 0.1 }) {
   return (
@@ -35,7 +35,7 @@ export default function Inspector() {
   const selectedMedia = useMemo(() => {
     if (!selectedClipId || !project?.timeline?.tracks) return null
     for (const t of project.timeline.tracks) {
-      if (t.media && t.media.clip_id === selectedClipId) return t.media
+      if (t.media && t.media.id === selectedClipId) return t.media
     }
     return null
   }, [project, selectedClipId])
@@ -54,7 +54,19 @@ export default function Inspector() {
       await new Promise((resolve) => {
         const img = new Image()
         img.onload = () => { if (!cancelled) setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }); resolve() }
-        img.onerror = () => resolve()
+        img.onerror = async () => {
+          try {
+            const inlined = await inlineFromUri(selectedClip.uri)
+            if (inlined) {
+              const probe = new Image()
+              probe.onload = () => { if (!cancelled) setNaturalSize({ w: probe.naturalWidth, h: probe.naturalHeight }); resolve() }
+              probe.onerror = () => resolve()
+              probe.src = inlined
+              return
+            }
+          } catch {}
+          resolve()
+        }
         img.src = src
       })
     }
@@ -98,18 +110,26 @@ export default function Inspector() {
       {selectedMedia && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Clip</div>
-          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>ID: {selectedMedia.clip_id}</div>
+          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>ID: {selectedMedia.id}</div>
+          <div style={{ marginTop:8 }}>
+            <div style={{ marginBottom:4, opacity:0.8 }}>Timing (Start, Duration s)</div>
+            <div style={{ display:'flex', gap:6 }}>
+              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v)=>useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
+              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v)=>useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
+            </div>
+          </div>
           <div>
             <div style={{ marginBottom:4, opacity:0.8 }}>Position (X, Y px)</div>
             <div style={{ display:'flex', gap:6 }}>
-              <NumberInput value={selectedMedia.position?.x ?? 0} onChange={(v)=>updateClipTransform({ clipId: selectedMedia.clip_id, position: { x: v } })} />
-              <NumberInput value={selectedMedia.position?.y ?? 0} onChange={(v)=>updateClipTransform({ clipId: selectedMedia.clip_id, position: { y: v } })} />
+              <NumberInput step={1} value={selectedMedia.position?.x ?? 0} onChange={(v)=>updateClipTransform({ timelineId: selectedMedia.id, position: { x: Math.round(v) } })} />
+              <NumberInput step={1} value={selectedMedia.position?.y ?? 0} onChange={(v)=>updateClipTransform({ timelineId: selectedMedia.id, position: { y: Math.round(v) } })} />
             </div>
           </div>
           <div style={{ marginTop:8 }}>
             <div style={{ marginBottom:4, opacity:0.8 }}>Size (W, H px)</div>
             <div style={{ display:'flex', gap:6, alignItems:'center' }}>
               <NumberInput
+                step={1}
                 value={selectedMedia.scale?.x ?? (naturalSize?.w ?? 0)}
                 onChange={(v)=>{
                   if (keepAR) {
@@ -117,13 +137,14 @@ export default function Inspector() {
                     const baseH = selectedMedia.scale?.y ?? naturalSize?.h ?? 0
                     const ratio = baseW > 0 ? (baseH / baseW) : 1
                     const newH = Math.max(1, Math.round(v * ratio))
-                    updateClipTransform({ clipId: selectedMedia.clip_id, scale: { x: v, y: newH } })
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: Math.round(v), y: newH } })
                   } else {
-                    updateClipTransform({ clipId: selectedMedia.clip_id, scale: { x: v } })
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: Math.round(v) } })
                   }
                 }}
               />
               <NumberInput
+                step={1}
                 value={selectedMedia.scale?.y ?? (naturalSize?.h ?? 0)}
                 onChange={(v)=>{
                   if (keepAR) {
@@ -131,14 +152,14 @@ export default function Inspector() {
                     const baseH = selectedMedia.scale?.y ?? naturalSize?.h ?? 0
                     const ratio = baseH > 0 ? (baseW / baseH) : 1
                     const newW = Math.max(1, Math.round(v * ratio))
-                    updateClipTransform({ clipId: selectedMedia.clip_id, scale: { x: newW, y: v } })
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: newW, y: Math.round(v) } })
                   } else {
-                    updateClipTransform({ clipId: selectedMedia.clip_id, scale: { y: v } })
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { y: Math.round(v) } })
                   }
                 }}
               />
               <button type="button" onClick={()=>setKeepAR(!keepAR)} style={{ opacity: keepAR ? 1 : 0.7 }}>Aspect</button>
-              <button type="button" onClick={()=>{ if (naturalSize) updateClipTransform({ clipId: selectedMedia.clip_id, scale: { x: naturalSize.w, y: naturalSize.h } }) }}>Reset</button>
+              <button type="button" onClick={()=>{ if (naturalSize) updateClipTransform({ timelineId: selectedMedia.id, scale: { x: naturalSize.w, y: naturalSize.h } }) }}>Reset</button>
             </div>
           </div>
         </div>

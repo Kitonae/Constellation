@@ -1,11 +1,14 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
-import { resolveImageSrc } from './MediaThumb.jsx'
+import { openImageDialog } from '../utils/tauriCompat.js'
+import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
   const project = useEditorStore((s) => s.project)
-  const time = useEditorStore((s) => s.time)
+  // Throttle time-dependent React updates; direct DOM updates for clip positions
+  const [timeDisplay, setTimeDisplay] = useState(useEditorStore.getState().time || 0)
+  const lastTimeUiRef = useRef(0)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
   const selectedId = useEditorStore((s) => s.selectedId)
@@ -17,6 +20,9 @@ export default function Viewport2D() {
   const [zoom, setZoom] = useState(0.02)
   const [pan, setPan] = useState(null) // { startX, startY, startLeft, startTop }
   const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
+  const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
+  const [dragClip, setDragClip] = useState(null) // { id, startX, startY, origX, origY }
+  const [menu, setMenu] = useState({ open:false, x:0, y:0 })
 
   useEffect(() => {
     const onResize = () => {
@@ -45,21 +51,48 @@ export default function Viewport2D() {
     return map
   }, [nodes])
   const mediaById = useMemo(() => Object.fromEntries((project?.media||[]).map(m => [m.id, m])), [project])
+  const allTimelineItems = useMemo(() => {
+    const tracks = project?.timeline?.tracks || []
+    return tracks.filter(t => t.media).map(t => t.media)
+  }, [project])
+  const clipRefs = useRef(new Map())
+  const getClipRef = (id) => {
+    if (!clipRefs.current.has(id)) clipRefs.current.set(id, React.createRef())
+    return clipRefs.current.get(id)
+  }
   const activePlacements = useMemo(() => {
     const res = []
-    const tracks = project?.timeline?.tracks || []
-    for (const t of tracks) {
-      if (!t.media) continue
-      const m = t.media
-      const start = m.start_at_seconds || 0
-      const dur = Math.max(0, (m.out_seconds - m.in_seconds) || 0)
-      if (time < start || time > start + dur) continue
+    const tNow = useEditorStore.getState().time // read once
+    for (const m of allTimelineItems) {
+      const start = (m.start ?? m.start_at_seconds) || 0
+      const dur = Math.max(0, (m.duration ?? ((m.out_seconds - m.in_seconds) || 0)))
+      if (tNow < start || tNow > start + dur) continue
       const screen = m.target_node_id ? nodeIndex.get(m.target_node_id) : null
       const clip = mediaById[m.clip_id]
       res.push({ tm: m, screen, clip })
     }
     return res
-  }, [project, time, nodeIndex, mediaById])
+  }, [allTimelineItems, nodeIndex, mediaById])
+
+  // Subscribe to time to update active clip visibility/positions without full recalculation via React state each frame
+  useEffect(() => {
+    const unsub = useEditorStore.subscribe((s) => s.time, (t) => {
+      const now = performance.now()
+      if (now - lastTimeUiRef.current > 125) { lastTimeUiRef.current = now; setTimeDisplay(t) }
+      // Update class visibility
+      clipRefs.current.forEach((ref, id) => {
+        const el = ref.current
+        if (!el) return
+        const m = allTimelineItems.find(mm => mm.id === id)
+        if (!m) return
+        const start = (m.start ?? m.start_at_seconds) || 0
+        const dur = Math.max(0, (m.duration ?? ((m.out_seconds - m.in_seconds) || 0)))
+        const active = t >= start && t <= start + dur
+        el.style.display = active ? 'flex' : 'none'
+      })
+    })
+    return () => { try { unsub() } catch {} }
+  }, [allTimelineItems])
 
   // Preload image sources and natural sizes for active clips
   useEffect(() => {
@@ -76,7 +109,23 @@ export default function Viewport2D() {
             setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: img.naturalWidth, h: img.naturalHeight, src } }))
             resolve()
           }
-          img.onerror = () => resolve()
+          img.onerror = async () => {
+            // Try inline fallback if asset protocol blocks access (403)
+            try {
+              const inlined = await inlineFromUri(clip.uri)
+              if (inlined) {
+                const probe = new Image()
+                probe.onload = () => {
+                  setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: probe.naturalWidth, h: probe.naturalHeight, src: inlined } }))
+                  resolve()
+                }
+                probe.onerror = () => resolve()
+                probe.src = inlined
+                return
+              }
+            } catch {}
+            resolve()
+          }
           img.src = src
         })
       }
@@ -206,6 +255,54 @@ export default function Viewport2D() {
   return (
     <div
       ref={scrollRef}
+      onContextMenu={(e)=>{ e.preventDefault(); setMenu({ open:true, x:e.clientX, y:e.clientY }) }}
+      onDragOver={(e)=>{
+        if (!e.dataTransfer?.types?.includes('application/x-constellation-clip-id') && !e.dataTransfer?.types?.includes('text/plain')) return
+        e.preventDefault()
+        const sc = scrollRef.current
+        if (!sc) return
+        const rect = sc.getBoundingClientRect()
+        const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
+        const contentTop = sc.scrollTop + (e.clientY - rect.top)
+        const Z_NEUTRAL = 0.2
+        const ratio = (zoom / Z_NEUTRAL)
+        let target = null
+        for (const n of nodes) {
+          if (n.kind?.type !== 'screen' || (n.kind?.enabled === false)) continue
+          const spos = n.transform?.position || { x: 0, y: 0, z: 0 }
+          const cx = center.x + (spos.x || 0) * scale
+          const cy = center.y - (spos.y || 0) * scale
+          const px = n.kind?.pixels?.[0] || 0
+          const py = n.kind?.pixels?.[1] || 0
+          const w = Math.max(2, px * ratio)
+          const h = Math.max(2, py * ratio)
+          const left = cx - w / 2
+          const top = cy - h / 2
+          if (contentLeft >= left && contentLeft <= left + w && contentTop >= top && contentTop <= top + h) {
+            target = { id: n.id }
+            break
+          }
+        }
+        setDnd({ over: !!target, screenId: target?.id || null, left: contentLeft, top: contentTop })
+      }}
+      onDragLeave={()=> setDnd({ over:false, screenId:null, left:0, top:0 })}
+      onDrop={(e)=>{
+        const clipId = e.dataTransfer.getData('application/x-constellation-clip-id') || e.dataTransfer.getData('text/plain')
+        if (!clipId) return
+        e.preventDefault()
+        const sc = scrollRef.current
+        if (!sc) return
+        const rect = sc.getBoundingClientRect()
+        const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
+        const contentTop = sc.scrollTop + (e.clientY - rect.top)
+        const Z_NEUTRAL = 0.2
+        const ratio = (zoom / Z_NEUTRAL)
+        // No per-screen association; position relative to world center
+        const pos = { x: (contentLeft - center.x) / ratio, y: (center.y - contentTop) / ratio }
+        const { addClipToTimeline, time } = useEditorStore.getState()
+        addClipToTimeline({ clipId, startAt: time, position: pos })
+        setDnd({ over:false, screenId:null, left:0, top:0 })
+      }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -221,7 +318,7 @@ export default function Viewport2D() {
 
         {/* draw screens */}
         {nodes.map((n) => (
-          <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected} />
+          <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected} highlight={dnd.over && dnd.screenId === n.id} />
         ))}
 
         {/* Output overlay: represent each screen's pixel output area */}
@@ -241,7 +338,7 @@ export default function Viewport2D() {
           )
         })}
 
-        {activePlacements.map(({ tm, screen, clip }, idx) => {
+  {activePlacements.map(({ tm, screen, clip }, idx) => {
           const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
           const cx = center.x + (spos.x ?? 0) * scale
           const cy = center.y - (spos.y ?? 0) * scale
@@ -256,10 +353,29 @@ export default function Viewport2D() {
           const h = Math.max(2, targetHpx * ratio)
           const left = cx + (mpos.x || 0) * ratio - w / 2
           const top = cy - (mpos.y || 0) * ratio - h / 2
-          const isSel = selectedClipId === tm.clip_id
+          const isSel = selectedClipId === tm.id
           return (
-            <div key={idx}
-              onClick={(e)=>{ e.stopPropagation(); setSelectedClip(tm.clip_id) }}
+            <div key={idx} ref={getClipRef(tm.id)}
+              onClick={(e)=>{ e.stopPropagation(); setSelectedClip(tm.id) }}
+              onPointerDown={(e)=>{
+                if (e.button !== 0) return
+                e.stopPropagation()
+                try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                setDragClip({ id: tm.id, startX: e.clientX, startY: e.clientY, origX: mpos.x || 0, origY: mpos.y || 0 })
+              }}
+              onPointerMove={(e)=>{
+                if (!dragClip || dragClip.id !== tm.id) return
+                const dx = e.clientX - dragClip.startX
+                const dy = e.clientY - dragClip.startY
+                const nextX = dragClip.origX + dx / ratio
+                const nextY = dragClip.origY - dy / ratio
+                // UI computes floats; store will round to integers
+                useEditorStore.getState().updateClipTransform({ timelineId: tm.id, position: { x: nextX, y: nextY } })
+              }}
+              onPointerUp={(e)=>{
+                if (dragClip?.id === tm.id) setDragClip(null)
+                try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+              }}
               title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds||0).toFixed?.(2)}s)`}
               style={{ position:'absolute', left, top, width:w, height:h, background:'#0b0d12', border:`1px solid ${isSel?'#6aa0ff':'#3a4060'}`, boxShadow:isSel?'0 0 0 1px #6aa0ff66':'none', borderRadius:4, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center', color:'#c7cfdb', fontSize:11, pointerEvents:'auto', zIndex: 5 }}
             >
@@ -286,12 +402,44 @@ export default function Viewport2D() {
           </div>
         </div>
 
+        {menu.open && (
+          <div style={{ position:'fixed', left: menu.x, top: menu.y, background:'#0f1115', border:'1px solid #232636', borderRadius:4, zIndex: 5000, minWidth: 160, boxShadow:'0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e)=>{ e.stopPropagation() }} onMouseDown={(e)=>e.preventDefault()}>
+            <StageMenu
+              onAddScreen={()=>{
+                setMenu({ open:false, x:0, y:0 })
+                useEditorStore.getState().addScreenNode({ pixels: [1920, 1080] })
+              }}
+              onRemoveClip={()=>{
+                setMenu({ open:false, x:0, y:0 })
+                const st = useEditorStore.getState()
+                if (st.selectedClipId) st.removeClip(st.selectedClipId)
+              }}
+              onRemoveScreen={()=>{
+                setMenu({ open:false, x:0, y:0 })
+                const st = useEditorStore.getState()
+                const sel = st.selectedId
+                if (!sel) return
+                // ensure selected is a screen
+                const nodes = st.scene?.roots || []
+                const stack = [...nodes]
+                let isScreen = false
+                while (stack.length) {
+                  const n = stack.pop()
+                  if (!n) continue
+                  if (n.id === sel) { isScreen = n.kind?.type === 'screen'; break }
+                  if (n.children?.length) stack.push(...n.children)
+                }
+                if (isScreen) st.removeScreenNode(sel)
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-function Node2D({ node, center, scale, selectedId, onSelect }) {
+function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
   const t = node.transform
   const Z_NEUTRAL = 0.2
   const ratio = scale / 50 // since scale already includes zoom/Z_NEUTRAL, and BASE_SCALE is 50
@@ -314,7 +462,7 @@ function Node2D({ node, center, scale, selectedId, onSelect }) {
         <div
           onClick={(e)=>{ e.stopPropagation(); onSelect(node.id) }}
           title={node.name || node.id}
-          style={{ position:'absolute', left: x - w/2, top: y - h/2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `1px solid ${isSelected ? '#6aa0ff' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
+          style={{ position:'absolute', left: x - w/2, top: y - h/2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `2px ${highlight ? 'dashed' : 'solid'} ${isSelected || highlight ? '#6aa0ff' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
         />
         {children}
       </>
@@ -333,6 +481,38 @@ function Node2D({ node, center, scale, selectedId, onSelect }) {
 function gridBg() {
   // legacy; not used
   return {}
+}
+
+function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
+  const hasSelectedClip = useEditorStore((s) => !!s.selectedClipId)
+  const selectedId = useEditorStore((s) => s.selectedId)
+  const scene = useEditorStore((s) => s.scene)
+  const isScreenSelected = useMemo(() => {
+    if (!selectedId || !scene?.roots) return false
+    const stack = [...scene.roots]
+    while (stack.length) {
+      const n = stack.pop()
+      if (!n) continue
+      if (n.id === selectedId) return n.kind?.type === 'screen'
+      if (n.children?.length) stack.push(...n.children)
+    }
+    return false
+  }, [selectedId, scene])
+  return (
+    <div>
+      <MenuItem label="Add Screen" onClick={onAddScreen} />
+      {hasSelectedClip && <MenuItem label="Remove Selected Clip" onClick={onRemoveClip} />} 
+      {isScreenSelected && <MenuItem label="Remove Screen" onClick={onRemoveScreen} />}
+    </div>
+  )
+}
+
+function MenuItem({ label, onClick }) {
+  return (
+    <button type="button" onClick={onClick} style={{ display:'block', width:'100%', textAlign:'left', background:'transparent', color:'#c7cfdb', border:'none', padding:'8px 12px', cursor:'pointer' }}>
+      {label}
+    </button>
+  )
 }
 
 function dotGridBg(center, zoom) {
@@ -387,8 +567,20 @@ function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
 function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedClipId }) {
   let text = ''
   if (selectedClipId) {
-    const clip = mediaById[selectedClipId]
-    text = clip?.name || selectedClipId
+    // selectedClipId refers to timeline item id; resolve clip via tracks
+    try {
+      const proj = useEditorStore.getState().project
+      let mediaEntry = null
+      if (proj?.timeline?.tracks) {
+        for (const t of proj.timeline.tracks) {
+          if (t.media && t.media.id === selectedClipId) {
+            mediaEntry = (proj.media || []).find(m => m.id === t.media.clip_id)
+            break
+          }
+        }
+      }
+      text = mediaEntry?.name || mediaEntry?.id || selectedClipId
+    } catch { text = selectedClipId }
   } else if (selectedId) {
     const n = nodeIndex.get(selectedId)
     if (n) {
