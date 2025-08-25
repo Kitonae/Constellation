@@ -4,6 +4,10 @@ import { useEditorStore } from '../store.js'
 
 const opened = new Map()
 
+export function hasOpenDisplays() {
+  return opened.size > 0
+}
+
 export async function openDisplayWindow(screenId, width, height) {
   const label = `display-${screenId}`
   if (opened.has(label)) return opened.get(label)
@@ -20,6 +24,13 @@ export async function openDisplayWindow(screenId, width, height) {
     title: `Display ${screenId}`,
   })
   opened.set(label, win)
+  // Remove from registry when window is destroyed/closed
+  try {
+    const unlistenDestroyed = await win.listen('tauri://destroyed', () => {
+      opened.delete(label)
+      try { unlistenDestroyed && unlistenDestroyed() } catch {}
+    })
+  } catch {}
   // When the window is created, push a snapshot so it has initial content
   try {
     const unlisten = await win.listen('tauri://created', () => {

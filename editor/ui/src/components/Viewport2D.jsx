@@ -10,11 +10,14 @@ export default function Viewport2D() {
   const [timeDisplay, setTimeDisplay] = useState(useEditorStore.getState().time || 0)
   const lastTimeUiRef = useRef(0)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds || [])
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
+  const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
   const selectedId = useEditorStore((s) => s.selectedId)
   const setSelected = useEditorStore((s) => s.setSelected)
   const showOutputOverlay = useEditorStore((s) => s.showOutputOverlay)
   const scrollRef = useRef(null)
+  const stageRef = useRef(null)
   const [containerSize, setContainerSize] = useState({ w: 100, h: 100 })
   // Default zoomed way out; neutral (1:1 px) is 20%
   const [zoom, setZoom] = useState(0.02)
@@ -23,6 +26,22 @@ export default function Viewport2D() {
   const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
   const [dragClip, setDragClip] = useState(null) // { id, startX, startY, origX, origY }
   const [menu, setMenu] = useState({ open:false, x:0, y:0 })
+  const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
+
+  // Global failsafe: if the pointer is released outside the element, end any active clip drag
+  useEffect(() => {
+    const endDrag = () => setDragClip((d) => d ? null : d)
+    window.addEventListener('pointerup', endDrag, true)
+    window.addEventListener('pointercancel', endDrag, true)
+    window.addEventListener('mouseup', endDrag, true)
+    window.addEventListener('touchend', endDrag, true)
+    return () => {
+      window.removeEventListener('pointerup', endDrag, true)
+      window.removeEventListener('pointercancel', endDrag, true)
+      window.removeEventListener('mouseup', endDrag, true)
+      window.removeEventListener('touchend', endDrag, true)
+    }
+  }, [])
 
   useEffect(() => {
     const onResize = () => {
@@ -60,13 +79,14 @@ export default function Viewport2D() {
     if (!clipRefs.current.has(id)) clipRefs.current.set(id, React.createRef())
     return clipRefs.current.get(id)
   }
-  const activePlacements = useMemo(() => {
+  const videoRefs = useRef(new Map())
+  const getVideoRef = (id) => {
+    if (!videoRefs.current.has(id)) videoRefs.current.set(id, React.createRef())
+    return videoRefs.current.get(id)
+  }
+  const placements = useMemo(() => {
     const res = []
-    const tNow = useEditorStore.getState().time // read once
     for (const m of allTimelineItems) {
-      const start = (m.start ?? m.start_at_seconds) || 0
-      const dur = Math.max(0, (m.duration ?? ((m.out_seconds - m.in_seconds) || 0)))
-      if (tNow < start || tNow > start + dur) continue
       const screen = m.target_node_id ? nodeIndex.get(m.target_node_id) : null
       const clip = mediaById[m.clip_id]
       res.push({ tm: m, screen, clip })
@@ -90,16 +110,31 @@ export default function Viewport2D() {
         const active = t >= start && t <= start + dur
         el.style.display = active ? 'flex' : 'none'
       })
+      // Sync video currentTime to timeline offset
+      videoRefs.current.forEach((ref, id) => {
+        const vid = ref.current
+        if (!vid) return
+        const m = allTimelineItems.find(mm => mm.id === id)
+        if (!m) return
+        const start = (m.start ?? m.start_at_seconds) || 0
+        const offset = Math.max(0, t - start)
+        try {
+          if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset
+        } catch {}
+      })
     })
     return () => { try { unsub() } catch {} }
   }, [allTimelineItems])
 
-  // Preload image sources and natural sizes for active clips
+  // Preload image sources and natural sizes for clips used in placements
   useEffect(() => {
     let cancelled = false
     async function ensureMeta() {
-      for (const { clip, tm } of activePlacements) {
+      for (const { clip, tm } of placements) {
         if (!clip?.uri || imageMeta[tm.clip_id]) continue
+        // Skip videos for meta probe; use defaults
+        const ext = String(clip.uri).split('?')[0].split('#')[0].split('.').pop().toLowerCase()
+        if (['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)) continue
         const src = await resolveImageSrc(clip.uri)
         if (cancelled) return
         if (!src) continue
@@ -132,7 +167,7 @@ export default function Viewport2D() {
     }
     ensureMeta()
     return () => { cancelled = true }
-  }, [activePlacements, imageMeta])
+  }, [placements, imageMeta])
 
   // Center the scroll on first mount
   useEffect(() => {
@@ -309,9 +344,86 @@ export default function Viewport2D() {
       style={{ position:'relative', width: '100%', height: '100%', overflow: 'auto', background:'#0b0d12', cursor: pan ? 'grabbing' : 'default', overscrollBehavior: 'contain' }}
     >
       <div
+        ref={stageRef}
         style={{ position:'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
-        onClick={() => { setSelected(null); setSelectedClip(null) }}
+        onClick={() => { if (!marquee) { setSelected(null); setSelectedClips([]) } }}
+        onPointerDown={(e)=>{
+          // Start marquee selection only on empty space (not when Ctrl+Alt panning or clicking a clip)
+          if (e.button !== 0) return
+          if (e.ctrlKey && e.altKey) return
+          if (e.target !== stageRef.current) return
+          const sc = scrollRef.current
+          if (!sc) return
+          const rect = sc.getBoundingClientRect()
+          const x = sc.scrollLeft + (e.clientX - rect.left)
+          const y = sc.scrollTop + (e.clientY - rect.top)
+          setMarquee({ x1: x, y1: y, x2: x, y2: y })
+          try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+          e.preventDefault()
+          e.stopPropagation()
+        }}
+        onPointerMove={(e)=>{
+          if (!marquee) return
+          const sc = scrollRef.current
+          if (!sc) return
+          const rect = sc.getBoundingClientRect()
+          const x = sc.scrollLeft + (e.clientX - rect.left)
+          const y = sc.scrollTop + (e.clientY - rect.top)
+          setMarquee((m) => (m ? { ...m, x2: x, y2: y } : m))
+          e.preventDefault()
+        }}
+        onPointerUp={(e)=>{
+          if (!marquee) return
+          // Normalize marquee rect
+          const mx = Math.min(marquee.x1, marquee.x2)
+          const my = Math.min(marquee.y1, marquee.y2)
+          const mw = Math.abs(marquee.x2 - marquee.x1)
+          const mh = Math.abs(marquee.y2 - marquee.y1)
+          // Collect all intersecting clips
+          const ratio = (zoom / Z_NEUTRAL)
+          const picked = []
+          const tNow = useEditorStore.getState().time
+          for (const { tm, screen } of placements) {
+            const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
+            const cx = center.x + (spos.x ?? 0) * scale
+            const cy = center.y - (spos.y ?? 0) * scale
+            const meta = imageMeta[tm.clip_id]
+            const baseW = meta?.w || 100
+            const baseH = meta?.h || 100
+            const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
+            const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
+            const w = Math.max(2, targetWpx * ratio)
+            const h = Math.max(2, targetHpx * ratio)
+            const left = cx + (tm.position?.x || 0) * ratio - w / 2
+            const top = cy - (tm.position?.y || 0) * ratio - h / 2
+            const inter = (mx < left + w) && (mx + mw > left) && (my < top + h) && (my + mh > top)
+            const start = (tm.start ?? tm.start_at_seconds) || 0
+            const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
+            const isActive = tNow >= start && tNow <= start + dur
+            if (inter && isActive) picked.push(tm.id)
+          }
+          setSelectedClips(picked)
+          setMarquee(null)
+          try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+          e.preventDefault()
+          e.stopPropagation()
+        }}
       >
+        {marquee && (
+          <div
+            style={{
+              position:'absolute',
+              left: Math.min(marquee.x1, marquee.x2),
+              top: Math.min(marquee.y1, marquee.y2),
+              width: Math.abs(marquee.x2 - marquee.x1),
+              height: Math.abs(marquee.y2 - marquee.y1),
+              border: '1px dashed #6aa0ff',
+              background: 'rgba(106,160,255,0.12)',
+              pointerEvents: 'none',
+              zIndex: 1000,
+            }}
+          />
+        )}
         {/* axes */}
         <div style={{ position:'absolute', left: center.x, top: 0, bottom: 0, width: 1, background: '#3a4e85' }} />
         <div style={{ position:'absolute', top: center.y, left: 0, right: 0, height: 1, background: '#3a4e85' }} />
@@ -338,7 +450,8 @@ export default function Viewport2D() {
           )
         })}
 
-  {activePlacements.map(({ tm, screen, clip }, idx) => {
+  {placements.map(({ tm, screen, clip }, idx) => {
+          const tNow = useEditorStore.getState().time
           const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
           const cx = center.x + (spos.x ?? 0) * scale
           const cy = center.y - (spos.y ?? 0) * scale
@@ -353,10 +466,13 @@ export default function Viewport2D() {
           const h = Math.max(2, targetHpx * ratio)
           const left = cx + (mpos.x || 0) * ratio - w / 2
           const top = cy - (mpos.y || 0) * ratio - h / 2
-          const isSel = selectedClipId === tm.id
+          const isSel = selectedClipId === tm.id || selectedClipIds.includes(tm.id)
+          const start = (tm.start ?? tm.start_at_seconds) || 0
+          const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
+          const isActive = tNow >= start && tNow <= start + dur
           return (
             <div key={idx} ref={getClipRef(tm.id)}
-              onClick={(e)=>{ e.stopPropagation(); setSelectedClip(tm.id) }}
+              onClick={(e)=>{ e.stopPropagation(); setSelectedClips([tm.id]) }}
               onPointerDown={(e)=>{
                 if (e.button !== 0) return
                 e.stopPropagation()
@@ -365,6 +481,7 @@ export default function Viewport2D() {
               }}
               onPointerMove={(e)=>{
                 if (!dragClip || dragClip.id !== tm.id) return
+                if ((e.buttons & 1) === 0) { setDragClip(null); return }
                 const dx = e.clientX - dragClip.startX
                 const dy = e.clientY - dragClip.startY
                 const nextX = dragClip.origX + dx / ratio
@@ -376,14 +493,22 @@ export default function Viewport2D() {
                 if (dragClip?.id === tm.id) setDragClip(null)
                 try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
               }}
+              onDragStart={(e)=>{ e.preventDefault() }}
+              onPointerCancel={(e)=>{ if (dragClip?.id === tm.id) setDragClip(null); try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch {} }}
               title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds||0).toFixed?.(2)}s)`}
-              style={{ position:'absolute', left, top, width:w, height:h, background:'#0b0d12', border:`1px solid ${isSel?'#6aa0ff':'#3a4060'}`, boxShadow:isSel?'0 0 0 1px #6aa0ff66':'none', borderRadius:4, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center', color:'#c7cfdb', fontSize:11, pointerEvents:'auto', zIndex: 5 }}
+              style={{ position:'absolute', left, top, width:w, height:h, background:'#0b0d12', border:`1px solid ${isSel?'#6aa0ff':'#3a4060'}`, boxShadow:isSel?'0 0 0 1px #6aa0ff66':'none', borderRadius:4, overflow:'hidden', display: isActive ? 'flex' : 'none', alignItems:'center', justifyContent:'center', color:'#c7cfdb', fontSize:11, pointerEvents:'auto', zIndex: 5, userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none', WebkitUserDrag:'none', touchAction:'none' }}
             >
-              {imageMeta[tm.clip_id]?.src ? (
-                <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
-              ) : (
-                <span style={{ padding:'0 4px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{clip?.name || tm.clip_id}</span>
-              )}
+              {(() => {
+                const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
+                const isVideo = ['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)
+                if (isVideo) {
+                  return <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width: '100%', height: '100%' }} />
+                }
+                if (imageMeta[tm.clip_id]?.src) {
+                  return <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents:'none', userSelect:'none', WebkitUserDrag:'none' }} />
+                }
+                return <span style={{ padding:'0 4px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', userSelect:'none' }}>{clip?.name || tm.clip_id}</span>
+              })()}
               {/* White 1px bounding box overlay */}
               <div style={{ position:'absolute', inset:0, border:'1px solid #ffffff', pointerEvents:'none' }} />
             </div>
@@ -436,6 +561,36 @@ export default function Viewport2D() {
         )}
       </div>
     </div>
+  )
+}
+
+function VideoFrame({ clip, refEl, style }) {
+  useEffect(() => {
+    async function setSrc() {
+      try {
+        const uri = String(clip?.uri || '')
+        if (!refEl?.current) return
+        // Handle data:, http(s):, and file:// in Tauri
+        if (/^data:/.test(uri) || /^https?:/.test(uri)) {
+          refEl.current.src = uri
+          return
+        }
+        if (uri.startsWith('file://')) {
+          if (typeof window === 'undefined' || !window.__TAURI__) return
+          const url = new URL(uri)
+          let p = decodeURI(url.pathname)
+          if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
+          const { convertFileSrc } = await import('@tauri-apps/api/tauri')
+          const src = convertFileSrc(p)
+          refEl.current.src = src
+          return
+        }
+      } catch {}
+    }
+    setSrc()
+  }, [clip?.uri, refEl])
+  return (
+    <video ref={refEl} muted playsInline preload="auto" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents:'none', ...style }} />
   )
 }
 

@@ -8,20 +8,32 @@ export default function DisplayWindow() {
   const width = parseInt(params.get('w') || `${window.innerWidth}`, 10)
   const height = parseInt(params.get('h') || `${window.innerHeight}`, 10)
   const [snapshot, setSnapshot] = useState(null) // { project, scene, time }
+  const [playTime, setPlayTime] = useState(0)
   const [imageMeta, setImageMeta] = useState({})
+  const videoRefs = React.useRef(new Map())
+  const getVideoRef = (id) => {
+    if (!videoRefs.current.has(id)) videoRefs.current.set(id, React.createRef())
+    return videoRefs.current.get(id)
+  }
 
   useEffect(() => {
-    let unlisten
+    let unlistenSnap, unlistenTime
     listen('display:snapshot', (e) => {
       // Expect payload: { project, scene, time }
       setSnapshot(e.payload)
-    }).then((u) => (unlisten = u))
-    return () => { try { unlisten && unlisten() } catch {} }
+      setPlayTime(e.payload?.time || 0)
+    }).then((u) => (unlistenSnap = u))
+    listen('display:time', (e) => {
+      // Expect payload: { time }
+      setPlayTime(Number(e.payload?.time || 0))
+    }).then((u) => (unlistenTime = u))
+    return () => { try { unlistenSnap && unlistenSnap() } catch {} try { unlistenTime && unlistenTime() } catch {} }
   }, [])
 
   const active = useMemo(() => {
     if (!snapshot) return []
-    const { project, scene, time } = snapshot
+    const { project, scene } = snapshot
+    const time = playTime
     const mediaById = Object.fromEntries((project?.media || []).map((m) => [m.id, m]))
     // No per-screen filtering; render all active clips
     const res = []
@@ -37,11 +49,27 @@ export default function DisplayWindow() {
     return res
   }, [snapshot, screenId])
 
+  // Sync videos to playTime
+  useEffect(() => {
+    videoRefs.current.forEach((ref, id) => {
+      const vid = ref.current
+      if (!vid) return
+      // Find clip by id
+      const m = snapshot?.project?.timeline?.tracks?.map(t => t.media).find(mm => mm && mm.id === id)
+      if (!m) return
+      const start = (m.start ?? m.start_at_seconds) || 0
+      const offset = Math.max(0, playTime - start)
+      try { if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset } catch {}
+    })
+  }, [playTime, snapshot])
+
   useEffect(() => {
     let cancelled = false
     async function ensureMeta() {
       for (const { clip, tm } of active) {
         if (!clip?.uri || imageMeta[tm.clip_id]) continue
+        const ext = String(clip.uri).split('?')[0].split('#')[0].split('.').pop().toLowerCase()
+        if (['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)) continue
         const src = await resolveImageSrc(clip.uri)
         if (cancelled || !src) continue
         await new Promise((resolve) => {
@@ -68,18 +96,49 @@ export default function DisplayWindow() {
         const cy = height/2
         const left = cx + (tm.position?.x || 0) - w/2
         const top = cy - (tm.position?.y || 0) - h/2
+        const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
+        const isVideo = ['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)
         return (
           <div key={tm.clip_id} style={{ position:'absolute', left, top, width:w, height:h, overflow:'hidden' }}>
-            {meta?.src ? (
+            {isVideo ? (
+              <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width:'100%', height:'100%' }} />
+            ) : meta?.src ? (
               <img src={meta.src} alt={clip?.name || tm.clip_id} style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }} />
             ) : null}
           </div>
         )
       })}
       {/* Debug overlay: timeline time + list of rendered media with position & size */}
-      <DebugOverlay active={active} imageMeta={imageMeta} container={{ width, height }} time={snapshot?.time || 0} />
+      <DebugOverlay active={active} imageMeta={imageMeta} container={{ width, height }} time={playTime || 0} />
     </div>
   )
+}
+
+function VideoFrame({ clip, refEl, style }) {
+  useEffect(() => {
+    async function setSrc() {
+      try {
+        const uri = String(clip?.uri || '')
+        if (!refEl?.current) return
+        if (/^data:/.test(uri) || /^https?:/.test(uri)) {
+          refEl.current.src = uri
+          return
+        }
+        if (uri.startsWith('file://')) {
+          if (typeof window === 'undefined' || !window.__TAURI__) return
+          const url = new URL(uri)
+          let p = decodeURI(url.pathname)
+          if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
+          const { convertFileSrc } = await import('@tauri-apps/api/tauri')
+          const src = convertFileSrc(p)
+          refEl.current.src = src
+          return
+        }
+      } catch {}
+    }
+    setSrc()
+  }, [clip?.uri, refEl])
+  return <video ref={refEl} muted playsInline preload="auto" style={{ width:'100%', height:'100%', objectFit:'contain', display:'block', ...style }} />
 }
 
 function DebugOverlay({ active, imageMeta, container, time }) {

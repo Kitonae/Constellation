@@ -1,6 +1,6 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
-import { openImageDialog } from '../utils/tauriCompat.js'
+import { openMediaDialog } from '../utils/tauriCompat.js'
 import MediaThumb from './MediaThumb.jsx'
 import { cacheMediaFromPath } from '../utils/cacheMedia.js'
 
@@ -18,7 +18,7 @@ export default function MediaBin() {
   const onImportImage = async () => {
     try {
       beginImport()
-      const filePath = await openImageDialog()
+      const filePath = await openMediaDialog()
       if (!filePath) return
       const name = String(filePath).split(/[\\\/]/).pop()
       // Create media entry immediately so its card appears
@@ -51,7 +51,7 @@ export default function MediaBin() {
     >
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 6 }}>
         <div style={{ fontWeight: 600 }}>Media Bin</div>
-        <button onClick={onImportImage} title="Import Image" aria-label="Import Image" style={{ position:'relative' }}>+</button>
+        <button onClick={onImportImage} title="Add New" aria-label="Add New" style={{ position:'relative' }}>Add New</button>
       </div>
       {!media.length && <div style={{ opacity: 0.7 }}>No media yet.</div>}
       <div style={{ display:'grid', gap: 6 }}>
@@ -72,7 +72,14 @@ export default function MediaBin() {
               <div style={{ fontWeight:600, whiteSpace:'nowrap' }}>{m.name || m.id}</div>
               <div style={{ fontSize:12, opacity:0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
             </div>
-            <button onClick={() => addClipToTimeline({ clipId: m.id, startAt: time })}>Insert at {time.toFixed(2)}s</button>
+            <button
+              onClick={() => addClipToTimeline({ clipId: m.id, startAt: time })}
+              title={`Insert at ${time.toFixed(2)}s`}
+              aria-label={`Insert at ${time.toFixed(2)} seconds`}
+              style={{ width: 28, height: 28, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:16 }}
+            >
+              +
+            </button>
           </div>
         ))}
       </div>

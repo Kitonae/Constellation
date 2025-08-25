@@ -10,7 +10,8 @@ export const useEditorStore = create((set, get) => ({
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
   selectedId: null,
-  selectedClipId: null, // timeline selection
+  selectedClipId: null, // primary selected timeline item id
+  selectedClipIds: [], // multi-select support for stage/timeline
   gizmoMode: 'translate',
   // Console/logging state
   logs: [], // { id, level, message, time }
@@ -210,7 +211,8 @@ export const useEditorStore = create((set, get) => ({
   },
   seek: (t) => set({ time: t }),
   setSelected: (id) => set({ selectedId: id }),
-  setSelectedClip: (clipId) => set({ selectedClipId: clipId }),
+  setSelectedClip: (clipId) => set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] }),
+  setSelectedClips: (clipIds) => set({ selectedClipIds: Array.isArray(clipIds) ? clipIds : [], selectedClipId: (clipIds && clipIds.length ? clipIds[0] : null) }),
   setGizmoMode: (mode) => set({ gizmoMode: mode }),
   updateNodeTransform: (id, next) => set((s) => ({ scene: {
     ...s.scene,
