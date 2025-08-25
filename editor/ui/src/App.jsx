@@ -20,6 +20,13 @@ export default function App() {
   const [fileName, setFileName] = useState('')
   const [addr, setAddr] = useState('http://127.0.0.1:50051')
   const [status, setStatus] = useState('')
+  // Resizable divider state between Inspector (top) and Media Bin (bottom)
+  const rightPaneRef = useRef(null)
+  const [mediaHeight, setMediaHeight] = useState(200) // px
+  const dragRef = useRef(null) // { startY, startMedia, containerH }
+  // Resizable footer (timeline) height
+  const [timelineHeight, setTimelineHeight] = useState(200)
+  const footerDragRef = useRef(null) // { startY, startH }
 
   useEffect(() => {
     const onKey = (e) => {
@@ -152,12 +159,68 @@ export default function App() {
       </header>
       <main>
         <div className="panel">{viewMode === '2d' ? <Viewport2D /> : <Viewport3D />}</div>
-        <div className="panel" style={{ display:'grid', gridTemplateRows:'1fr auto' }}>
-          <div style={{ overflow:'auto' }}><Inspector /></div>
-          <div style={{ borderTop:'1px solid #232636' }}><MediaBin /></div>
+        <div
+          ref={rightPaneRef}
+          className="panel"
+          style={{ display:'flex', flexDirection:'column', minHeight:0, position:'relative' }}
+        >
+          <div style={{ flex:'1 1 auto', minHeight: 100, overflow:'auto' }}>
+            <Inspector />
+          </div>
+          {/* Drag handle */}
+          <div
+            onPointerDown={(e) => {
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+              const container = rightPaneRef.current
+              const H = container ? container.clientHeight : 0
+              dragRef.current = { startY: e.clientY, startMedia: mediaHeight, containerH: H }
+              e.preventDefault()
+            }}
+            onPointerMove={(e) => {
+              if (!dragRef.current) return
+              const dy = e.clientY - dragRef.current.startY
+              const minMedia = 100
+              const minInspector = 120
+              const maxMedia = Math.max(0, (dragRef.current.containerH || 0) - minInspector)
+              const next = Math.max(minMedia, Math.min(maxMedia, dragRef.current.startMedia - dy))
+              setMediaHeight(next)
+              e.preventDefault()
+            }}
+            onPointerUp={(e) => { dragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
+            style={{
+              height: 6,
+              cursor: 'row-resize',
+              background: 'linear-gradient(180deg, #1a1e2c, #121520)',
+              borderTop: '1px solid #232636',
+              flex: '0 0 auto',
+            }}
+            title="Drag to resize"
+          />
+          <div style={{ flex:'0 0 auto', height: mediaHeight, minHeight: 60, overflow:'auto' }}>
+            <MediaBin />
+          </div>
         </div>
       </main>
-      <footer className="panel timeline"><Timeline /></footer>
+      <footer className="panel" style={{ height: timelineHeight, minHeight: 80, position: 'relative', overflow: 'hidden' }}>
+        {/* Drag handle at top of footer to resize timeline height */}
+        <div
+          onPointerDown={(e) => { try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}; footerDragRef.current = { startY: e.clientY, startH: timelineHeight } }}
+          onPointerMove={(e) => {
+            if (!footerDragRef.current) return
+            const dy = e.clientY - footerDragRef.current.startY
+            const minH = 80
+            const maxH = 600
+            const next = Math.max(minH, Math.min(maxH, footerDragRef.current.startH - dy))
+            setTimelineHeight(next)
+          }}
+          onPointerUp={(e) => { footerDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
+          style={{ position:'absolute', top:0, left:0, right:0, height:6, cursor:'row-resize', background:'linear-gradient(180deg, #1a1e2c, #121520)', borderBottom:'1px solid #232636', zIndex: 2 }}
+          title="Drag to resize timeline"
+        />
+        <div style={{ position:'absolute', inset:'6px 0 0 0', overflow:'hidden' }}>
+          <Timeline />
+        </div>
+      </footer>
       <TopConsoleDrawer />
       <LoadingOverlay />
       <GlobalTicker />
