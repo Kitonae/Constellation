@@ -12,7 +12,9 @@ export default function Timeline() {
   const mediaById = useMemo(() => Object.fromEntries(media.map(m => [m.id, m])), [media])
   const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
+  const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
   const tracksViewportRef = useRef(null) // scroll container for tracks
   const tracksInnerRef = useRef(null) // inner width element
   const rulerViewportRef = useRef(null) // scroll container for ruler
@@ -29,11 +31,11 @@ export default function Timeline() {
   const lastDisplayRef = useRef(0)
   const rulerPlayheadRef = useRef(null)
   const tracksPlayheadRef = useRef(null)
-  const tracksLabelsRef = useRef(null)
+  // labels are integrated into the tracks viewport now (single scrollbar)
   const seekingRef = useRef(false)
 
   // Layout constants shared by slider, playhead and hit-testing
-  const LABEL_W = 90
+  const LABEL_W = 120
   const ROW_MARGIN_X = 8
   const GRID_GAP = 8
 
@@ -43,9 +45,14 @@ export default function Timeline() {
     const inner = tracksInnerRef.current
     if (!vp || !inner) return 0
     const rect = vp.getBoundingClientRect()
-    const rel = Math.min(Math.max(clientX - rect.left + vp.scrollLeft, 0), inner.clientWidth)
-    return (rel / Math.max(1, inner.clientWidth)) * duration
-  }, [duration])
+    // Convert clientX to a position within the timeline area (to the right of the labels)
+    const innerTimelineWidth = Math.max(0, timelineWidth)
+    const rel = Math.min(
+      Math.max(clientX - rect.left + vp.scrollLeft - LABEL_W, 0),
+      innerTimelineWidth
+    )
+    return (rel / Math.max(1, innerTimelineWidth)) * duration
+  }, [duration, timelineWidth])
 
   const onDragOver = (e) => {
     if (e.dataTransfer.types.includes('application/x-constellation-clip-id') || e.dataTransfer.types.includes('text/plain')) {
@@ -72,7 +79,9 @@ export default function Timeline() {
     function recalc() {
       const vp = tracksViewportRef.current
       if (!vp) return
-      const width = Math.max(vp.clientWidth, Math.round(duration * pxPerSecond))
+      // Only the timeline area (to the right of labels) should determine width
+      const visibleTrackWidth = Math.max(0, vp.clientWidth - LABEL_W)
+      const width = Math.max(visibleTrackWidth, Math.round(duration * pxPerSecond))
       setTimelineWidth(width)
       setTracksViewportHeight(vp.clientHeight || 0)
     }
@@ -95,18 +104,7 @@ export default function Timeline() {
     return () => { rvp.removeEventListener('scroll', syncFromR); tvp.removeEventListener('scroll', syncFromT) }
   }, [])
 
-  // Sync vertical scroll between labels and tracks
-  useEffect(() => {
-    const lv = tracksLabelsRef.current
-    const tv = tracksViewportRef.current
-    if (!lv || !tv) return
-    let lock = false
-    function syncFromT() { if (lock) return; lock = true; lv.scrollTop = tv.scrollTop; lock = false }
-    function syncFromL() { if (lock) return; lock = true; tv.scrollTop = lv.scrollTop; lock = false }
-    tv.addEventListener('scroll', syncFromT)
-    lv.addEventListener('scroll', syncFromL)
-    return () => { tv.removeEventListener('scroll', syncFromT); lv.removeEventListener('scroll', syncFromL) }
-  }, [])
+  // Vertical scroll sync no longer needed; labels are inside the same viewport
 
   const stop = useCallback(() => { const st = useEditorStore.getState(); st.stop() }, [])
 
@@ -169,7 +167,7 @@ export default function Timeline() {
       const clamped = Math.max(0, Math.min(dur, t))
       const x = (clamped / Math.max(0.0001, dur)) * width
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
-      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
+      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = (LABEL_W + x) + 'px'
       const now = performance.now()
       if (now - lastDisplayRef.current > 125) { // ~8fps UI update for timecode
         lastDisplayRef.current = now
@@ -184,7 +182,7 @@ export default function Timeline() {
       const clamped = Math.max(0, Math.min(dur, t))
       const x = (clamped / Math.max(0.0001, dur)) * width
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
-      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
+      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = (LABEL_W + x) + 'px'
     } catch {}
     return () => { try { unsub() } catch {} }
   }, [timelineWidth, duration, project])
@@ -251,77 +249,116 @@ export default function Timeline() {
           </div>
         </div>
       </div>
-      {/* Tracks (labels separated for alignment with ruler) */}
-      <div style={{ display:'flex', marginTop:8, flex:1, minHeight:0 }}>
-        <div ref={tracksLabelsRef} style={{ width: LABEL_W, flex:'0 0 auto', padding:'8px 0', height: '100%', overflowY: 'auto' }}>
-          {tracks.filter(t=>t.media).map((t,i)=>
-            <div key={i} style={{ height:28, margin:'6px 0', marginRight:0, display:'flex', alignItems:'center', justifyContent:'flex-start' }}>
-              <div style={{ fontSize:12, opacity:0.8, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{`Track ${i+1}`}</div>
-            </div>
-          )}
-        </div>
+      {/* Tracks and labels integrated (single scrollbar) */}
+      <div
+        ref={tracksViewportRef}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        onClick={(e)=>{ if (!e.ctrlKey && !e.metaKey) setSelectedClips([]) }}
+        style={{
+          position:'relative',
+          background:'#0f1115',
+          overflowX:'auto',
+          overflowY:'auto',
+          outline: isDragOver ? '1px dashed #5a78ff' : 'none',
+          border:'1px solid #232636',
+          borderRadius:4,
+          flex:1,
+          minHeight: 0,
+          height: '100%',
+          marginTop: 8,
+        }}
+      >
         <div
-          ref={tracksViewportRef}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-          onClick={(e)=>{ if (e.target === tracksViewportRef.current) setSelectedClip(null) }}
+          ref={tracksInnerRef}
           style={{
             position:'relative',
-            background:'#0f1115',
-            overflowX:'auto',
-            overflowY:'auto',
-            outline: isDragOver ? '1px dashed #5a78ff' : 'none',
-            border:'1px solid #232636',
-            borderRadius:4,
-            flex:1,
-            minHeight: 0,
-            height: '100%',
+            width: LABEL_W + timelineWidth,
+            padding:'8px 0',
+            boxSizing:'content-box',
           }}
         >
-          <div ref={tracksInnerRef} style={{ position:'relative', width: timelineWidth, padding:'8px 0' }}>
-            {tracks.filter(t => t.media).map((t, i) => {
-              const m = t.media
-              const startVal = (m.start ?? m.start_at_seconds) || 0
-              const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-              const left = (startVal / Math.max(0.0001, duration)) * timelineWidth
-              const width = (Math.max(0, durVal) / Math.max(0.0001, duration)) * timelineWidth
-              const clip = mediaById[m.clip_id]
-              const label = clip?.name || clip?.id || m.clip_id
-              const isSelected = selectedClipId === m.id
-              return (
-                <div key={i} style={{ position:'relative', height:28, margin:'6px 0' }}>
+          {/* Vertical divider between labels and track timeline */}
+          <div style={{ position:'absolute', top:0, bottom:0, left: LABEL_W, width:1, background:'#232636', pointerEvents:'none' }} />
+
+          {tracks.filter(t=>t.media).map((t,i)=>{
+            const m = t.media
+            const startVal = (m.start ?? m.start_at_seconds) || 0
+            const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
+            const left = (startVal / Math.max(0.0001, duration)) * timelineWidth
+            const width = (Math.max(0, durVal) / Math.max(0.0001, duration)) * timelineWidth
+            const clip = mediaById[m.clip_id]
+            const label = clip?.name || clip?.id || m.clip_id
+            const isSelected = Array.isArray(selectedClipIds) ? selectedClipIds.includes(m.id) : (selectedClipId === m.id)
+            return (
+              <div key={i} style={{ display:'grid', gridTemplateColumns: `${LABEL_W}px ${timelineWidth}px`, height:28, margin:'6px 0', alignItems:'center' }}>
+                {/* Label cell */}
+                <div style={{ padding:'0 8px', boxSizing:'border-box', color:'#c7cfdb', background:'#111522' }}>
+                  <div style={{ fontSize:12, opacity:0.85, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{`Track ${i+1}`}</div>
+                </div>
+                {/* Track cell */}
+                <div style={{ position:'relative', height:'100%' }} onClick={(e)=>{ if (!e.ctrlKey && !e.metaKey) setSelectedClips([]) }}>
                   <div
-                    onClick={(e)=>{ e.stopPropagation(); setSelectedClip(m.id) }}
+                    onClick={(e)=>{ 
+                      e.stopPropagation(); 
+                      const multi = e.ctrlKey || e.metaKey
+                      if (multi) {
+                        const st = useEditorStore.getState()
+                        const curr = new Set(st.selectedClipIds || [])
+                        if (curr.has(m.id)) curr.delete(m.id); else curr.add(m.id)
+                        st.setSelectedClips(Array.from(curr))
+                      } else {
+                        setSelectedClip(m.id)
+                      }
+                    }}
                     onPointerDown={(e)=>{
                       if (e.button !== 0) return
                       e.stopPropagation()
                       try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
                       const tAt = timeFromClientX(e.clientX)
-                      const offset = tAt - (m.start ?? m.start_at_seconds ?? 0)
-                      setDrag({ timelineId: m.id, startAtOffset: offset })
+                      const st = useEditorStore.getState()
+                      const ids = (st.selectedClipIds || []).includes(m.id) && (st.selectedClipIds || []).length > 0
+                        ? [...new Set(st.selectedClipIds)]
+                        : [m.id]
+                      const offsetsById = {}
+                      const tracks = st.project?.timeline?.tracks || []
+                      const index = new Map()
+                      for (const t of tracks) { if (t.media) index.set(t.media.id, t.media) }
+                      ids.forEach((id) => {
+                        const tm = index.get(id)
+                        const start = (tm?.start ?? tm?.start_at_seconds) || 0
+                        offsetsById[id] = tAt - start
+                      })
+                      setDrag({ ids, offsetsById })
                     }}
                     onPointerMove={(e)=>{
-                      if (!drag || drag.timelineId !== m.id) return
+                      if (!drag) return
                       const tAt = timeFromClientX(e.clientX)
-                      const newStart = tAt - drag.startAtOffset
-                      useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: newStart })
+                      const st = useEditorStore.getState()
+                      const ids = drag.ids || []
+                      for (const id of ids) {
+                        const off = drag.offsetsById?.[id] ?? 0
+                        const newStart = tAt - off
+                        st.updateClipStart({ timelineId: id, startAt: newStart })
+                      }
                     }}
                     onPointerUp={(e)=>{
-                      if (drag?.timelineId === m.id) setDrag(null)
+                      if (drag) setDrag(null)
                       try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
                     }}
                     style={{ position:'absolute', left, width, height:'100%', background: isSelected ? '#354066' : '#2a2f45', border:`1px solid ${isSelected ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius:4, display:'flex', alignItems:'center', padding:'0 8px', overflow:'hidden', cursor:'grab' }} title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s`}>
                     <span style={{ whiteSpace:'nowrap', textOverflow:'ellipsis', overflow:'hidden', fontSize:12 }}>{label}</span>
                   </div>
                 </div>
-              )
-            })}
-            <div ref={tracksPlayheadRef} style={{ position:'absolute', top:0, bottom:0, left:0, width:2, background:'#ff6', pointerEvents:'none', transform:'translateZ(0)' }} />
-            {isDragOver && hoverTime != null && (
-              <div title={`${hoverTime.toFixed(2)}s`} style={{ position:'absolute', top:0, bottom:0, left: (hoverTime / Math.max(0.0001, duration)) * timelineWidth, width:2, background:'#5a78ff' }} />
-            )}
-          </div>
+              </div>
+            )
+          })}
+
+          <div ref={tracksPlayheadRef} style={{ position:'absolute', top:0, bottom:0, left: LABEL_W, width:2, background:'#ff6', pointerEvents:'none', transform:'translateZ(0)' }} />
+          {isDragOver && hoverTime != null && (
+            <div title={`${hoverTime.toFixed(2)}s`} style={{ position:'absolute', top:0, bottom:0, left: LABEL_W + (hoverTime / Math.max(0.0001, duration)) * timelineWidth, width:2, background:'#5a78ff' }} />
+          )}
         </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.7, marginTop:4 }}>
