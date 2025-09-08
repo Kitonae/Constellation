@@ -24,7 +24,7 @@ export default function Viewport2D() {
   const [pan, setPan] = useState(null) // { startX, startY, startLeft, startTop }
   const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
   const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
-  const [dragClip, setDragClip] = useState(null) // { id, startX, startY, origX, origY }
+  const [dragClip, setDragClip] = useState(null) // { ids: string[], startX, startY, origById: { [id]: { x, y } } }
   const [menu, setMenu] = useState({ open:false, x:0, y:0 })
   const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
 
@@ -472,29 +472,57 @@ export default function Viewport2D() {
           const isActive = tNow >= start && tNow <= start + dur
           return (
             <div key={idx} ref={getClipRef(tm.id)}
-              onClick={(e)=>{ e.stopPropagation(); setSelectedClips([tm.id]) }}
+              onClick={(e)=>{ 
+                e.stopPropagation(); 
+                const multi = e.ctrlKey || e.metaKey
+                if (multi) {
+                  const st = useEditorStore.getState()
+                  const curr = new Set(st.selectedClipIds || [])
+                  if (curr.has(tm.id)) curr.delete(tm.id); else curr.add(tm.id)
+                  st.setSelectedClips(Array.from(curr))
+                } else {
+                  setSelectedClips([tm.id])
+                }
+              }}
               onPointerDown={(e)=>{
                 if (e.button !== 0) return
                 e.stopPropagation()
                 try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-                setDragClip({ id: tm.id, startX: e.clientX, startY: e.clientY, origX: mpos.x || 0, origY: mpos.y || 0 })
+                const st = useEditorStore.getState()
+                const ids = (st.selectedClipIds || []).includes(tm.id) && (st.selectedClipIds || []).length > 0
+                  ? [...new Set(st.selectedClipIds)]
+                  : [tm.id]
+                const origById = {}
+                // Build a quick index from placements
+                const idxMap = new Map()
+                placements.forEach(({ tm }) => { idxMap.set(tm.id, tm) })
+                ids.forEach((id) => {
+                  const itm = idxMap.get(id)
+                  const p = itm?.position || { x: 0, y: 0 }
+                  origById[id] = { x: p.x || 0, y: p.y || 0 }
+                })
+                setDragClip({ ids, startX: e.clientX, startY: e.clientY, origById })
               }}
               onPointerMove={(e)=>{
-                if (!dragClip || dragClip.id !== tm.id) return
+                if (!dragClip) return
                 if ((e.buttons & 1) === 0) { setDragClip(null); return }
                 const dx = e.clientX - dragClip.startX
                 const dy = e.clientY - dragClip.startY
-                const nextX = dragClip.origX + dx / ratio
-                const nextY = dragClip.origY - dy / ratio
-                // UI computes floats; store will round to integers
-                useEditorStore.getState().updateClipTransform({ timelineId: tm.id, position: { x: nextX, y: nextY } })
+                const st2 = useEditorStore.getState()
+                for (const id of dragClip.ids || []) {
+                  const base = dragClip.origById?.[id] || { x: 0, y: 0 }
+                  const nextX = base.x + dx / ratio
+                  const nextY = base.y - dy / ratio
+                  // UI computes floats; store will round to integers
+                  st2.updateClipTransform({ timelineId: id, position: { x: nextX, y: nextY } })
+                }
               }}
               onPointerUp={(e)=>{
-                if (dragClip?.id === tm.id) setDragClip(null)
+                if (dragClip) setDragClip(null)
                 try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
               }}
               onDragStart={(e)=>{ e.preventDefault() }}
-              onPointerCancel={(e)=>{ if (dragClip?.id === tm.id) setDragClip(null); try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch {} }}
+              onPointerCancel={(e)=>{ if (dragClip) setDragClip(null); try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch {} }}
               title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds||0).toFixed?.(2)}s)`}
               style={{ position:'absolute', left, top, width:w, height:h, background:'#0b0d12', border:`1px solid ${isSel?'#6aa0ff':'#3a4060'}`, boxShadow:isSel?'0 0 0 1px #6aa0ff66':'none', borderRadius:4, overflow:'hidden', display: isActive ? 'flex' : 'none', alignItems:'center', justifyContent:'center', color:'#c7cfdb', fontSize:11, pointerEvents:'auto', zIndex: 5, userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none', WebkitUserDrag:'none', touchAction:'none' }}
             >
