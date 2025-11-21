@@ -35,14 +35,14 @@ export default function DisplayWindow() {
       off3 = rt.EventsOn('display:close', (payload) => {
         const sid = payload && payload.screenId
         if (!sid || sid === screenId) {
-          try { window.close() } catch {}
+          try { window.close() } catch { }
         }
       })
     } else {
       // Fallback: custom DOM events
       const h1 = (e) => { const d = e.detail || {}; setSnapshot(d); setPlayTime(Number(d.time || 0)) }
       const h2 = (e) => { setPlayTime(Number((e.detail && e.detail.time) || 0)) }
-      const h3 = (e) => { const sid = e.detail && e.detail.screenId; if (!sid || sid === screenId) { try { window.close() } catch {} } }
+      const h3 = (e) => { const sid = e.detail && e.detail.screenId; if (!sid || sid === screenId) { try { window.close() } catch { } } }
       window.addEventListener('display:snapshot', h1)
       window.addEventListener('display:time', h2)
       window.addEventListener('display:close', h3)
@@ -50,7 +50,7 @@ export default function DisplayWindow() {
       off2 = () => window.removeEventListener('display:time', h2)
       off3 = () => window.removeEventListener('display:close', h3)
     }
-    return () => { try { off1 && off1() } catch {} try { off2 && off2() } catch {} try { off3 && off3() } catch {} }
+    return () => { try { off1 && off1() } catch { } try { off2 && off2() } catch { } try { off3 && off3() } catch { } }
   }, [])
 
   const active = useMemo(() => {
@@ -82,7 +82,7 @@ export default function DisplayWindow() {
       if (!m) return
       const start = (m.start ?? m.start_at_seconds) || 0
       const offset = Math.max(0, playTime - start)
-      try { if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset } catch {}
+      try { if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset } catch { }
     })
   }, [playTime, snapshot])
 
@@ -92,7 +92,7 @@ export default function DisplayWindow() {
       for (const { clip, tm } of active) {
         if (!clip?.uri || imageMeta[tm.clip_id]) continue
         const ext = String(clip.uri).split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-        if (['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)) continue
+        if (['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)) continue
         const src = await resolveImageSrc(clip.uri)
         if (cancelled || !src) continue
         await new Promise((resolve) => {
@@ -108,25 +108,25 @@ export default function DisplayWindow() {
   }, [active, imageMeta])
 
   return (
-    <div style={{ position:'relative', width: width, height: height, background:'#000', overflow:'hidden' }}>
+    <div style={{ position: 'relative', width: width, height: height, background: '#000', overflow: 'hidden' }}>
       {active.map(({ tm, clip }) => {
         const meta = imageMeta[tm.clip_id]
         const baseW = meta?.w || 100
         const baseH = meta?.h || 100
         const w = Math.max(2, (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW)
         const h = Math.max(2, (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH)
-        const cx = width/2
-        const cy = height/2
-        const left = cx + (tm.position?.x || 0) - w/2
-        const top = cy - (tm.position?.y || 0) - h/2
+        const cx = width / 2
+        const cy = height / 2
+        const left = cx + (tm.position?.x || 0) - w / 2
+        const top = cy - (tm.position?.y || 0) - h / 2
         const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-        const isVideo = ['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)
+        const isVideo = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
         return (
-          <div key={tm.clip_id} style={{ position:'absolute', left, top, width:w, height:h, overflow:'hidden' }}>
+          <div key={tm.clip_id} style={{ position: 'absolute', left, top, width: w, height: h, overflow: 'hidden' }}>
             {isVideo ? (
-              <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width:'100%', height:'100%' }} />
+              <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width: '100%', height: '100%' }} />
             ) : meta?.src ? (
-              <img src={meta.src} alt={clip?.name || tm.clip_id} style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }} />
+              <img src={meta.src} alt={clip?.name || tm.clip_id} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
             ) : null}
           </div>
         )
@@ -154,13 +154,13 @@ function VideoFrame({ clip, refEl, style }) {
             const src = await resolveMediaSrc(uri)
             refEl.current.src = src
             return
-          } catch {}
+          } catch { }
         }
-      } catch {}
+      } catch { }
     }
     setSrc()
   }, [clip?.uri, refEl])
-  return <video ref={refEl} muted playsInline preload="auto" style={{ width:'100%', height:'100%', objectFit:'contain', display:'block', ...style }} />
+  return <video ref={refEl} muted playsInline preload="auto" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', ...style }} />
 }
 
 function DebugOverlay({ active, imageMeta, container, time }) {
@@ -174,12 +174,12 @@ function DebugOverlay({ active, imageMeta, container, time }) {
     const baseH = meta?.h || 100
     const w = Math.max(2, (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW)
     const h = Math.max(2, (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH)
-    const left = cx + (tm.position?.x || 0) - w/2
-    const top = cy - (tm.position?.y || 0) - h/2
-    lines.push(`${idx+1}. ${(clip?.name || tm.clip_id)} id=${tm.clip_id} x=${left.toFixed(1)} y=${top.toFixed(1)} w=${w.toFixed(1)} h=${h.toFixed(1)}`)
+    const left = cx + (tm.position?.x || 0) - w / 2
+    const top = cy - (tm.position?.y || 0) - h / 2
+    lines.push(`${idx + 1}. ${(clip?.name || tm.clip_id)} id=${tm.clip_id} x=${left.toFixed(1)} y=${top.toFixed(1)} w=${w.toFixed(1)} h=${h.toFixed(1)}`)
   })
   return (
-    <div style={{ position:'absolute', top:4, left:4, padding:'6px 8px', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4, fontSize:11, lineHeight:1.3, color:'#c7cfdb', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', maxWidth:'40%', pointerEvents:'none', whiteSpace:'pre' }}>
+    <div style={{ position: 'absolute', top: 4, left: 4, padding: '6px 8px', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4, fontSize: 11, lineHeight: 1.3, color: '#c7cfdb', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', maxWidth: '40%', pointerEvents: 'none', whiteSpace: 'pre' }}>
       {`Time: ${time.toFixed(3)}s\nMedia (${lines.length}):\n${lines.join('\n')}`}
     </div>
   )
