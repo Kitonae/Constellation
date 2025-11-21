@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useEditorStore } from './store.js'
 import Viewport3D from './components/Viewport.jsx'
+import DisplaysPanel from './components/DisplaysPanel.jsx'
 import Viewport2D from './components/Viewport2D.jsx'
 import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
@@ -11,7 +12,7 @@ import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
 import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
-import { emit } from '@tauri-apps/api/event'
+// Tauri emit is not available under Wails; keep guarded uses only.
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 
 export default function App() {
@@ -20,10 +21,13 @@ export default function App() {
   const [fileName, setFileName] = useState('')
   const [addr, setAddr] = useState('http://127.0.0.1:50051')
   const [status, setStatus] = useState('')
-  // Resizable divider state between Inspector (top) and Media Bin (bottom)
+  // Resizable left pane (Media Bin)
+  const [mediaWidth, setMediaWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
+  const leftPaneDragRef = useRef(null) // { startX, startW }
+  // Resizable right pane (Inspector)
+  const [inspectorWidth, setInspectorWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
+  const rightPaneDragRef = useRef(null) // { startX, startW }
   const rightPaneRef = useRef(null)
-  const [mediaHeight, setMediaHeight] = useState(200) // px
-  const dragRef = useRef(null) // { startY, startMedia, containerH }
   // Resizable footer (timeline) height
   const [timelineHeight, setTimelineHeight] = useState(200)
   const footerDragRef = useRef(null) // { startY, startH }
@@ -142,8 +146,9 @@ export default function App() {
           toggleOutputOverlay={toggleOutputOverlay}
           onApply={async ()=>{
             try {
+              const { applyProject: wApply, wailsAvailable } = await import('./utils/wailsApi.js')
               const wrapper = buildProjectWrapper(project, scene)
-              const message = await window.__TAURI__.invoke('apply_project', { addr, projectJson: JSON.stringify(wrapper) })
+              const message = await wApply(addr, JSON.stringify(wrapper))
               setStatus('Applied: ' + message)
               addLog({ level:'info', message:`Applied project to ${addr}: ${message}` })
             } catch (e) {
@@ -151,53 +156,79 @@ export default function App() {
               addLog({ level:'error', message:`Apply failed: ${e}` })
             }
           }}
-          onRemotePlay={async ()=>{ try { const msg = await window.__TAURI__.invoke('play', { addr }); setStatus('Play: '+msg) } catch(e){ setStatus('Play failed: '+e) } }}
-          onRemotePause={async ()=>{ try { const msg = await window.__TAURI__.invoke('pause', { addr }); setStatus('Pause: '+msg) } catch(e){ setStatus('Pause failed: '+e) } }}
-          onRemoteStop={async ()=>{ try { const msg = await window.__TAURI__.invoke('stop', { addr }); setStatus('Stop: '+msg) } catch(e){ setStatus('Stop failed: '+e) } }}
+          onRemotePlay={async ()=>{ try { const { play } = await import('./utils/wailsApi.js'); const msg = await play(addr); setStatus('Play: '+msg) } catch(e){ setStatus('Play failed: '+e) } }}
+          onRemotePause={async ()=>{ try { const { pause } = await import('./utils/wailsApi.js'); const msg = await pause(addr); setStatus('Pause: '+msg) } catch(e){ setStatus('Pause failed: '+e) } }}
+          onRemoteStop={async ()=>{ try { const { stop } = await import('./utils/wailsApi.js'); const msg = await stop(addr); setStatus('Stop: '+msg) } catch(e){ setStatus('Stop failed: '+e) } }}
+          onReopenDisplays={async ()=>{
+            const roots = scene?.roots || []
+            for (const n of roots) {
+              if (n.kind?.type === 'screen') {
+                const enabled = (n.kind?.enabled ?? true)
+                const px = n.kind?.pixels?.[0] || 0
+                const py = n.kind?.pixels?.[1] || 0
+                if (enabled && px > 0 && py > 0) {
+                  try { await openDisplayWindow(n.id, px, py) } catch {}
+                }
+              }
+            }
+            try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch {}
+          }}
         />
         <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />
       </header>
       <main>
-        <div className="panel">{viewMode === '2d' ? <Viewport2D /> : <Viewport3D />}</div>
-        <div
-          ref={rightPaneRef}
-          className="panel"
-          style={{ display:'flex', flexDirection:'column', minHeight:0, position:'relative' }}
-        >
-          <div style={{ flex:'1 1 auto', minHeight: 100, overflow:'auto' }}>
-            <Inspector />
+        <div className="panel" style={{ width: mediaWidth, flex: '0 0 auto', display: 'flex', flexDirection: 'column', position: 'relative', borderRight: '1px solid #232636' }}>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <MediaBin />
           </div>
-          {/* Drag handle */}
           <div
             onPointerDown={(e) => {
               try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-              const container = rightPaneRef.current
-              const H = container ? container.clientHeight : 0
-              dragRef.current = { startY: e.clientY, startMedia: mediaHeight, containerH: H }
+              leftPaneDragRef.current = { startX: e.clientX, startW: mediaWidth }
               e.preventDefault()
             }}
             onPointerMove={(e) => {
-              if (!dragRef.current) return
-              const dy = e.clientY - dragRef.current.startY
-              const minMedia = 100
-              const minInspector = 120
-              const maxMedia = Math.max(0, (dragRef.current.containerH || 0) - minInspector)
-              const next = Math.max(minMedia, Math.min(maxMedia, dragRef.current.startMedia - dy))
-              setMediaHeight(next)
+              if (!leftPaneDragRef.current) return
+              const dx = e.clientX - leftPaneDragRef.current.startX
+              const minW = 150
+              const maxW = window.innerWidth * 0.45
+              const next = Math.max(minW, Math.min(maxW, leftPaneDragRef.current.startW + dx))
+              setMediaWidth(next)
               e.preventDefault()
             }}
-            onPointerUp={(e) => { dragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
-            style={{
-              height: 6,
-              cursor: 'row-resize',
-              background: 'linear-gradient(180deg, #1a1e2c, #121520)',
-              borderTop: '1px solid #232636',
-              flex: '0 0 auto',
-            }}
-            title="Drag to resize"
+            onPointerUp={(e) => { leftPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
+            style={{ position: 'absolute', top: 0, bottom: 0, right: -3, width: 6, cursor: 'col-resize', zIndex: 10 }}
+            title="Drag to resize media bin"
           />
-          <div style={{ flex:'0 0 auto', height: mediaHeight, minHeight: 60, overflow:'auto' }}>
-            <MediaBin />
+        </div>
+        <div className="panel" style={{ flex: 1, minWidth: 0 }}>{viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)}</div>
+        <div
+          ref={rightPaneRef}
+          className="panel"
+          style={{ width: inspectorWidth, flex: '0 0 auto', display:'flex', flexDirection:'column', minHeight:0, position:'relative', borderLeft: '1px solid #232636' }}
+        >
+          <div
+            onPointerDown={(e) => {
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+              rightPaneDragRef.current = { startX: e.clientX, startW: inspectorWidth }
+              e.preventDefault()
+            }}
+            onPointerMove={(e) => {
+              if (!rightPaneDragRef.current) return
+              const dx = e.clientX - rightPaneDragRef.current.startX
+              const minW = 200
+              const maxW = window.innerWidth * 0.45
+              // Dragging left increases width
+              const next = Math.max(minW, Math.min(maxW, rightPaneDragRef.current.startW - dx))
+              setInspectorWidth(next)
+              e.preventDefault()
+            }}
+            onPointerUp={(e) => { rightPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
+            style={{ position: 'absolute', top: 0, bottom: 0, left: -3, width: 6, cursor: 'col-resize', zIndex: 10 }}
+            title="Drag to resize inspector"
+          />
+          <div style={{ flex:'1 1 auto', minHeight: 100, overflow:'auto' }}>
+            <Inspector />
           </div>
         </div>
       </main>
@@ -249,22 +280,27 @@ async function onAddImage() {
     if (!filePath) return
     // Infer name from path
     const name = String(filePath).split(/[\\\/]/).pop()
-    // Cache the media locally (Tauri) and reference the cached URI
+    // Fast path under Wails/browser: skip Tauri caching entirely
+    if (!window.__TAURI__) {
+      useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
+      useEditorStore.getState().addLog({ level:'info', message:`Added image: ${name}` })
+      return
+    }
+    // Tauri path: perform caching
     useEditorStore.getState().beginImport()
     let uri = null
-    try { uri = await cacheMediaFromPath(String(filePath)) } catch {}
-    // Dispatch into store with cached URI when available
-    if (uri) {
-      useEditorStore.getState().addImageToShow({ uri, name, duration: 10 })
-    } else {
-      useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
-    }
+    try { uri = await cacheMediaFromPath(String(filePath)) } catch (err) { console.warn('cache failed', err) }
+    if (uri) useEditorStore.getState().addImageToShow({ uri, name, duration: 10 })
+    else useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
     useEditorStore.getState().addLog({ level:'info', message:`Added image: ${name}` })
   } catch (e) {
     console.error(e)
     useEditorStore.getState().addLog({ level:'error', message:`Failed to add image: ${e}` })
     alert('Failed to add image: ' + e)
   } finally {
-    useEditorStore.getState().endImport()
+    if (window.__TAURI__) {
+      // Only decrement if we incremented
+      try { useEditorStore.getState().endImport() } catch {}
+    }
   }
 }

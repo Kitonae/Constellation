@@ -31,6 +31,7 @@ export default function MenuBar({
   onRemotePlay,
   onRemotePause,
   onRemoteStop,
+  onReopenDisplays,
   showOutputOverlay,
   toggleOutputOverlay,
 }) {
@@ -71,6 +72,7 @@ export default function MenuBar({
         <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems:'center' }}>
           <button onClick={() => { setOpen(null); setViewMode('2d') }} style={{ opacity: viewMode === '2d' ? 1 : 0.7 }}>2D</button>
           <button onClick={() => { setOpen(null); setViewMode('3d') }} style={{ opacity: viewMode === '3d' ? 1 : 0.7 }}>3D</button>
+          <button onClick={() => { setOpen(null); setViewMode('output') }} style={{ opacity: viewMode === 'output' ? 1 : 0.7 }}>Output</button>
         </div>
         <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems:'center' }}>
           <button type="button" onPointerDown={() => { setOpen(null); toggleOutputOverlay?.() }} onClick={(e)=>e.preventDefault()} style={{ opacity: showOutputOverlay ? 1 : 0.6 }}>Output Overlay</button>
@@ -94,6 +96,7 @@ export default function MenuBar({
           <button type="button" onPointerDown={() => { setOpen(null); onRemotePlay() }} onClick={(e)=>e.preventDefault()}>Play</button>
           <button type="button" onPointerDown={() => { setOpen(null); onRemotePause() }} onClick={(e)=>e.preventDefault()}>Pause</button>
           <button type="button" onPointerDown={() => { setOpen(null); onRemoteStop() }} onClick={(e)=>e.preventDefault()}>Stop</button>
+          <button type="button" onPointerDown={() => { setOpen(null); onReopenDisplays && onReopenDisplays() }} onClick={(e)=>e.preventDefault()}>Re-open Displays</button>
         </div>
       </Menu>
     </div>

@@ -16,6 +16,8 @@ export default function GlobalTicker() {
       // Throttle display updates: only when playing and at ~20fps
       try {
         const s = useEditorStore.getState()
+        // Import watchdog
+        try { s.resetImportingIfStuck && s.resetImportingIfStuck() } catch {}
         if (s.playing && hasOpenDisplays()) {
           if (!loop._lastEmitAt || now - loop._lastEmitAt > 50) {
             try { broadcastToDisplays('display:time', { time: s.time }) } catch {}

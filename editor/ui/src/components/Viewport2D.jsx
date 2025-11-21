@@ -96,7 +96,8 @@ export default function Viewport2D() {
 
   // Subscribe to time to update active clip visibility/positions without full recalculation via React state each frame
   useEffect(() => {
-    const unsub = useEditorStore.subscribe((s) => s.time, (t) => {
+    const unsub = useEditorStore.subscribe((state) => {
+      const t = state.time || 0
       const now = performance.now()
       if (now - lastTimeUiRef.current > 125) { lastTimeUiRef.current = now; setTimeDisplay(t) }
       // Update class visibility
