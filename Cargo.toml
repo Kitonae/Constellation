@@ -1,10 +1,8 @@
 [workspace]
 members = [
   "display",
-  "client",
-  "editor/tauri"
+  "client"
 ]
 
 # Use the modern feature resolver for edition 2021 crates
 resolver = "2"
-

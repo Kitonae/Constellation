@@ -8,7 +8,7 @@ Structure
 - proto/: gRPC + Protobuf schemas for Editor ↔ Display.
 - display/: Rust display server (gRPC), codegen from proto.
 - client/: Rust CLI to call Display (load project, play/seek/etc.).
-- editor/: notes and structure for a Tauri + React editor.
+- editor/: Wails + React editor.
 - examples/: sample project and scene JSON.
 - docs/: MVP backlog and design notes.
 

@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
-import { openImageDialog } from '../utils/tauriCompat.js'
+import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 
 export default function Viewport2D() {
@@ -25,7 +25,7 @@ export default function Viewport2D() {
   const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
   const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
   const [dragClip, setDragClip] = useState(null) // { id, startX, startY, origX, origY }
-  const [menu, setMenu] = useState({ open:false, x:0, y:0 })
+  const [menu, setMenu] = useState({ open: false, x: 0, y: 0 })
   const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
 
   // Global failsafe: if the pointer is released outside the element, end any active clip drag
@@ -65,11 +65,11 @@ export default function Viewport2D() {
   const nodes = useMemo(() => (scene?.roots ?? []), [scene])
   const nodeIndex = useMemo(() => {
     const map = new Map()
-    function walk(n){ if(!n) return; map.set(n.id, n); (n.children||[]).forEach(walk) }
+    function walk(n) { if (!n) return; map.set(n.id, n); (n.children || []).forEach(walk) }
     nodes.forEach(walk)
     return map
   }, [nodes])
-  const mediaById = useMemo(() => Object.fromEntries((project?.media||[]).map(m => [m.id, m])), [project])
+  const mediaById = useMemo(() => Object.fromEntries((project?.media || []).map(m => [m.id, m])), [project])
   const allTimelineItems = useMemo(() => {
     const tracks = project?.timeline?.tracks || []
     return tracks.filter(t => t.media).map(t => t.media)
@@ -121,10 +121,10 @@ export default function Viewport2D() {
         const offset = Math.max(0, t - start)
         try {
           if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset
-        } catch {}
+        } catch { }
       })
     })
-    return () => { try { unsub() } catch {} }
+    return () => { try { unsub() } catch { } }
   }, [allTimelineItems])
 
   // Preload image sources and natural sizes for clips used in placements
@@ -135,7 +135,7 @@ export default function Viewport2D() {
         if (!clip?.uri || imageMeta[tm.clip_id]) continue
         // Skip videos for meta probe; use defaults
         const ext = String(clip.uri).split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-        if (['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)) continue
+        if (['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)) continue
         const src = await resolveImageSrc(clip.uri)
         if (cancelled) return
         if (!src) continue
@@ -159,7 +159,7 @@ export default function Viewport2D() {
                 probe.src = inlined
                 return
               }
-            } catch {}
+            } catch { }
             resolve()
           }
           img.src = src
@@ -183,7 +183,7 @@ export default function Viewport2D() {
     const sc = scrollRef.current
     if (!sc) return
     setPan({ startX: e.clientX, startY: e.clientY, startLeft: sc.scrollLeft, startTop: sc.scrollTop })
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
     e.preventDefault()
     e.stopPropagation()
   }, [])
@@ -202,7 +202,7 @@ export default function Viewport2D() {
   const onPointerUp = useCallback((e) => {
     if (!pan) return
     setPan(null)
-    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
     e.preventDefault()
   }, [pan])
 
@@ -274,7 +274,7 @@ export default function Viewport2D() {
       const worldY = (center.y - contentTop) / scale
 
       const step = 1.1
-      const nextZoom = clamp(zoom * (plus ? step : 1/step), 0.01, 20)
+      const nextZoom = clamp(zoom * (plus ? step : 1 / step), 0.01, 20)
       if (nextZoom === zoom) return
       const nextScale = BASE_SCALE * (nextZoom / Z_NEUTRAL)
       setZoom(nextZoom)
@@ -291,8 +291,8 @@ export default function Viewport2D() {
   return (
     <div
       ref={scrollRef}
-      onContextMenu={(e)=>{ e.preventDefault(); setMenu({ open:true, x:e.clientX, y:e.clientY }) }}
-      onDragOver={(e)=>{
+      onContextMenu={(e) => { e.preventDefault(); setMenu({ open: true, x: e.clientX, y: e.clientY }) }}
+      onDragOver={(e) => {
         if (!e.dataTransfer?.types?.includes('application/x-constellation-clip-id') && !e.dataTransfer?.types?.includes('text/plain')) return
         e.preventDefault()
         const sc = scrollRef.current
@@ -321,8 +321,8 @@ export default function Viewport2D() {
         }
         setDnd({ over: !!target, screenId: target?.id || null, left: contentLeft, top: contentTop })
       }}
-      onDragLeave={()=> setDnd({ over:false, screenId:null, left:0, top:0 })}
-      onDrop={(e)=>{
+      onDragLeave={() => setDnd({ over: false, screenId: null, left: 0, top: 0 })}
+      onDrop={(e) => {
         const clipId = e.dataTransfer.getData('application/x-constellation-clip-id') || e.dataTransfer.getData('text/plain')
         if (!clipId) return
         e.preventDefault()
@@ -337,18 +337,18 @@ export default function Viewport2D() {
         const pos = { x: (contentLeft - center.x) / ratio, y: (center.y - contentTop) / ratio }
         const { addClipToTimeline, time } = useEditorStore.getState()
         addClipToTimeline({ clipId, startAt: time, position: pos })
-        setDnd({ over:false, screenId:null, left:0, top:0 })
+        setDnd({ over: false, screenId: null, left: 0, top: 0 })
       }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      style={{ position:'relative', width: '100%', height: '100%', overflow: 'auto', background:'#0b0d12', cursor: pan ? 'grabbing' : 'default', overscrollBehavior: 'contain' }}
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto', background: '#0b0d12', cursor: pan ? 'grabbing' : 'default', overscrollBehavior: 'contain' }}
     >
       <div
         ref={stageRef}
-        style={{ position:'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
+        style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
         onClick={() => { if (!marquee) { setSelected(null); setSelectedClips([]) } }}
-        onPointerDown={(e)=>{
+        onPointerDown={(e) => {
           // Start marquee selection only on empty space (not when Ctrl+Alt panning or clicking a clip)
           if (e.button !== 0) return
           if (e.ctrlKey && e.altKey) return
@@ -359,11 +359,11 @@ export default function Viewport2D() {
           const x = sc.scrollLeft + (e.clientX - rect.left)
           const y = sc.scrollTop + (e.clientY - rect.top)
           setMarquee({ x1: x, y1: y, x2: x, y2: y })
-          try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+          try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
           e.preventDefault()
           e.stopPropagation()
         }}
-        onPointerMove={(e)=>{
+        onPointerMove={(e) => {
           if (!marquee) return
           const sc = scrollRef.current
           if (!sc) return
@@ -373,7 +373,7 @@ export default function Viewport2D() {
           setMarquee((m) => (m ? { ...m, x2: x, y2: y } : m))
           e.preventDefault()
         }}
-        onPointerUp={(e)=>{
+        onPointerUp={(e) => {
           if (!marquee) return
           // Normalize marquee rect
           const mx = Math.min(marquee.x1, marquee.x2)
@@ -405,7 +405,7 @@ export default function Viewport2D() {
           }
           setSelectedClips(picked)
           setMarquee(null)
-          try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+          try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
           e.preventDefault()
           e.stopPropagation()
         }}
@@ -413,7 +413,7 @@ export default function Viewport2D() {
         {marquee && (
           <div
             style={{
-              position:'absolute',
+              position: 'absolute',
               left: Math.min(marquee.x1, marquee.x2),
               top: Math.min(marquee.y1, marquee.y2),
               width: Math.abs(marquee.x2 - marquee.x1),
@@ -426,8 +426,8 @@ export default function Viewport2D() {
           />
         )}
         {/* axes */}
-        <div style={{ position:'absolute', left: center.x, top: 0, bottom: 0, width: 1, background: '#3a4e85' }} />
-        <div style={{ position:'absolute', top: center.y, left: 0, right: 0, height: 1, background: '#3a4e85' }} />
+        <div style={{ position: 'absolute', left: center.x, top: 0, bottom: 0, width: 1, background: '#3a4e85' }} />
+        <div style={{ position: 'absolute', top: center.y, left: 0, right: 0, height: 1, background: '#3a4e85' }} />
 
         {/* draw screens */}
         {nodes.map((n) => (
@@ -447,11 +447,11 @@ export default function Viewport2D() {
           const left = cx - w / 2
           const top = cy - h / 2
           return (
-            <div key={`out-${screen.id}`} style={{ position:'absolute', left, top, width:w, height:h, border:'1px dashed #6aa0ff', background:'rgba(90,120,255,0.07)', zIndex:50, pointerEvents:'none' }} title={`Output ${px}x${py}`} />
+            <div key={`out-${screen.id}`} style={{ position: 'absolute', left, top, width: w, height: h, border: '1px dashed #6aa0ff', background: 'rgba(90,120,255,0.07)', zIndex: 50, pointerEvents: 'none' }} title={`Output ${px}x${py}`} />
           )
         })}
 
-  {placements.map(({ tm, screen, clip }, idx) => {
+        {placements.map(({ tm, screen, clip }, idx) => {
           const tNow = useEditorStore.getState().time
           const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
           const cx = center.x + (spos.x ?? 0) * scale
@@ -473,14 +473,14 @@ export default function Viewport2D() {
           const isActive = tNow >= start && tNow <= start + dur
           return (
             <div key={idx} ref={getClipRef(tm.id)}
-              onClick={(e)=>{ e.stopPropagation(); setSelectedClips([tm.id]) }}
-              onPointerDown={(e)=>{
+              onClick={(e) => { e.stopPropagation(); setSelectedClips([tm.id]) }}
+              onPointerDown={(e) => {
                 if (e.button !== 0) return
                 e.stopPropagation()
-                try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
                 setDragClip({ id: tm.id, startX: e.clientX, startY: e.clientY, origX: mpos.x || 0, origY: mpos.y || 0 })
               }}
-              onPointerMove={(e)=>{
+              onPointerMove={(e) => {
                 if (!dragClip || dragClip.id !== tm.id) return
                 if ((e.buttons & 1) === 0) { setDragClip(null); return }
                 const dx = e.clientX - dragClip.startX
@@ -490,28 +490,28 @@ export default function Viewport2D() {
                 // UI computes floats; store will round to integers
                 useEditorStore.getState().updateClipTransform({ timelineId: tm.id, position: { x: nextX, y: nextY } })
               }}
-              onPointerUp={(e)=>{
+              onPointerUp={(e) => {
                 if (dragClip?.id === tm.id) setDragClip(null)
-                try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+                try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
               }}
-              onDragStart={(e)=>{ e.preventDefault() }}
-              onPointerCancel={(e)=>{ if (dragClip?.id === tm.id) setDragClip(null); try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch {} }}
-              title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds||0).toFixed?.(2)}s)`}
-              style={{ position:'absolute', left, top, width:w, height:h, background:'#0b0d12', border:`1px solid ${isSel?'#6aa0ff':'#3a4060'}`, boxShadow:isSel?'0 0 0 1px #6aa0ff66':'none', borderRadius:4, overflow:'hidden', display: isActive ? 'flex' : 'none', alignItems:'center', justifyContent:'center', color:'#c7cfdb', fontSize:11, pointerEvents:'auto', zIndex: 5, userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none', WebkitUserDrag:'none', touchAction:'none' }}
+              onDragStart={(e) => { e.preventDefault() }}
+              onPointerCancel={(e) => { if (dragClip?.id === tm.id) setDragClip(null); try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
+              title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds || 0).toFixed?.(2)}s)`}
+              style={{ position: 'absolute', left, top, width: w, height: h, background: '#0b0d12', border: `1px solid ${isSel ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSel ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, overflow: 'hidden', display: isActive ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', color: '#c7cfdb', fontSize: 11, pointerEvents: 'auto', zIndex: 5, userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none', WebkitUserDrag: 'none', touchAction: 'none' }}
             >
               {(() => {
                 const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-                const isVideo = ['mp4','mov','webm','mkv','avi','m4v','mpg','mpeg'].includes(ext)
+                const isVideo = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
                 if (isVideo) {
                   return <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width: '100%', height: '100%' }} />
                 }
                 if (imageMeta[tm.clip_id]?.src) {
-                  return <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents:'none', userSelect:'none', WebkitUserDrag:'none' }} />
+                  return <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none', WebkitUserDrag: 'none' }} />
                 }
-                return <span style={{ padding:'0 4px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', userSelect:'none' }}>{clip?.name || tm.clip_id}</span>
+                return <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', userSelect: 'none' }}>{clip?.name || tm.clip_id}</span>
               })()}
               {/* White 1px bounding box overlay */}
-              <div style={{ position:'absolute', inset:0, border:'1px solid #ffffff', pointerEvents:'none' }} />
+              <div style={{ position: 'absolute', inset: 0, border: '1px solid #ffffff', pointerEvents: 'none' }} />
             </div>
           )
         })}
@@ -519,8 +519,8 @@ export default function Viewport2D() {
         <SelectionOverlay nodes={nodes} nodeIndex={nodeIndex} mediaById={mediaById} selectedId={selectedId} selectedClipId={selectedClipId} />
 
         {/* Zoom overlay (top-right of stage) */}
-        <div style={{ position:'absolute', top: 8, right: 8, display:'grid', gap:6, justifyItems:'end', zIndex: 10, pointerEvents: 'none' }}>
-          <div style={{ padding:'2px 6px', fontSize:12, color:'#b9c3d6', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
+        <div style={{ position: 'absolute', top: 8, right: 8, display: 'grid', gap: 6, justifyItems: 'end', zIndex: 10, pointerEvents: 'none' }}>
+          <div style={{ padding: '2px 6px', fontSize: 12, color: '#b9c3d6', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
             {Math.round(zoom * 100)}%
           </div>
           <div style={{ pointerEvents: 'auto' }}>
@@ -529,19 +529,19 @@ export default function Viewport2D() {
         </div>
 
         {menu.open && (
-          <div style={{ position:'fixed', left: menu.x, top: menu.y, background:'#0f1115', border:'1px solid #232636', borderRadius:4, zIndex: 5000, minWidth: 160, boxShadow:'0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e)=>{ e.stopPropagation() }} onMouseDown={(e)=>e.preventDefault()}>
+          <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 5000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => { e.stopPropagation() }} onMouseDown={(e) => e.preventDefault()}>
             <StageMenu
-              onAddScreen={()=>{
-                setMenu({ open:false, x:0, y:0 })
+              onAddScreen={() => {
+                setMenu({ open: false, x: 0, y: 0 })
                 useEditorStore.getState().addScreenNode({ pixels: [1920, 1080] })
               }}
-              onRemoveClip={()=>{
-                setMenu({ open:false, x:0, y:0 })
+              onRemoveClip={() => {
+                setMenu({ open: false, x: 0, y: 0 })
                 const st = useEditorStore.getState()
                 if (st.selectedClipId) st.removeClip(st.selectedClipId)
               }}
-              onRemoveScreen={()=>{
-                setMenu({ open:false, x:0, y:0 })
+              onRemoveScreen={() => {
+                setMenu({ open: false, x: 0, y: 0 })
                 const st = useEditorStore.getState()
                 const sel = st.selectedId
                 if (!sel) return
@@ -577,21 +577,15 @@ function VideoFrame({ clip, refEl, style }) {
           return
         }
         if (uri.startsWith('file://')) {
-          if (typeof window === 'undefined' || !window.__TAURI__) return
-          const url = new URL(uri)
-          let p = decodeURI(url.pathname)
-          if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
-          const { convertFileSrc } = await import('@tauri-apps/api/tauri')
-          const src = convertFileSrc(p)
-          refEl.current.src = src
+          // (Tauri support removed)
           return
         }
-      } catch {}
+      } catch { }
     }
     setSrc()
   }, [clip?.uri, refEl])
   return (
-    <video ref={refEl} muted playsInline preload="auto" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents:'none', ...style }} />
+    <video ref={refEl} muted playsInline preload="auto" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
   )
 }
 
@@ -616,9 +610,9 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
     return (
       <>
         <div
-          onClick={(e)=>{ e.stopPropagation(); onSelect(node.id) }}
+          onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
           title={node.name || node.id}
-          style={{ position:'absolute', left: x - w/2, top: y - h/2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `2px ${highlight ? 'dashed' : 'solid'} ${isSelected || highlight ? '#6aa0ff' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
+          style={{ position: 'absolute', left: x - w / 2, top: y - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `2px ${highlight ? 'dashed' : 'solid'} ${isSelected || highlight ? '#6aa0ff' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
         />
         {children}
       </>
@@ -628,7 +622,7 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
   // default: draw a small dot for other nodes
   return (
     <>
-      <div onClick={(e)=>{ e.stopPropagation(); onSelect(node.id) }} style={{ position:'absolute', left: x-2, top: y-2, width:4, height:4, background:'#5a78ff', borderRadius: 2 }} title={node.name || node.id} />
+      <div onClick={(e) => { e.stopPropagation(); onSelect(node.id) }} style={{ position: 'absolute', left: x - 2, top: y - 2, width: 4, height: 4, background: '#5a78ff', borderRadius: 2 }} title={node.name || node.id} />
       {children}
     </>
   )
@@ -657,7 +651,7 @@ function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
   return (
     <div>
       <MenuItem label="Add Screen" onClick={onAddScreen} />
-      {hasSelectedClip && <MenuItem label="Remove Selected Clip" onClick={onRemoveClip} />} 
+      {hasSelectedClip && <MenuItem label="Remove Selected Clip" onClick={onRemoveClip} />}
       {isScreenSelected && <MenuItem label="Remove Screen" onClick={onRemoveScreen} />}
     </div>
   )
@@ -665,7 +659,7 @@ function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
 
 function MenuItem({ label, onClick }) {
   return (
-    <button type="button" onClick={onClick} style={{ display:'block', width:'100%', textAlign:'left', background:'transparent', color:'#c7cfdb', border:'none', padding:'8px 12px', cursor:'pointer' }}>
+    <button type="button" onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'transparent', color: '#c7cfdb', border: 'none', padding: '8px 12px', cursor: 'pointer' }}>
       {label}
     </button>
   )
@@ -697,13 +691,13 @@ function ZoomLevelBar({ zoom }) {
   const NEUTRAL = 0.2
   const levels = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 4, 10]
   return (
-    <div style={{ display:'flex', gap:4, padding:'2px 4px', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
+    <div style={{ display: 'flex', gap: 4, padding: '2px 4px', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
       {levels.map((lv) => {
         const filled = zoom >= lv * 0.98 // small tolerance
         const isNeutral = Math.abs(lv - NEUTRAL) < 1e-6
         return (
           <div key={lv}
-            title={`${Math.round(lv*100)}%`}
+            title={`${Math.round(lv * 100)}%`}
             style={{
               width: 10,
               height: 8,
@@ -746,7 +740,7 @@ function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedCli
   }
   if (!text) return null
   return (
-    <div style={{ position:'absolute', top:8, left:8, zIndex:10, pointerEvents:'none', padding:'2px 6px', fontSize:12, color:'#b9c3d6', background:'#0f1115cc', border:'1px solid #232636', borderRadius:4 }}>
+    <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10, pointerEvents: 'none', padding: '2px 6px', fontSize: 12, color: '#b9c3d6', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
       {text}
     </div>
   )
