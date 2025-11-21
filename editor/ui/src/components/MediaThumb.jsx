@@ -58,6 +58,13 @@ export async function resolveImageSrc(uri, mimeHint = 'image/*') {
       let p = decodeURI(url.pathname)
       // On Windows, pathname like "/C:/..." -> strip leading slash
       if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
+      // Wails environment: use Go backend to fetch & inline as base64
+      if (typeof window !== 'undefined' && window.go?.main?.App?.ReadFileBase64) {
+        try {
+          const dataUrl = await window.go.main.App.ReadFileBase64(p)
+          if (dataUrl) return dataUrl
+        } catch {}
+      }
       if (typeof window !== 'undefined' && window.__TAURI__) {
         // In dev (http dev server), avoid convertFileSrc to prevent asset.localhost 403s.
         const isDevHttp = typeof location !== 'undefined' && /^https?:/.test(location.protocol)
@@ -275,7 +282,9 @@ export default function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
           </>
         )
       ) : (
-        <Spinner size={16} />
+        error ? (
+          <span style={{ fontSize:11, color:'#c7cfdb', opacity:0.7 }}>Unavailable</span>
+        ) : <Spinner size={16} />
       )}
     </div>
   )

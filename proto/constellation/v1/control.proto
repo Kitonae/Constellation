@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 package constellation.v1;
+option go_package = "github.com/kitonae/constellation/editor/internal/proto/proto/constellation/v1;v1";
 
 import "proto/constellation/v1/scene.proto";
 

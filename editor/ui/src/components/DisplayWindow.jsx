@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
+// Listen for Wails runtime events
 import { resolveImageSrc } from './MediaThumb.jsx'
 
 export default function DisplayWindow() {
@@ -17,17 +17,40 @@ export default function DisplayWindow() {
   }
 
   useEffect(() => {
-    let unlistenSnap, unlistenTime
-    listen('display:snapshot', (e) => {
-      // Expect payload: { project, scene, time }
-      setSnapshot(e.payload)
-      setPlayTime(e.payload?.time || 0)
-    }).then((u) => (unlistenSnap = u))
-    listen('display:time', (e) => {
-      // Expect payload: { time }
-      setPlayTime(Number(e.payload?.time || 0))
-    }).then((u) => (unlistenTime = u))
-    return () => { try { unlistenSnap && unlistenSnap() } catch {} try { unlistenTime && unlistenTime() } catch {} }
+    let off1 = null, off2 = null, off3 = null
+    const rt = (typeof window !== 'undefined') ? (window.runtime || null) : null
+    if (rt && typeof rt.EventsOn === 'function') {
+      off1 = rt.EventsOn('display:snapshot', (payload) => {
+        const p = payload || {}
+        if (p.raw && !p.project && !p.scene) {
+          try { const js = JSON.parse(p.raw); setSnapshot({ project: js.project, scene: js.scene, time: p.time }) } catch { setSnapshot({ project: null, scene: null, time: p.time }) }
+        } else {
+          setSnapshot(p)
+        }
+        setPlayTime(Number(p.time || 0))
+      })
+      off2 = rt.EventsOn('display:time', (payload) => {
+        setPlayTime(Number((payload && payload.time) || 0))
+      })
+      off3 = rt.EventsOn('display:close', (payload) => {
+        const sid = payload && payload.screenId
+        if (!sid || sid === screenId) {
+          try { window.close() } catch {}
+        }
+      })
+    } else {
+      // Fallback: custom DOM events
+      const h1 = (e) => { const d = e.detail || {}; setSnapshot(d); setPlayTime(Number(d.time || 0)) }
+      const h2 = (e) => { setPlayTime(Number((e.detail && e.detail.time) || 0)) }
+      const h3 = (e) => { const sid = e.detail && e.detail.screenId; if (!sid || sid === screenId) { try { window.close() } catch {} } }
+      window.addEventListener('display:snapshot', h1)
+      window.addEventListener('display:time', h2)
+      window.addEventListener('display:close', h3)
+      off1 = () => window.removeEventListener('display:snapshot', h1)
+      off2 = () => window.removeEventListener('display:time', h2)
+      off3 = () => window.removeEventListener('display:close', h3)
+    }
+    return () => { try { off1 && off1() } catch {} try { off2 && off2() } catch {} try { off3 && off3() } catch {} }
   }, [])
 
   const active = useMemo(() => {
@@ -47,7 +70,7 @@ export default function DisplayWindow() {
       res.push({ tm: m, clip })
     }
     return res
-  }, [snapshot, screenId])
+  }, [snapshot, screenId, playTime])
 
   // Sync videos to playTime
   useEffect(() => {
@@ -125,14 +148,13 @@ function VideoFrame({ clip, refEl, style }) {
           return
         }
         if (uri.startsWith('file://')) {
-          if (typeof window === 'undefined' || !window.__TAURI__) return
-          const url = new URL(uri)
-          let p = decodeURI(url.pathname)
-          if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
-          const { convertFileSrc } = await import('@tauri-apps/api/tauri')
-          const src = convertFileSrc(p)
-          refEl.current.src = src
-          return
+          // Wails: resolve via backend as data URL
+          try {
+            const { resolveMediaSrc } = await import('../utils/wailsApi.js')
+            const src = await resolveMediaSrc(uri)
+            refEl.current.src = src
+            return
+          } catch {}
         }
       } catch {}
     }

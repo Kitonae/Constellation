@@ -7,6 +7,7 @@ export const useEditorStore = create((set, get) => ({
   time: 0,
   playing: false,
   importingMediaCount: 0,
+  importingMediaCountUpdatedAt: 0,
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
   selectedId: null,
@@ -35,10 +36,26 @@ export const useEditorStore = create((set, get) => ({
     return { project: { ...s.project, media } }
   }),
   clearLogs: () => set({ logs: [] }),
-  beginImport: () => set((s) => ({ importingMediaCount: Math.max(0, (s.importingMediaCount||0) + 1) })),
-  endImport: () => set((s) => ({ importingMediaCount: Math.max(0, (s.importingMediaCount||0) - 1) })),
+  beginImport: () => set((s) => {
+    const next = Math.max(0, (s.importingMediaCount || 0) + 1)
+    console.debug('[import] begin ->', next)
+    return { importingMediaCount: next, importingMediaCountUpdatedAt: Date.now() }
+  }),
+  endImport: () => set((s) => {
+    const next = Math.max(0, (s.importingMediaCount || 0) - 1)
+    console.debug('[import] end ->', next)
+    return { importingMediaCount: next, importingMediaCountUpdatedAt: Date.now() }
+  }),
+  resetImportingIfStuck: () => set((s) => {
+    if (s.importingMediaCount > 0 && Date.now() - (s.importingMediaCountUpdatedAt || 0) > 15000) {
+      queueLog('warn', 'Import appeared stuck >15s; auto-reset')
+      console.warn('[import] auto-reset stuck imports')
+      return { importingMediaCount: 0 }
+    }
+    return {}
+  }),
   toggleConsole: () => set((s) => ({ consoleOpen: !s.consoleOpen })),
-  setViewMode: (mode) => set({ viewMode: mode === '3d' ? '3d' : '2d' }),
+  setViewMode: (mode) => set({ viewMode: (mode === '3d' || mode === 'output') ? mode : '2d' }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === '2d' ? '3d' : '2d' })),
   toggleOutputOverlay: () => set((s) => ({ showOutputOverlay: !s.showOutputOverlay })),
   addScreenNode: ({ name, pixels, position, scale }) => set((s) => {

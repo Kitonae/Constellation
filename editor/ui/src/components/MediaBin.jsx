@@ -1,6 +1,6 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
-import { openMediaDialog } from '../utils/tauriCompat.js'
+import { openMediaDialog, openMediaFile } from '../utils/tauriCompat.js'
 import MediaThumb from './MediaThumb.jsx'
 import { cacheMediaFromPath } from '../utils/cacheMedia.js'
 
@@ -16,22 +16,42 @@ export default function MediaBin() {
   // Remove local button spinner; we'll show spinner in thumbnail instead
 
   const onImportImage = async () => {
+    let fileEntry = null
     try {
       beginImport()
-      const filePath = await openMediaDialog()
-      if (!filePath) return
-      const name = String(filePath).split(/[\\\/]/).pop()
-      // Create media entry immediately so its card appears
-      const provisionalUri = toFileUri(String(filePath))
+      // Prefer richer file descriptor
+      fileEntry = await openMediaFile()
+      if (!fileEntry) return
+      const { file, path } = fileEntry
+      const name = String(path || file?.name || 'media').split(/[\\\/]/).pop()
       const id = `clip-${Math.random().toString(36).slice(2, 8)}`
-      addMediaClip({ id, name, uri: provisionalUri, duration_seconds: 10 })
-      // Cache in background and update URI when ready
-      try {
-        const cached = await cacheMediaFromPath(String(filePath))
-        if (cached && cached !== provisionalUri) {
-          try { useEditorStore.getState().setMediaUri(id, cached) } catch {}
+
+      // If running outside Tauri (Wails/web), we cannot rely on absolute file:// paths.
+      // Convert to data URL immediately.
+      let initialUri = null
+      if (!window.__TAURI__ && file) {
+        try {
+          initialUri = await fileToDataUrl(file)
+        } catch (err) {
+          console.warn('data URL conversion failed', err)
         }
-      } catch {}
+      }
+      if (!initialUri) {
+        initialUri = toFileUri(String(path || file?.name))
+      }
+      addMediaClip({ id, name, uri: initialUri, duration_seconds: 10 })
+
+      // Tauri caching path (optional background enhancement)
+      if (window.__TAURI__ && path) {
+        try {
+          const cached = await cacheMediaFromPath(String(path))
+          if (cached && cached !== initialUri) {
+            try { useEditorStore.getState().setMediaUri(id, cached) } catch {}
+          }
+        } catch (err) {
+          console.debug('cacheMediaFromPath failed', err)
+        }
+      }
     } catch (e) {
       console.error(e)
       alert('Import failed: ' + e)
@@ -98,6 +118,17 @@ function toFileUri(p) {
   if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
   if (norm.startsWith('/')) return `file://${norm}`
   return `file://${norm}`
+}
+
+async function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    try {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = (e) => reject(e)
+      reader.readAsDataURL(file)
+    } catch (e) { reject(e) }
+  })
 }
 
 function MenuItem({ label, onClick }) {
