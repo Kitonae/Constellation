@@ -11,7 +11,7 @@ function fileUriToFsPath(uri) {
       // URL pathname on Windows starts with "/C:/..." — strip the leading slash
       return decodeURIComponent(u.pathname.replace(/^\//, ''))
     }
-  } catch {}
+  } catch { }
   if (typeof uri === 'string' && uri.startsWith('file://')) {
     return decodeURIComponent(uri.replace(/^file:\/\//, ''))
   }
@@ -22,19 +22,16 @@ export async function resolveMediaSrc(uri) {
   try {
     const p = fileUriToFsPath(String(uri || ''))
     if (!p) return null
-    
+
     // In Wails, use the wails runtime to convert file paths
     if (wailsAvailable) {
       // Files are served directly via the asset server
       return `file://${p}`
     }
-    
+
     // Fallback: check if Tauri is available
-    if (window.__TAURI__) {
-      const { convertFileSrc } = await import('@tauri-apps/api/tauri')
-      return convertFileSrc(p)
-    }
-    
+    // (Tauri support removed)
+
     return String(uri || '')
   } catch (e) {
     // Fallback to original URI

@@ -6,13 +6,11 @@ import Viewport2D from './components/Viewport2D.jsx'
 import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
 import Inspector from './components/Inspector.jsx'
-import { openImageDialog } from './utils/tauriCompat.js'
-import { cacheMediaFromPath, relinkProjectMediaToCache } from './utils/cacheMedia.js'
+import { openImageDialog } from './utils/fileDialogs.js'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
 import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
-// Tauri emit is not available under Wails; keep guarded uses only.
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 
 export default function App() {
@@ -77,12 +75,12 @@ export default function App() {
       }
     }
     // Emit a snapshot once on scene change to update paused display windows
-    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch {}
+    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
   }, [scene])
 
   // Emit snapshot once when project changes
   useEffect(() => {
-    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch {}
+    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
   }, [project])
 
   const onFile = async (e) => {
@@ -93,12 +91,7 @@ export default function App() {
     try {
       const data = JSON.parse(text)
       // If running in Tauri, import any external media into local cache and relink
-      if (window.__TAURI__ && data?.project?.media?.length) {
-        try {
-          const updated = await relinkProjectMediaToCache(data.project)
-          if (updated !== data.project) data.project = updated
-        } catch {}
-      }
+      // (Tauri support removed)
       loadProject(data)
     } catch (err) {
       alert('Invalid JSON: ' + err)
@@ -118,18 +111,9 @@ export default function App() {
           onSaveShow={async () => {
             try {
               const wrapper = buildProjectWrapper(project, scene)
-              if (!window.__TAURI__) { alert('Saving requires Tauri environment'); return }
-              const { save } = await import('@tauri-apps/api/dialog')
-              const { writeTextFile } = await import('@tauri-apps/api/fs')
-              const path = await save({
-                title: 'Save Show',
-                defaultPath: 'show.json',
-                filters: [{ name: 'JSON', extensions: ['json'] }]
-              })
-              if (!path) return
-              await writeTextFile(path, JSON.stringify(wrapper, null, 2))
-              setStatus('Saved: ' + path)
-              addLog({ level: 'info', message: 'Saved show to ' + path })
+              if (!window.__TAURI__) { alert('Saving requires backend environment'); return }
+              // TODO: Implement Wails save dialog
+              setStatus('Save not implemented in web mode')
             } catch (e) {
               setStatus('Save failed: ' + e)
               addLog({ level: 'error', message: 'Save failed: ' + e })
@@ -144,22 +128,22 @@ export default function App() {
           setAddr={setAddr}
           showOutputOverlay={showOutputOverlay}
           toggleOutputOverlay={toggleOutputOverlay}
-          onApply={async ()=>{
+          onApply={async () => {
             try {
               const { applyProject: wApply, wailsAvailable } = await import('./utils/wailsApi.js')
               const wrapper = buildProjectWrapper(project, scene)
               const message = await wApply(addr, JSON.stringify(wrapper))
               setStatus('Applied: ' + message)
-              addLog({ level:'info', message:`Applied project to ${addr}: ${message}` })
+              addLog({ level: 'info', message: `Applied project to ${addr}: ${message}` })
             } catch (e) {
               setStatus('Apply failed: ' + e)
-              addLog({ level:'error', message:`Apply failed: ${e}` })
+              addLog({ level: 'error', message: `Apply failed: ${e}` })
             }
           }}
-          onRemotePlay={async ()=>{ try { const { play } = await import('./utils/wailsApi.js'); const msg = await play(addr); setStatus('Play: '+msg) } catch(e){ setStatus('Play failed: '+e) } }}
-          onRemotePause={async ()=>{ try { const { pause } = await import('./utils/wailsApi.js'); const msg = await pause(addr); setStatus('Pause: '+msg) } catch(e){ setStatus('Pause failed: '+e) } }}
-          onRemoteStop={async ()=>{ try { const { stop } = await import('./utils/wailsApi.js'); const msg = await stop(addr); setStatus('Stop: '+msg) } catch(e){ setStatus('Stop failed: '+e) } }}
-          onReopenDisplays={async ()=>{
+          onRemotePlay={async () => { try { const { play } = await import('./utils/wailsApi.js'); const msg = await play(addr); setStatus('Play: ' + msg) } catch (e) { setStatus('Play failed: ' + e) } }}
+          onRemotePause={async () => { try { const { pause } = await import('./utils/wailsApi.js'); const msg = await pause(addr); setStatus('Pause: ' + msg) } catch (e) { setStatus('Pause failed: ' + e) } }}
+          onRemoteStop={async () => { try { const { stop } = await import('./utils/wailsApi.js'); const msg = await stop(addr); setStatus('Stop: ' + msg) } catch (e) { setStatus('Stop failed: ' + e) } }}
+          onReopenDisplays={async () => {
             const roots = scene?.roots || []
             for (const n of roots) {
               if (n.kind?.type === 'screen') {
@@ -167,11 +151,11 @@ export default function App() {
                 const px = n.kind?.pixels?.[0] || 0
                 const py = n.kind?.pixels?.[1] || 0
                 if (enabled && px > 0 && py > 0) {
-                  try { await openDisplayWindow(n.id, px, py) } catch {}
+                  try { await openDisplayWindow(n.id, px, py) } catch { }
                 }
               }
             }
-            try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch {}
+            try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
           }}
         />
         <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />
@@ -183,7 +167,7 @@ export default function App() {
           </div>
           <div
             onPointerDown={(e) => {
-              try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
               leftPaneDragRef.current = { startX: e.clientX, startW: mediaWidth }
               e.preventDefault()
             }}
@@ -196,7 +180,7 @@ export default function App() {
               setMediaWidth(next)
               e.preventDefault()
             }}
-            onPointerUp={(e) => { leftPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
+            onPointerUp={(e) => { leftPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
             style={{ position: 'absolute', top: 0, bottom: 0, right: -3, width: 6, cursor: 'col-resize', zIndex: 10 }}
             title="Drag to resize media bin"
           />
@@ -205,11 +189,11 @@ export default function App() {
         <div
           ref={rightPaneRef}
           className="panel"
-          style={{ width: inspectorWidth, flex: '0 0 auto', display:'flex', flexDirection:'column', minHeight:0, position:'relative', borderLeft: '1px solid #232636' }}
+          style={{ width: inspectorWidth, flex: '0 0 auto', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', borderLeft: '1px solid #232636' }}
         >
           <div
             onPointerDown={(e) => {
-              try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
               rightPaneDragRef.current = { startX: e.clientX, startW: inspectorWidth }
               e.preventDefault()
             }}
@@ -223,11 +207,11 @@ export default function App() {
               setInspectorWidth(next)
               e.preventDefault()
             }}
-            onPointerUp={(e) => { rightPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
+            onPointerUp={(e) => { rightPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
             style={{ position: 'absolute', top: 0, bottom: 0, left: -3, width: 6, cursor: 'col-resize', zIndex: 10 }}
             title="Drag to resize inspector"
           />
-          <div style={{ flex:'1 1 auto', minHeight: 100, overflow:'auto' }}>
+          <div style={{ flex: '1 1 auto', minHeight: 100, overflow: 'auto' }}>
             <Inspector />
           </div>
         </div>
@@ -235,7 +219,7 @@ export default function App() {
       <footer className="panel" style={{ height: timelineHeight, minHeight: 80, position: 'relative', overflow: 'hidden' }}>
         {/* Drag handle at top of footer to resize timeline height */}
         <div
-          onPointerDown={(e) => { try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}; footerDragRef.current = { startY: e.clientY, startH: timelineHeight } }}
+          onPointerDown={(e) => { try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }; footerDragRef.current = { startY: e.clientY, startH: timelineHeight } }}
           onPointerMove={(e) => {
             if (!footerDragRef.current) return
             const dy = e.clientY - footerDragRef.current.startY
@@ -244,11 +228,11 @@ export default function App() {
             const next = Math.max(minH, Math.min(maxH, footerDragRef.current.startH - dy))
             setTimelineHeight(next)
           }}
-          onPointerUp={(e) => { footerDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} }}
-          style={{ position:'absolute', top:0, left:0, right:0, height:6, cursor:'row-resize', background:'linear-gradient(180deg, #1a1e2c, #121520)', borderBottom:'1px solid #232636', zIndex: 2 }}
+          onPointerUp={(e) => { footerDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 6, cursor: 'row-resize', background: 'linear-gradient(180deg, #1a1e2c, #121520)', borderBottom: '1px solid #232636', zIndex: 2 }}
           title="Drag to resize timeline"
         />
-        <div style={{ position:'absolute', inset:'6px 0 0 0', overflow:'hidden' }}>
+        <div style={{ position: 'absolute', inset: '6px 0 0 0', overflow: 'hidden' }}>
           <Timeline />
         </div>
       </footer>
@@ -259,8 +243,8 @@ export default function App() {
   )
 }
 
-function buildProjectWrapper(project, scene){
-  if(!project || !scene){ throw new Error('No project loaded') }
+function buildProjectWrapper(project, scene) {
+  if (!project || !scene) { throw new Error('No project loaded') }
   // Reconstruct a JSON payload similar to examples/scene.example.json
   return {
     project: {
@@ -274,33 +258,13 @@ function buildProjectWrapper(project, scene){
 }
 
 async function onAddImage() {
-  try {
-    // Use Tauri dialog to get a file path for the image
-    const filePath = await openImageDialog()
-    if (!filePath) return
-    // Infer name from path
-    const name = String(filePath).split(/[\\\/]/).pop()
-    // Fast path under Wails/browser: skip Tauri caching entirely
-    if (!window.__TAURI__) {
-      useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
-      useEditorStore.getState().addLog({ level:'info', message:`Added image: ${name}` })
-      return
-    }
-    // Tauri path: perform caching
-    useEditorStore.getState().beginImport()
-    let uri = null
-    try { uri = await cacheMediaFromPath(String(filePath)) } catch (err) { console.warn('cache failed', err) }
-    if (uri) useEditorStore.getState().addImageToShow({ uri, name, duration: 10 })
-    else useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
-    useEditorStore.getState().addLog({ level:'info', message:`Added image: ${name}` })
-  } catch (e) {
-    console.error(e)
-    useEditorStore.getState().addLog({ level:'error', message:`Failed to add image: ${e}` })
-    alert('Failed to add image: ' + e)
-  } finally {
-    if (window.__TAURI__) {
-      // Only decrement if we incremented
-      try { useEditorStore.getState().endImport() } catch {}
-    }
-  }
+  // Use Tauri dialog to get a file path for the image
+  const filePath = await openImageDialog()
+  if (!filePath) return
+  // Infer name from path
+  const name = String(filePath).split(/[\\\/]/).pop()
+  // Fast path: skip caching
+  useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
+  useEditorStore.getState().addLog({ level: 'info', message: `Added image: ${name}` })
+  return
 }

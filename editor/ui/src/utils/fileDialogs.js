@@ -14,7 +14,6 @@ function chooseFile(accept) {
       document.body.removeChild(input)
       if (!f) { resolve(null); return }
       // Browser security: f.path is not exposed; use name only.
-      // Under Tauri, f.path is available.
       const pathOrName = f.path || f.name
       resolve({ file: f, path: pathOrName })
     }, { once: true })
