@@ -292,8 +292,14 @@ export default function Timeline() {
               const clip = mediaById[m.clip_id]
               const label = clip?.name || clip?.id || m.clip_id
               const isSelected = selectedClipId === m.id
+
+              // Vertical drag calculation
+              const ROW_HEIGHT = 40 // 28px height + 6px top + 6px bottom
+              const verticalOffset = (drag?.timelineId === m.id && drag.currentY !== undefined) ? drag.currentY : 0
+              const zIndex = (drag?.timelineId === m.id) ? 100 : 1
+
               return (
-                <div key={i} style={{ position: 'relative', height: 28, margin: '6px 0' }}>
+                <div key={i} style={{ position: 'relative', height: 28, margin: '6px 0', zIndex }}>
                   <div
                     onClick={(e) => { e.stopPropagation(); setSelectedClip(m.id) }}
                     onPointerDown={(e) => {
@@ -302,7 +308,7 @@ export default function Timeline() {
                       try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
                       const tAt = timeFromClientX(e.clientX)
                       const offset = tAt - (m.start ?? m.start_at_seconds ?? 0)
-                      const d = { timelineId: m.id, startAtOffset: offset }
+                      const d = { timelineId: m.id, startAtOffset: offset, startY: e.clientY, currentY: 0, originalIndex: i }
                       setDrag(d)
                       dragRef.current = d
                     }}
@@ -310,26 +316,36 @@ export default function Timeline() {
                       if (!dragRef.current || dragRef.current.timelineId !== m.id) return
                       const tAt = timeFromClientX(e.clientX)
                       const newStart = tAt - dragRef.current.startAtOffset
-                      dragRef.current = { ...dragRef.current, currentStart: newStart }
+                      const dy = e.clientY - dragRef.current.startY
+                      dragRef.current = { ...dragRef.current, currentStart: newStart, currentY: dy }
                       setDrag({ ...dragRef.current })
                     }}
                     onPointerUp={(e) => {
                       if (dragRef.current?.timelineId === m.id) {
-                        if (dragRef.current.currentStart !== undefined) {
-                          useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: dragRef.current.currentStart })
+                        const d = dragRef.current
+                        // Horizontal commit
+                        if (d.currentStart !== undefined) {
+                          useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: d.currentStart })
+                        }
+                        // Vertical commit (reorder)
+                        if (d.currentY !== undefined) {
+                          const rowDelta = Math.round(d.currentY / ROW_HEIGHT)
+                          if (rowDelta !== 0) {
+                            useEditorStore.getState().reorderClip(m.id, d.originalIndex + rowDelta)
+                          }
                         }
                         setDrag(null)
                         dragRef.current = null
                       }
                       try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
                     }}
-                    style={{ position: 'absolute', left, width, height: '100%', background: isSelected ? '#354066' : '#2a2f45', border: `1px solid ${isSelected ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', cursor: 'grab' }} title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s`}>
+                    style={{ position: 'absolute', left, top: verticalOffset, width, height: '100%', background: isSelected ? '#354066' : '#2a2f45', border: `1px solid ${isSelected ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', cursor: 'grab', transition: drag?.timelineId === m.id ? 'none' : 'top 0.2s ease' }} title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s`}>
                     <span style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', fontSize: 12 }}>{label}</span>
                   </div>
                 </div>
               )
             })}
-            <div ref={tracksPlayheadRef} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 2, background: '#ff6', pointerEvents: 'none', transform: 'translateZ(0)' }} />
+            <div ref={tracksPlayheadRef} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 2, background: '#ff6', pointerEvents: 'none', transform: 'translateZ(0)', zIndex: 200 }} />
             {isDragOver && hoverTime != null && (
               <div title={`${hoverTime.toFixed(2)}s`} style={{ position: 'absolute', top: 0, bottom: 0, left: (hoverTime / Math.max(0.0001, duration)) * timelineWidth, width: 2, background: '#5a78ff' }} />
             )}
