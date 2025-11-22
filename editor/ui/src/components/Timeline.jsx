@@ -21,6 +21,7 @@ export default function Timeline() {
   const [isDragOver, setDragOver] = useState(false)
   const [hoverTime, setHoverTime] = useState(null)
   const [drag, setDrag] = useState(null) // { clipId, startAtOffset }
+  const dragRef = useRef(null)
   const [timelineWidth, setTimelineWidth] = useState(0)
   const [tracksViewportHeight, setTracksViewportHeight] = useState(0)
   const [pxPerSecond, setPxPerSecond] = useState(100) // zoom level
@@ -136,8 +137,8 @@ export default function Timeline() {
       aria-label={label}
       title={label}
       onClick={onClick}
-      onPointerDown={(e)=>{ e.preventDefault(); e.stopPropagation(); onClick?.(e) }}
-      onMouseDown={(e)=>{ e.stopPropagation(); }}
+      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); onClick?.(e) }}
+      onMouseDown={(e) => { e.stopPropagation(); }}
       style={{
         width: 24,
         height: 24,
@@ -185,78 +186,78 @@ export default function Timeline() {
       const x = (clamped / Math.max(0.0001, dur)) * width
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
       if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
-    } catch {}
-    return () => { try { unsub() } catch {} }
+    } catch { }
+    return () => { try { unsub() } catch { } }
   }, [timelineWidth, duration, project])
 
   return (
     <div style={{ padding: 8, color: '#c7cfdb', height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ marginBottom: 6, display:'flex', alignItems:'center', justifyContent:'space-between', position:'relative', zIndex: 5, pointerEvents:'auto' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+      <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', zIndex: 5, pointerEvents: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div>Timeline</div>
-          <div style={{ fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12, padding:'2px 6px', border:'1px solid #232636', borderRadius:4, background:'#0f1115', color:'#b9c3d6' }}>
+          <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, padding: '2px 6px', border: '1px solid #232636', borderRadius: 4, background: '#0f1115', color: '#b9c3d6' }}>
             {formatTimecode(timeDisplay)}
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:4, marginLeft:12 }}>
-            <IconButton label="Zoom Out" onClick={()=>setPxPerSecond(p=>Math.max(10, Math.round(p/1.25)))}>−</IconButton>
-            <IconButton label="Zoom In" onClick={()=>setPxPerSecond(p=>Math.min(800, Math.round(p*1.25)))}>＋</IconButton>
-            <div style={{ fontSize:10, opacity:0.7, minWidth:60, textAlign:'center' }}>{pxPerSecond} px/s</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 12 }}>
+            <IconButton label="Zoom Out" onClick={() => setPxPerSecond(p => Math.max(10, Math.round(p / 1.25)))}>−</IconButton>
+            <IconButton label="Zoom In" onClick={() => setPxPerSecond(p => Math.min(800, Math.round(p * 1.25)))}>＋</IconButton>
+            <div style={{ fontSize: 10, opacity: 0.7, minWidth: 60, textAlign: 'center' }}>{pxPerSecond} px/s</div>
           </div>
         </div>
-        <div style={{ display:'flex', gap:6, pointerEvents:'auto' }}>
-          <IconButton label="Play" onClick={() => { const st = useEditorStore.getState(); st.play(); st.addLog({ level:'info', message:'Local Play' }) }}>▶</IconButton>
-          <IconButton label="Pause" onClick={() => { const st = useEditorStore.getState(); st.pause(); st.addLog({ level:'info', message:'Local Pause' }) }}>⏸</IconButton>
+        <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
+          <IconButton label="Play" onClick={() => { const st = useEditorStore.getState(); st.play(); st.addLog({ level: 'info', message: 'Local Play' }) }}>▶</IconButton>
+          <IconButton label="Pause" onClick={() => { const st = useEditorStore.getState(); st.pause(); st.addLog({ level: 'info', message: 'Local Pause' }) }}>⏸</IconButton>
           <IconButton label="Stop" onClick={() => {
             stop();
             const st = useEditorStore.getState();
-            try { st.seek(0) } catch {}
-            try { if (rulerViewportRef.current) rulerViewportRef.current.scrollLeft = 0 } catch {}
-            try { if (tracksViewportRef.current) tracksViewportRef.current.scrollLeft = 0 } catch {}
-            try { if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = '0px' } catch {}
-            try { if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = '0px' } catch {}
-            try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: 0 }) } catch {}
-            st.addLog({ level:'info', message:'Local Stop' })
+            try { st.seek(0) } catch { }
+            try { if (rulerViewportRef.current) rulerViewportRef.current.scrollLeft = 0 } catch { }
+            try { if (tracksViewportRef.current) tracksViewportRef.current.scrollLeft = 0 } catch { }
+            try { if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = '0px' } catch { }
+            try { if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = '0px' } catch { }
+            try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: 0 }) } catch { }
+            st.addLog({ level: 'info', message: 'Local Stop' })
           }}>■</IconButton>
         </div>
       </div>
       {/* Scrollable Ruler */}
-      <div style={{ marginTop:4, display:'grid', gridTemplateColumns:`${LABEL_W}px 1fr`, gap:0 }}>
+      <div style={{ marginTop: 4, display: 'grid', gridTemplateColumns: `${LABEL_W}px 1fr`, gap: 0 }}>
         <div />
-        <div ref={rulerViewportRef} className="no-scrollbar" style={{ position:'relative', overflowX:'auto', overflowY:'hidden', height:24, border:'1px solid #232636', borderRadius:4, background:'#141821', cursor:'pointer' }}
-          onPointerDown={(e)=>{ seekingRef.current = true; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); try { e.currentTarget.setPointerCapture(e.pointerId) } catch {} }}
-          onPointerMove={(e)=>{ if (!seekingRef.current) return; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t) }}
-          onPointerUp={(e)=>{ seekingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {} try { const st = useEditorStore.getState(); if (!st.playing) broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: st.time }) } catch {} }}
-          onClick={(e)=>{ const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); if (!st.playing) { try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: t }) } catch {} } }}
+        <div ref={rulerViewportRef} className="no-scrollbar" style={{ position: 'relative', overflowX: 'auto', overflowY: 'hidden', height: 24, border: '1px solid #232636', borderRadius: 4, background: '#141821', cursor: 'pointer' }}
+          onPointerDown={(e) => { seekingRef.current = true; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); try { e.currentTarget.setPointerCapture(e.pointerId) } catch { } }}
+          onPointerMove={(e) => { if (!seekingRef.current) return; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t) }}
+          onPointerUp={(e) => { seekingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } try { const st = useEditorStore.getState(); if (!st.playing) broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: st.time }) } catch { } }}
+          onClick={(e) => { const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); if (!st.playing) { try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: t }) } catch { } } }}
         >
-          <div ref={rulerInnerRef} style={{ position:'relative', width: timelineWidth, height:'100%' }}>
+          <div ref={rulerInnerRef} style={{ position: 'relative', width: timelineWidth, height: '100%' }}>
             {ticks.map((tVal, idx) => {
               const x = (tVal / duration) * timelineWidth
               const major = (Math.abs((tVal / tickStep) - Math.round(tVal / tickStep)) < 1e-6)
               return (
-                <div key={idx} style={{ position:'absolute', left:x, top:0, bottom:0, width:0 }}>
-                  <div style={{ position:'absolute', bottom:0, left:-0.5, width:1, height: major ? '100%' : '50%', background:'#3a4060' }} />
+                <div key={idx} style={{ position: 'absolute', left: x, top: 0, bottom: 0, width: 0 }}>
+                  <div style={{ position: 'absolute', bottom: 0, left: -0.5, width: 1, height: major ? '100%' : '50%', background: '#3a4060' }} />
                   {major && (
-                    <div style={{ position:'absolute', bottom:2, transform:'translateX(-50%)', color:'#9aa6b9', whiteSpace:'nowrap', fontSize:10 }}>
+                    <div style={{ position: 'absolute', bottom: 2, transform: 'translateX(-50%)', color: '#9aa6b9', whiteSpace: 'nowrap', fontSize: 10 }}>
                       {tVal < 60 ? tVal.toFixed(tickStep < 1 ? 1 : 0) + 's' : formatTimecode(tVal)}
                     </div>
                   )}
                 </div>
               )
             })}
-            {secondDots.map((s)=>{
+            {secondDots.map((s) => {
               const x = (s / duration) * timelineWidth
-              return <div key={`sd-${s}`} style={{ position:'absolute', left:x, bottom:3, width:3, height:3, marginLeft:-1.5, background:'#4a5674', borderRadius:2 }} />
+              return <div key={`sd-${s}`} style={{ position: 'absolute', left: x, bottom: 3, width: 3, height: 3, marginLeft: -1.5, background: '#4a5674', borderRadius: 2 }} />
             })}
-            <div ref={rulerPlayheadRef} style={{ position:'absolute', top:0, bottom:0, left:0, width:2, background:'#ff6', pointerEvents:'none', transform:'translateZ(0)' }} />
+            <div ref={rulerPlayheadRef} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 2, background: '#ff6', pointerEvents: 'none', transform: 'translateZ(0)' }} />
           </div>
         </div>
       </div>
       {/* Tracks (labels separated for alignment with ruler) */}
-      <div style={{ display:'flex', marginTop:8, flex:1, minHeight:0 }}>
-        <div ref={tracksLabelsRef} style={{ width: LABEL_W, flex:'0 0 auto', padding:'8px 0', height: '100%', overflowY: 'auto' }}>
-          {tracks.filter(t=>t.media).map((t,i)=>
-            <div key={i} style={{ height:28, margin:'6px 0', marginRight:0, display:'flex', alignItems:'center', justifyContent:'flex-start' }}>
-              <div style={{ fontSize:12, opacity:0.8, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{`Track ${i+1}`}</div>
+      <div style={{ display: 'flex', marginTop: 8, flex: 1, minHeight: 0 }}>
+        <div ref={tracksLabelsRef} style={{ width: LABEL_W, flex: '0 0 auto', padding: '8px 0', height: '100%', overflowY: 'auto' }}>
+          {tracks.filter(t => t.media).map((t, i) =>
+            <div key={i} style={{ height: 28, margin: '6px 0', marginRight: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{`Track ${i + 1}`}</div>
             </div>
           )}
         </div>
@@ -265,66 +266,77 @@ export default function Timeline() {
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
           onDrop={onDrop}
-          onClick={(e)=>{ if (e.target === tracksViewportRef.current) setSelectedClip(null) }}
+          onClick={(e) => { if (e.target === tracksViewportRef.current) setSelectedClip(null) }}
           style={{
-            position:'relative',
-            background:'#0f1115',
-            overflowX:'auto',
-            overflowY:'auto',
+            position: 'relative',
+            background: '#0f1115',
+            overflowX: 'auto',
+            overflowY: 'auto',
             outline: isDragOver ? '1px dashed #5a78ff' : 'none',
-            border:'1px solid #232636',
-            borderRadius:4,
-            flex:1,
+            border: '1px solid #232636',
+            borderRadius: 4,
+            flex: 1,
             minHeight: 0,
             height: '100%',
           }}
         >
-          <div ref={tracksInnerRef} style={{ position:'relative', width: timelineWidth, padding:'8px 0' }}>
+          <div ref={tracksInnerRef} style={{ position: 'relative', width: timelineWidth, padding: '8px 0' }}>
             {tracks.filter(t => t.media).map((t, i) => {
               const m = t.media
               const startVal = (m.start ?? m.start_at_seconds) || 0
               const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-              const left = (startVal / Math.max(0.0001, duration)) * timelineWidth
+              const isDragging = drag?.timelineId === m.id && drag.currentStart !== undefined
+              const effectiveStart = isDragging ? drag.currentStart : startVal
+              const left = (effectiveStart / Math.max(0.0001, duration)) * timelineWidth
               const width = (Math.max(0, durVal) / Math.max(0.0001, duration)) * timelineWidth
               const clip = mediaById[m.clip_id]
               const label = clip?.name || clip?.id || m.clip_id
               const isSelected = selectedClipId === m.id
               return (
-                <div key={i} style={{ position:'relative', height:28, margin:'6px 0' }}>
+                <div key={i} style={{ position: 'relative', height: 28, margin: '6px 0' }}>
                   <div
-                    onClick={(e)=>{ e.stopPropagation(); setSelectedClip(m.id) }}
-                    onPointerDown={(e)=>{
+                    onClick={(e) => { e.stopPropagation(); setSelectedClip(m.id) }}
+                    onPointerDown={(e) => {
                       if (e.button !== 0) return
                       e.stopPropagation()
-                      try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                      try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
                       const tAt = timeFromClientX(e.clientX)
                       const offset = tAt - (m.start ?? m.start_at_seconds ?? 0)
-                      setDrag({ timelineId: m.id, startAtOffset: offset })
+                      const d = { timelineId: m.id, startAtOffset: offset }
+                      setDrag(d)
+                      dragRef.current = d
                     }}
-                    onPointerMove={(e)=>{
-                      if (!drag || drag.timelineId !== m.id) return
+                    onPointerMove={(e) => {
+                      if (!dragRef.current || dragRef.current.timelineId !== m.id) return
                       const tAt = timeFromClientX(e.clientX)
-                      const newStart = tAt - drag.startAtOffset
-                      useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: newStart })
+                      const newStart = tAt - dragRef.current.startAtOffset
+                      dragRef.current = { ...dragRef.current, currentStart: newStart }
+                      setDrag({ ...dragRef.current })
                     }}
-                    onPointerUp={(e)=>{
-                      if (drag?.timelineId === m.id) setDrag(null)
-                      try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+                    onPointerUp={(e) => {
+                      if (dragRef.current?.timelineId === m.id) {
+                        if (dragRef.current.currentStart !== undefined) {
+                          useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: dragRef.current.currentStart })
+                        }
+                        setDrag(null)
+                        dragRef.current = null
+                      }
+                      try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
                     }}
-                    style={{ position:'absolute', left, width, height:'100%', background: isSelected ? '#354066' : '#2a2f45', border:`1px solid ${isSelected ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius:4, display:'flex', alignItems:'center', padding:'0 8px', overflow:'hidden', cursor:'grab' }} title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s`}>
-                    <span style={{ whiteSpace:'nowrap', textOverflow:'ellipsis', overflow:'hidden', fontSize:12 }}>{label}</span>
+                    style={{ position: 'absolute', left, width, height: '100%', background: isSelected ? '#354066' : '#2a2f45', border: `1px solid ${isSelected ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', cursor: 'grab' }} title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s`}>
+                    <span style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', fontSize: 12 }}>{label}</span>
                   </div>
                 </div>
               )
             })}
-            <div ref={tracksPlayheadRef} style={{ position:'absolute', top:0, bottom:0, left:0, width:2, background:'#ff6', pointerEvents:'none', transform:'translateZ(0)' }} />
+            <div ref={tracksPlayheadRef} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 2, background: '#ff6', pointerEvents: 'none', transform: 'translateZ(0)' }} />
             {isDragOver && hoverTime != null && (
-              <div title={`${hoverTime.toFixed(2)}s`} style={{ position:'absolute', top:0, bottom:0, left: (hoverTime / Math.max(0.0001, duration)) * timelineWidth, width:2, background:'#5a78ff' }} />
+              <div title={`${hoverTime.toFixed(2)}s`} style={{ position: 'absolute', top: 0, bottom: 0, left: (hoverTime / Math.max(0.0001, duration)) * timelineWidth, width: 2, background: '#5a78ff' }} />
             )}
           </div>
         </div>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.7, marginTop:4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.7, marginTop: 4 }}>
         <span>0.0</span>
         <span>{duration.toFixed(2)}s</span>
       </div>
