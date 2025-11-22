@@ -25,12 +25,20 @@ export default function Viewport2D() {
   const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
   const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
   const [dragClip, setDragClip] = useState(null) // { id, startX, startY, origX, origY }
+  const dragClipRef = useRef(null)
   const [menu, setMenu] = useState({ open: false, x: 0, y: 0 })
   const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
 
   // Global failsafe: if the pointer is released outside the element, end any active clip drag
   useEffect(() => {
-    const endDrag = () => setDragClip((d) => d ? null : d)
+    const endDrag = (e) => {
+      if (dragClipRef.current && dragClipRef.current.currentX !== undefined && e.type !== 'pointercancel') {
+        const { id, currentX, currentY } = dragClipRef.current
+        useEditorStore.getState().updateClipTransform({ timelineId: id, position: { x: currentX, y: currentY } })
+      }
+      setDragClip((d) => d ? null : d)
+      dragClipRef.current = null
+    }
     window.addEventListener('pointerup', endDrag, true)
     window.addEventListener('pointercancel', endDrag, true)
     window.addEventListener('mouseup', endDrag, true)
@@ -478,26 +486,34 @@ export default function Viewport2D() {
                 if (e.button !== 0) return
                 e.stopPropagation()
                 try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
-                setDragClip({ id: tm.id, startX: e.clientX, startY: e.clientY, origX: mpos.x || 0, origY: mpos.y || 0 })
+                const d = { id: tm.id, startX: e.clientX, startY: e.clientY, origX: mpos.x || 0, origY: mpos.y || 0 }
+                setDragClip(d)
+                dragClipRef.current = d
               }}
               onPointerMove={(e) => {
-                if (!dragClip || dragClip.id !== tm.id) return
-                if ((e.buttons & 1) === 0) { setDragClip(null); return }
-                const dx = e.clientX - dragClip.startX
-                const dy = e.clientY - dragClip.startY
-                const nextX = dragClip.origX + dx / ratio
-                const nextY = dragClip.origY - dy / ratio
-                // UI computes floats; store will round to integers
-                useEditorStore.getState().updateClipTransform({ timelineId: tm.id, position: { x: nextX, y: nextY } })
+                if (!dragClipRef.current || dragClipRef.current.id !== tm.id) return
+                if ((e.buttons & 1) === 0) { setDragClip(null); dragClipRef.current = null; return }
+                const dx = e.clientX - dragClipRef.current.startX
+                const dy = e.clientY - dragClipRef.current.startY
+                const nextX = dragClipRef.current.origX + dx / ratio
+                const nextY = dragClipRef.current.origY - dy / ratio
+                dragClipRef.current = { ...dragClipRef.current, currentX: nextX, currentY: nextY }
+                setDragClip({ ...dragClipRef.current })
               }}
               onPointerUp={(e) => {
-                if (dragClip?.id === tm.id) setDragClip(null)
+                if (dragClipRef.current?.id === tm.id) {
+                  if (dragClipRef.current.currentX !== undefined) {
+                    useEditorStore.getState().updateClipTransform({ timelineId: tm.id, position: { x: dragClipRef.current.currentX, y: dragClipRef.current.currentY } })
+                  }
+                  setDragClip(null)
+                  dragClipRef.current = null
+                }
                 try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
               }}
               onDragStart={(e) => { e.preventDefault() }}
-              onPointerCancel={(e) => { if (dragClip?.id === tm.id) setDragClip(null); try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
+              onPointerCancel={(e) => { if (dragClipRef.current?.id === tm.id) { setDragClip(null); dragClipRef.current = null } try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
               title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds || 0).toFixed?.(2)}s)`}
-              style={{ position: 'absolute', left, top, width: w, height: h, background: '#0b0d12', border: `1px solid ${isSel ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSel ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, overflow: 'hidden', display: isActive ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', color: '#c7cfdb', fontSize: 11, pointerEvents: 'auto', zIndex: 5, userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none', WebkitUserDrag: 'none', touchAction: 'none' }}
+              style={{ position: 'absolute', left: (dragClip?.id === tm.id && dragClip.currentX !== undefined) ? (cx + dragClip.currentX * ratio - w / 2) : left, top: (dragClip?.id === tm.id && dragClip.currentY !== undefined) ? (cy - dragClip.currentY * ratio - h / 2) : top, width: w, height: h, background: '#0b0d12', border: `1px solid ${isSel ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSel ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, overflow: 'hidden', display: isActive ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', color: '#c7cfdb', fontSize: 11, pointerEvents: 'auto', zIndex: 5, userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none', WebkitUserDrag: 'none', touchAction: 'none' }}
             >
               {(() => {
                 const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
