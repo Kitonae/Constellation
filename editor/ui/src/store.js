@@ -210,6 +210,22 @@ export const useEditorStore = create((set, get) => ({
     }, tl.duration_seconds || 0)
     return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds } } }
   }),
+  reorderClip: (clipId, newIndex) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tl = s.project.timeline
+    const tracks = [...tl.tracks]
+    const oldIndex = tracks.findIndex(t => t.media && t.media.id === clipId)
+    if (oldIndex === -1) return {}
+
+    // Clamp newIndex
+    const targetIndex = Math.max(0, Math.min(tracks.length - 1, newIndex))
+    if (oldIndex === targetIndex) return {}
+
+    const [removed] = tracks.splice(oldIndex, 1)
+    tracks.splice(targetIndex, 0, removed)
+
+    return { project: { ...s.project, timeline: { ...tl, tracks } } }
+  }),
   tick: (dt) => {
     if (!get().playing) return
     set((s) => ({ time: s.time + dt }))
@@ -231,17 +247,19 @@ export const useEditorStore = create((set, get) => ({
   setSelectedClip: (clipId) => set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] }),
   setSelectedClips: (clipIds) => set({ selectedClipIds: Array.isArray(clipIds) ? clipIds : [], selectedClipId: (clipIds && clipIds.length ? clipIds[0] : null) }),
   setGizmoMode: (mode) => set({ gizmoMode: mode }),
-  updateNodeTransform: (id, next) => set((s) => ({ scene: {
-    ...s.scene,
-    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => ({
-      ...node,
-      transform: {
-        position: next.position ?? node.transform.position,
-        rotation: next.rotation ?? node.transform.rotation,
-        scale: next.scale ?? node.transform.scale,
-      }
-    })))
-  } })),
+  updateNodeTransform: (id, next) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => ({
+        ...node,
+        transform: {
+          position: next.position ?? node.transform.position,
+          rotation: next.rotation ?? node.transform.rotation,
+          scale: next.scale ?? node.transform.scale,
+        }
+      })))
+    }
+  })),
   // Remove a clip instance from the timeline by timeline item id
   removeClip: (clipId) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
@@ -262,24 +280,28 @@ export const useEditorStore = create((set, get) => ({
     const selectedClipId = s.selectedClipId === clipId ? null : s.selectedClipId
     return { project: nextProject, selectedClipId }
   }),
-  updateScreenPixels: (id, pixels) => set((s) => ({ scene: {
-    ...s.scene,
-    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
-      if (node.kind?.type === 'screen') {
-        return { ...node, kind: { ...node.kind, pixels: [pixels[0] | 0, pixels[1] | 0] } }
-      }
-      return node
-    }))
-  } })),
-  updateScreenEnabled: (id, enabled) => set((s) => ({ scene: {
-    ...s.scene,
-    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
-      if (node.kind?.type === 'screen') {
-        return { ...node, kind: { ...node.kind, enabled: !!enabled } }
-      }
-      return node
-    }))
-  } })),
+  updateScreenPixels: (id, pixels) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+        if (node.kind?.type === 'screen') {
+          return { ...node, kind: { ...node.kind, pixels: [pixels[0] | 0, pixels[1] | 0] } }
+        }
+        return node
+      }))
+    }
+  })),
+  updateScreenEnabled: (id, enabled) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+        if (node.kind?.type === 'screen') {
+          return { ...node, kind: { ...node.kind, enabled: !!enabled } }
+        }
+        return node
+      }))
+    }
+  })),
   removeScreenNode: (id) => set((s) => {
     if (!s.scene?.roots) return {}
     function removeNodeRec(node, targetId) {
@@ -296,12 +318,12 @@ export const useEditorStore = create((set, get) => ({
   }),
 }))
 
-  // Helper to enqueue a log entry without needing a store setter in scope
-  function queueLog(level, message) {
+// Helper to enqueue a log entry without needing a store setter in scope
+function queueLog(level, message) {
   try {
     const fn = useEditorStore.getState().addLog
     if (fn) fn({ level, message })
-  } catch {}
+  } catch { }
 }
 
 // Integer coercion helper for pixel-based values

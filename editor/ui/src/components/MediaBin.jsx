@@ -1,6 +1,6 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
-import { openMediaDialog, openMediaFile } from '../utils/fileDialogs.js'
+import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
 import MediaThumb from './MediaThumb.jsx'
 
 export default function MediaBin() {
@@ -12,40 +12,46 @@ export default function MediaBin() {
   const endImport = useEditorStore((s) => s.endImport)
   const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
   const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
-  // Remove local button spinner; we'll show spinner in thumbnail instead
 
-  const onImportImage = async () => {
-    let fileEntry = null
+  const processEntries = async (entries) => {
+    if (!entries || !entries.length) return
+    beginImport()
     try {
-      beginImport()
-      // Prefer richer file descriptor
-      fileEntry = await openMediaFile()
-      if (!fileEntry) return
-      const { file, path } = fileEntry
-      const name = String(path || file?.name || 'media').split(/[\\\/]/).pop()
-      const id = `clip-${Math.random().toString(36).slice(2, 8)}`
+      for (const { file, path } of entries) {
+        const name = String(path || file?.name || 'media').split(/[\\\/]/).pop()
+        // Filter out non-media files if folder import picked up junk
+        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) continue
 
-      // If running outside Tauri (Wails/web), we cannot rely on absolute file:// paths.
-      // Convert to data URL immediately.
-      let initialUri = null
-      if (file) {
-        try {
-          initialUri = await fileToDataUrl(file)
-        } catch (err) {
-          console.warn('data URL conversion failed', err)
+        const id = `clip-${Math.random().toString(36).slice(2, 8)}`
+        let initialUri = null
+        if (file) {
+          try {
+            initialUri = await fileToDataUrl(file)
+          } catch (err) {
+            console.warn('data URL conversion failed', err)
+          }
         }
+        if (!initialUri) {
+          initialUri = toFileUri(String(path || file?.name))
+        }
+        addMediaClip({ id, name, uri: initialUri, duration_seconds: 10 })
       }
-      if (!initialUri) {
-        initialUri = toFileUri(String(path || file?.name))
-      }
-      addMediaClip({ id, name, uri: initialUri, duration_seconds: 10 })
-
     } catch (e) {
       console.error(e)
       alert('Import failed: ' + e)
     } finally {
       endImport()
     }
+  }
+
+  const onImportFiles = async () => {
+    const entries = await openMediaFiles()
+    await processEntries(entries)
+  }
+
+  const onImportFolder = async () => {
+    const entries = await openMediaFolder()
+    await processEntries(entries)
   }
 
   return (
@@ -59,7 +65,18 @@ export default function MediaBin() {
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
         <div style={{ fontWeight: 600 }}>Media Bin</div>
-        <button onClick={onImportImage} title="Add New" aria-label="Add New" style={{ position: 'relative' }}>Add New</button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            const rect = e.currentTarget.getBoundingClientRect()
+            setMenu({ open: true, x: rect.left, y: rect.bottom + 4, clipId: null })
+          }}
+          title="Add New"
+          aria-label="Add New"
+          style={{ position: 'relative' }}
+        >
+          Add New
+        </button>
       </div>
       {!media.length && <div style={{ opacity: 0.7 }}>No media yet.</div>}
       <div style={{ display: 'grid', gap: 6 }}>
@@ -74,10 +91,10 @@ export default function MediaBin() {
               e.dataTransfer.setData('text/plain', m.id)
               e.dataTransfer.effectAllowed = 'copyMove'
             }}
-            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, cursor: 'grab' }}>
+            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, cursor: 'grab', minWidth: 0 }}>
             <MediaThumb uri={m.uri} alt={m.name || m.id} size={48} />
-            <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} title={m.uri}>
-              <div style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{m.name || m.id}</div>
+            <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }} title={m.uri}>
+              <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name || m.id}</div>
               <div style={{ fontSize: 12, opacity: 0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
             </div>
             <button
@@ -93,7 +110,8 @@ export default function MediaBin() {
       </div>
       {menu.open && (
         <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()}>
-          <MenuItem label="Add Image…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportImage() }} />
+          <MenuItem label="Add Files…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFiles() }} />
+          <MenuItem label="Add Folder…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFolder() }} />
           {menu.clipId && <MenuItem label="Remove" onClick={() => { removeMediaClip(menu.clipId); setMenu({ open: false, x: 0, y: 0, clipId: null }) }} />}
         </div>
       )}
