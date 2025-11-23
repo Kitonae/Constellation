@@ -28,6 +28,7 @@ export default function Viewport2D() {
   const dragClipRef = useRef(null)
   const [menu, setMenu] = useState({ open: false, x: 0, y: 0 })
   const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
+  const draggedRef = useRef(false)
   const [tool, setTool] = useState('select') // 'select' | 'hand'
 
   // Global failsafe: if the pointer is released outside the element, end any active clip drag
@@ -365,7 +366,7 @@ export default function Viewport2D() {
         <div
           ref={stageRef}
           style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
-          onClick={() => { if (!marquee) { setSelected(null); setSelectedClips([]) } }}
+          onClick={(e) => { if (!draggedRef.current && !e.ctrlKey) { setSelected(null); setSelectedClips([]) } }}
           onPointerDown={(e) => {
             // Start marquee selection only on empty space (not when Ctrl+Alt panning or clicking a clip)
             if (e.button !== 0) return
@@ -377,6 +378,7 @@ export default function Viewport2D() {
             const x = sc.scrollLeft + (e.clientX - rect.left)
             const y = sc.scrollTop + (e.clientY - rect.top)
             setMarquee({ x1: x, y1: y, x2: x, y2: y })
+            draggedRef.current = false
             try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
             e.preventDefault()
             e.stopPropagation()
@@ -388,7 +390,10 @@ export default function Viewport2D() {
             const rect = sc.getBoundingClientRect()
             const x = sc.scrollLeft + (e.clientX - rect.left)
             const y = sc.scrollTop + (e.clientY - rect.top)
-            setMarquee((m) => (m ? { ...m, x2: x, y2: y } : m))
+            setMarquee((m) => {
+              if (m) draggedRef.current = true
+              return (m ? { ...m, x2: x, y2: y } : m)
+            })
             e.preventDefault()
           }}
           onPointerUp={(e) => {
@@ -421,7 +426,9 @@ export default function Viewport2D() {
               const isActive = tNow >= start && tNow <= start + dur
               if (inter && isActive) picked.push(tm.id)
             }
-            setSelectedClips(picked)
+            const current = new Set(selectedClipIds)
+            picked.forEach(id => current.add(id))
+            setSelectedClips(Array.from(current))
             setMarquee(null)
             try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
             e.preventDefault()
@@ -491,7 +498,18 @@ export default function Viewport2D() {
             const isActive = tNow >= start && tNow <= start + dur
             return (
               <div key={idx} ref={getClipRef(tm.id)}
-                onClick={(e) => { e.stopPropagation(); setSelectedClips([tm.id]) }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (e.ctrlKey) {
+                    if (selectedClipIds.includes(tm.id)) {
+                      setSelectedClips(selectedClipIds.filter(id => id !== tm.id))
+                    } else {
+                      setSelectedClips([...selectedClipIds, tm.id])
+                    }
+                  } else {
+                    setSelectedClips([tm.id])
+                  }
+                }}
                 onPointerDown={(e) => {
                   if (tool === 'hand') return
                   if (e.button !== 0) return
@@ -524,7 +542,45 @@ export default function Viewport2D() {
                 onDragStart={(e) => { e.preventDefault() }}
                 onPointerCancel={(e) => { if (dragClipRef.current?.id === tm.id) { setDragClip(null); dragClipRef.current = null } try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
                 title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds || 0).toFixed?.(2)}s)`}
-                style={{ position: 'absolute', left: (dragClip?.id === tm.id && dragClip.currentX !== undefined) ? (cx + dragClip.currentX * ratio - w / 2) : left, top: (dragClip?.id === tm.id && dragClip.currentY !== undefined) ? (cy - dragClip.currentY * ratio - h / 2) : top, width: w, height: h, background: '#0b0d12', border: `1px solid ${isSel ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSel ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, overflow: 'hidden', display: isActive ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', color: '#c7cfdb', fontSize: 11, pointerEvents: 'auto', zIndex: 5, userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none', WebkitUserDrag: 'none', touchAction: 'none' }}
+                style={{
+                  position: 'absolute',
+                  left: (dragClip?.id === tm.id && dragClip.currentX !== undefined) ? (cx + dragClip.currentX * ratio - w / 2) : left,
+                  top: (dragClip?.id === tm.id && dragClip.currentY !== undefined) ? (cy - dragClip.currentY * ratio - h / 2) : top,
+                  width: w,
+                  height: h,
+                  background: '#0b0d12',
+                  border: `1px solid ${isSel ? '#ffcc00' : '#3a4060'}`,
+                  boxShadow: isSel ? '0 0 0 1px #ffcc0066' : 'none',
+                  borderRadius: 4,
+                  overflow: 'hidden',
+                  display: isActive ? 'flex' : 'none',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#c7cfdb',
+                  fontSize: 11,
+                  pointerEvents: 'auto',
+                  zIndex: 5,
+                  userSelect: 'none',
+                  WebkitUserSelect: 'none',
+                  MozUserSelect: 'none',
+                  WebkitUserDrag: 'none',
+                  touchAction: 'none',
+                  opacity: tm.opacity ?? 1,
+                  filter: (() => {
+                    const effects = tm.effects || {}
+                    const filters = []
+                    if (tm.blur) filters.push(`blur(${tm.blur}px)`)
+                    if (effects.blur?.enabled) filters.push(`blur(${effects.blur.value}px)`)
+                    if (effects.brightness?.enabled) filters.push(`brightness(${effects.brightness.value})`)
+                    if (effects.contrast?.enabled) filters.push(`contrast(${effects.contrast.value})`)
+                    if (effects.saturate?.enabled) filters.push(`saturate(${effects.saturate.value})`)
+                    if (effects.grayscale?.enabled) filters.push(`grayscale(${effects.grayscale.value})`)
+                    if (effects.sepia?.enabled) filters.push(`sepia(${effects.sepia.value})`)
+                    if (effects['hue-rotate']?.enabled) filters.push(`hue-rotate(${effects['hue-rotate'].value}deg)`)
+                    if (effects.invert?.enabled) filters.push(`invert(${effects.invert.value})`)
+                    return filters.length ? filters.join(' ') : 'none'
+                  })()
+                }}
               >
                 {(() => {
                   const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
@@ -660,7 +716,7 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
         <div
           onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
           title={node.name || node.id}
-          style={{ position: 'absolute', left: x - w / 2, top: y - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `2px ${highlight ? 'dashed' : 'solid'} ${isSelected || highlight ? '#6aa0ff' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
+          style={{ position: 'absolute', left: x - w / 2, top: y - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `2px ${highlight ? 'dashed' : 'solid'} ${isSelected || highlight ? '#ffcc00' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
         />
         {children}
       </>
@@ -717,8 +773,8 @@ function dotGridBg(center, zoom) {
   // Grid spacing scales with zoom relative to neutral 20%
   const Z_NEUTRAL = 0.2
   const factor = (zoom || Z_NEUTRAL) / Z_NEUTRAL
-  const minorStep = Math.max(1, Math.round(100 * factor))
-  const majorStep = Math.max(1, Math.round(1000 * factor))
+  const minorStep = Math.max(1, Math.round(200 * factor))
+  const majorStep = Math.max(1, Math.round(2000 * factor))
   const mod = (v, m) => ((v % m) + m) % m
   // radial-gradient dot sits at the center of each tile -> subtract half step
   const offXMinor = mod(center.x - minorStep / 2, minorStep)

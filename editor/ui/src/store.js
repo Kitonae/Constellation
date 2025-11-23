@@ -188,7 +188,7 @@ export const useEditorStore = create((set, get) => ({
     return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
   }),
   // Update a timeline clip's 2D transform parameters
-  updateClipTransform: ({ clipId, timelineId, position, scale }) => set((s) => {
+  updateClipTransform: ({ clipId, timelineId, position, scale, opacity, blur }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tracks = (s.project.timeline.tracks || []).map((t) => {
       const m = t.media
@@ -200,7 +200,29 @@ export const useEditorStore = create((set, get) => ({
       const nextScale = scale
         ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
         : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
-      return { media: { ...m, position: nextPos, scale: nextScale } }
+      const nextOpacity = (opacity !== undefined)
+        ? Math.max(0, Math.min(1, parseFloat(opacity)))
+        : (m.opacity ?? 1)
+      const nextBlur = (blur !== undefined)
+        ? Math.max(0, parseFloat(blur))
+        : (m.blur ?? 0)
+      return { media: { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur } }
+    })
+    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
+  }),
+  // Update a specific effect for a clip
+  updateClipEffect: ({ timelineId, effect, value, enabled }) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tracks = (s.project.timeline.tracks || []).map((t) => {
+      const m = t.media
+      if (!m || m.id !== timelineId) return t
+      const prevEffects = m.effects || {}
+      const prevEffect = prevEffects[effect] || {}
+      const nextEffect = {
+        value: value !== undefined ? value : (prevEffect.value ?? 0),
+        enabled: enabled !== undefined ? enabled : (prevEffect.enabled ?? false)
+      }
+      return { media: { ...m, effects: { ...prevEffects, [effect]: nextEffect } } }
     })
     return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
   }),
