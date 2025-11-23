@@ -50,10 +50,16 @@ export const useEditorStore = create((set, get) => ({
     if (s.importingMediaCount > 0 && Date.now() - (s.importingMediaCountUpdatedAt || 0) > 15000) {
       queueLog('warn', 'Import appeared stuck >15s; auto-reset')
       console.warn('[import] auto-reset stuck imports')
-      return { importingMediaCount: 0 }
+      return { importingMediaCount: 0, importProgress: null }
     }
     return {}
   }),
+  // Detailed import progress
+  importProgress: null, // { current, total, filename, cancelled }
+  startImport: (total) => set({ importProgress: { current: 0, total, filename: '', cancelled: false } }),
+  updateImportProgress: (current, filename) => set((s) => s.importProgress ? { importProgress: { ...s.importProgress, current, filename } } : {}),
+  cancelImport: () => set((s) => s.importProgress ? { importProgress: { ...s.importProgress, cancelled: true } } : {}),
+  finishImport: () => set({ importProgress: null }),
   toggleConsole: () => set((s) => ({ consoleOpen: !s.consoleOpen })),
   setViewMode: (mode) => set({ viewMode: (mode === '3d' || mode === 'output') ? mode : '2d' }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === '2d' ? '3d' : '2d' })),
@@ -96,8 +102,14 @@ export const useEditorStore = create((set, get) => ({
     // If we had to create a default project, also ensure scene is set in store
     return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
   }),
+  addTrack: () => set((s) => {
+    const tl = s.project?.timeline
+    if (!tl) return {}
+    const tracks = [...(tl.tracks || []), { media: null }]
+    return { project: { ...s.project, timeline: { ...tl, tracks } } }
+  }),
   // Insert an existing clip onto the timeline
-  addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale }) => set((s) => {
+  addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale, trackIndex }) => set((s) => {
     if (!s.project) return {}
     const clip = (s.project.media || []).find((m) => m.id === clipId)
     if (!clip) return {}
@@ -119,7 +131,24 @@ export const useEditorStore = create((set, get) => ({
       scale: scale ? { x: toInt(scale.x, 0), y: toInt(scale.y, 0) } : { x: 0, y: 0 },
     }
     const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + dur) }
-    const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
+    let tracks = [...(nextTimeline.tracks ?? [])]
+
+    if (typeof trackIndex === 'number' && trackIndex >= 0) {
+      // If targeting a specific track
+      if (trackIndex < tracks.length && !tracks[trackIndex].media) {
+        // If track exists and is empty, fill it
+        tracks[trackIndex] = { ...tracks[trackIndex], media: tm }
+      } else {
+        // Otherwise insert at that index (shifting others down)
+        // OR should we just append if out of bounds?
+        // Let's insert at index
+        tracks.splice(trackIndex, 0, { media: tm })
+      }
+    } else {
+      // Append
+      tracks.push({ media: tm })
+    }
+
     const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? dur))
     queueLog('info', `Inserted clip '${clip.name}' at ${tm.start_at_seconds.toFixed(2)}s`)
     return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } } }

@@ -298,6 +298,13 @@ export default function Viewport2D() {
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [zoom, scale, center.x, center.y])
 
+  useEffect(() => {
+    if (!menu.open) return
+    const close = () => setMenu(m => ({ ...m, open: false }))
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [menu.open])
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div
@@ -571,7 +578,7 @@ export default function Viewport2D() {
       </div>
 
       {menu.open && (
-        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 5000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => { e.stopPropagation() }} onMouseDown={(e) => e.preventDefault()}>
+        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 5000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => { e.stopPropagation() }} onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.preventDefault()}>
           <StageMenu
             onAddScreen={() => {
               setMenu({ open: false, x: 0, y: 0 })
