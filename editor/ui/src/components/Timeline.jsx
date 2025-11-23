@@ -6,13 +6,27 @@ export default function Timeline() {
   const project = useEditorStore((s) => s.project)
   const playing = useEditorStore((s) => s.playing)
   const addLog = useEditorStore((s) => s.addLog)
-  const duration = project?.timeline?.duration_seconds ?? 60
   const tracks = project?.timeline?.tracks ?? []
   const media = project?.media ?? []
   const mediaById = useMemo(() => Object.fromEntries(media.map(m => [m.id, m])), [media])
   const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
+  const addTrack = useEditorStore((s) => s.addTrack)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
+  const maxClipEnd = useMemo(() => {
+    let max = 0
+    for (const t of tracks) {
+      if (t.media) {
+        const end = (t.media.start ?? t.media.start_at_seconds ?? 0) + (t.media.duration ?? ((t.media.out_seconds - t.media.in_seconds) || 0))
+        if (end > max) max = end
+      }
+    }
+    return max
+  }, [tracks])
+
+  // Infinite timeline: at least 60s, or max clip + 5 mins buffer
+  const duration = Math.max((project?.timeline?.duration_seconds ?? 60), maxClipEnd + 300)
+
   const tracksViewportRef = useRef(null) // scroll container for tracks
   const tracksInnerRef = useRef(null) // inner width element
   const rulerViewportRef = useRef(null) // scroll container for ruler
@@ -24,7 +38,7 @@ export default function Timeline() {
   const dragRef = useRef(null)
   const [timelineWidth, setTimelineWidth] = useState(0)
   const [tracksViewportHeight, setTracksViewportHeight] = useState(0)
-  const [pxPerSecond, setPxPerSecond] = useState(100) // zoom level
+  const [pxPerSecond, setPxPerSecond] = useState(20) // Default 20 px/s
   // Local throttled time display (avoids re-rendering heavy timeline each frame)
   const [timeDisplay, setTimeDisplay] = useState(useEditorStore.getState().time || 0)
   const lastDisplayRef = useRef(0)
@@ -45,8 +59,8 @@ export default function Timeline() {
     if (!vp || !inner) return 0
     const rect = vp.getBoundingClientRect()
     const rel = Math.min(Math.max(clientX - rect.left + vp.scrollLeft, 0), inner.clientWidth)
-    return (rel / Math.max(1, inner.clientWidth)) * duration
-  }, [duration])
+    return rel / pxPerSecond
+  }, [pxPerSecond])
 
   const onDragOver = (e) => {
     if (e.dataTransfer.types.includes('application/x-constellation-clip-id') || e.dataTransfer.types.includes('text/plain')) {
@@ -62,7 +76,18 @@ export default function Timeline() {
     const clipId = e.dataTransfer.getData('application/x-constellation-clip-id') || e.dataTransfer.getData('text/plain')
     if (clipId) {
       const tAt = timeFromClientX(e.clientX)
-      addClipToTimeline({ clipId, startAt: tAt })
+
+      // Calculate track index from Y
+      const vp = tracksViewportRef.current
+      let trackIndex = -1
+      if (vp) {
+        const rect = vp.getBoundingClientRect()
+        const relY = e.clientY - rect.top + vp.scrollTop
+        // Top padding 8px, row height 40px (28 + 6 + 6)
+        trackIndex = Math.floor((relY - 8) / 40)
+      }
+
+      addClipToTimeline({ clipId, startAt: tAt, trackIndex })
       setSelectedClip(clipId)
     }
     setDragOver(false); setHoverTime(null)
@@ -120,16 +145,23 @@ export default function Timeline() {
     return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sStr}` : `${m}:${sStr}`
   }
 
-  const pickTickStep = (dur) => {
-    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
-    for (const st of steps) { if (dur / st <= 12) return st }
+  const pickTickStep = (pxPerSec) => {
+    // Target ~100px per major tick
+    const target = 100 / pxPerSec
+    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
+    // Find closest step >= target
+    for (const st of steps) { if (st >= target) return st }
     return steps[steps.length - 1]
   }
-  const tickStep = pickTickStep(duration)
+  const tickStep = pickTickStep(pxPerSecond)
   const ticks = []
+  // Limit ticks to prevent crash if duration is huge and step is small (shouldn't happen with dynamic step)
   for (let t = 0; t <= duration + 1e-6; t += tickStep) ticks.push(Number(t.toFixed(6)))
   const secondDots = []
-  for (let s = 0; s <= Math.floor(duration + 1e-6); s++) secondDots.push(s)
+  // Only show second dots if zoom is high enough (> 10px/s)
+  if (pxPerSecond > 10) {
+    for (let s = 0; s <= Math.floor(duration + 1e-6); s++) secondDots.push(s)
+  }
 
   const IconButton = ({ label, onClick, children }) => (
     <button
@@ -168,7 +200,7 @@ export default function Timeline() {
       const dur = project?.timeline?.duration_seconds ?? duration
       const width = timelineWidth
       const clamped = Math.max(0, Math.min(dur, t))
-      const x = (clamped / Math.max(0.0001, dur)) * width
+      const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
       if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
       const now = performance.now()
@@ -183,12 +215,12 @@ export default function Timeline() {
       const dur = project?.timeline?.duration_seconds ?? duration
       const width = timelineWidth
       const clamped = Math.max(0, Math.min(dur, t))
-      const x = (clamped / Math.max(0.0001, dur)) * width
+      const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
       if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
     } catch { }
     return () => { try { unsub() } catch { } }
-  }, [timelineWidth, duration, project])
+  }, [timelineWidth, duration, project, pxPerSecond])
 
   return (
     <div style={{ padding: 8, color: '#c7cfdb', height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -199,8 +231,8 @@ export default function Timeline() {
             {formatTimecode(timeDisplay)}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 12 }}>
-            <IconButton label="Zoom Out" onClick={() => setPxPerSecond(p => Math.max(10, Math.round(p / 1.25)))}>−</IconButton>
-            <IconButton label="Zoom In" onClick={() => setPxPerSecond(p => Math.min(800, Math.round(p * 1.25)))}>＋</IconButton>
+            <IconButton label="Zoom Out" onClick={() => setPxPerSecond(p => Math.max(1, p - 5))}>−</IconButton>
+            <IconButton label="Zoom In" onClick={() => setPxPerSecond(p => Math.min(200, p + 5))}>＋</IconButton>
             <div style={{ fontSize: 10, opacity: 0.7, minWidth: 60, textAlign: 'center' }}>{pxPerSecond} px/s</div>
           </div>
         </div>
@@ -231,7 +263,7 @@ export default function Timeline() {
         >
           <div ref={rulerInnerRef} style={{ position: 'relative', width: timelineWidth, height: '100%' }}>
             {ticks.map((tVal, idx) => {
-              const x = (tVal / duration) * timelineWidth
+              const x = tVal * pxPerSecond
               const major = (Math.abs((tVal / tickStep) - Math.round(tVal / tickStep)) < 1e-6)
               return (
                 <div key={idx} style={{ position: 'absolute', left: x, top: 0, bottom: 0, width: 0 }}>
@@ -245,7 +277,7 @@ export default function Timeline() {
               )
             })}
             {secondDots.map((s) => {
-              const x = (s / duration) * timelineWidth
+              const x = s * pxPerSecond
               return <div key={`sd-${s}`} style={{ position: 'absolute', left: x, bottom: 3, width: 3, height: 3, marginLeft: -1.5, background: '#4a5674', borderRadius: 2 }} />
             })}
             <div ref={rulerPlayheadRef} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 2, background: '#ff6', pointerEvents: 'none', transform: 'translateZ(0)' }} />
@@ -255,11 +287,14 @@ export default function Timeline() {
       {/* Tracks (labels separated for alignment with ruler) */}
       <div style={{ display: 'flex', marginTop: 8, flex: 1, minHeight: 0 }}>
         <div ref={tracksLabelsRef} style={{ width: LABEL_W, flex: '0 0 auto', padding: '8px 0', height: '100%', overflowY: 'auto' }}>
-          {tracks.filter(t => t.media).map((t, i) =>
-            <div key={i} style={{ height: 28, margin: '6px 0', marginRight: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+          {tracks.map((t, i) =>
+            <div key={i} style={{ height: 28, margin: '6px 0', marginRight: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 8 }}>
               <div style={{ fontSize: 12, opacity: 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{`Track ${i + 1}`}</div>
             </div>
           )}
+          <div style={{ height: 28, margin: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <IconButton label="Add Track" onClick={addTrack}>＋</IconButton>
+          </div>
         </div>
         <div
           ref={tracksViewportRef}
@@ -281,14 +316,20 @@ export default function Timeline() {
           }}
         >
           <div ref={tracksInnerRef} style={{ position: 'relative', width: timelineWidth, padding: '8px 0' }}>
-            {tracks.filter(t => t.media).map((t, i) => {
+            {tracks.map((t, i) => {
               const m = t.media
+              if (!m) {
+                // Empty track placeholder
+                return (
+                  <div key={i} style={{ position: 'relative', height: 28, margin: '6px 0', zIndex: 0, borderBottom: '1px dashed #232636' }} />
+                )
+              }
               const startVal = (m.start ?? m.start_at_seconds) || 0
               const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
               const isDragging = drag?.timelineId === m.id && drag.currentStart !== undefined
               const effectiveStart = isDragging ? drag.currentStart : startVal
-              const left = (effectiveStart / Math.max(0.0001, duration)) * timelineWidth
-              const width = (Math.max(0, durVal) / Math.max(0.0001, duration)) * timelineWidth
+              const left = effectiveStart * pxPerSecond
+              const width = Math.max(0, durVal) * pxPerSecond
               const clip = mediaById[m.clip_id]
               const label = clip?.name || clip?.id || m.clip_id
               const isSelected = selectedClipId === m.id
@@ -347,7 +388,7 @@ export default function Timeline() {
             })}
             <div ref={tracksPlayheadRef} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 2, background: '#ff6', pointerEvents: 'none', transform: 'translateZ(0)', zIndex: 200 }} />
             {isDragOver && hoverTime != null && (
-              <div title={`${hoverTime.toFixed(2)}s`} style={{ position: 'absolute', top: 0, bottom: 0, left: (hoverTime / Math.max(0.0001, duration)) * timelineWidth, width: 2, background: '#5a78ff' }} />
+              <div title={`${hoverTime.toFixed(2)}s`} style={{ position: 'absolute', top: 0, bottom: 0, left: hoverTime * pxPerSecond, width: 2, background: '#5a78ff' }} />
             )}
           </div>
         </div>

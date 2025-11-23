@@ -8,19 +8,31 @@ export default function MediaBin() {
   const time = useEditorStore((s) => s.time)
   const addMediaClip = useEditorStore((s) => s.addMediaClip)
   const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
-  const beginImport = useEditorStore((s) => s.beginImport)
-  const endImport = useEditorStore((s) => s.endImport)
+  const startImport = useEditorStore((s) => s.startImport)
+  const updateImportProgress = useEditorStore((s) => s.updateImportProgress)
+  const finishImport = useEditorStore((s) => s.finishImport)
   const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
   const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
 
   const processEntries = async (entries) => {
     if (!entries || !entries.length) return
-    beginImport()
+    startImport(entries.length)
     try {
+      let i = 0
       for (const { file, path } of entries) {
+        if (useEditorStore.getState().importProgress?.cancelled) break
+
         const name = String(path || file?.name || 'media').split(/[\\\/]/).pop()
+        updateImportProgress(i, name)
+
+        // Yield to allow UI updates
+        await new Promise(r => setTimeout(r, 0))
+
         // Filter out non-media files if folder import picked up junk
-        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) continue
+        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
+          i++
+          continue
+        }
 
         const id = `clip-${Math.random().toString(36).slice(2, 8)}`
         let initialUri = null
@@ -35,12 +47,13 @@ export default function MediaBin() {
           initialUri = toFileUri(String(path || file?.name))
         }
         addMediaClip({ id, name, uri: initialUri, duration_seconds: 10 })
+        i++
       }
     } catch (e) {
       console.error(e)
       alert('Import failed: ' + e)
     } finally {
-      endImport()
+      finishImport()
     }
   }
 
@@ -53,6 +66,13 @@ export default function MediaBin() {
     const entries = await openMediaFolder()
     await processEntries(entries)
   }
+
+  React.useEffect(() => {
+    if (!menu.open) return
+    const close = () => setMenu(m => ({ ...m, open: false }))
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [menu.open])
 
   return (
     <div
@@ -109,7 +129,7 @@ export default function MediaBin() {
         ))}
       </div>
       {menu.open && (
-        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
           <MenuItem label="Add Files…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFiles() }} />
           <MenuItem label="Add Folder…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFolder() }} />
           {menu.clipId && <MenuItem label="Remove" onClick={() => { removeMediaClip(menu.clipId); setMenu({ open: false, x: 0, y: 0, clipId: null }) }} />}
