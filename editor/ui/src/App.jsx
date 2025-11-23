@@ -79,8 +79,18 @@ export default function App() {
   }, [scene])
 
   // Emit snapshot once when project changes
+  const prevMediaRef = useRef(null)
   useEffect(() => {
-    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
+    try {
+      let projToSend = project
+      // Optimization: if media array reference hasn't changed, don't resend it.
+      // This prevents serializing/sending large data URIs on every timeline update (e.g. dragging).
+      if (project && project.media === prevMediaRef.current) {
+        projToSend = { ...project, media: undefined }
+      }
+      prevMediaRef.current = project?.media
+      broadcastToDisplays('display:snapshot', { project: projToSend, scene, time })
+    } catch { }
   }, [project])
 
   const onFile = async (e) => {

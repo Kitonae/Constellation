@@ -84,7 +84,7 @@ function isVideoExt(ext) {
   return ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
 }
 
-export default function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
+export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
   const [src, setSrc] = useState(null)
   const [error, setError] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -173,4 +173,4 @@ export default function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
       )}
     </div>
   )
-}
+})

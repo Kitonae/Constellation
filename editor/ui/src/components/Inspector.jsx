@@ -4,7 +4,7 @@ import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 
 function NumberInput({ value, onChange, step = 0.1 }) {
   return (
-    <input type="number" step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} style={{ width: 90, background:'#0f1115', color:'#c7cfdb', border:'1px solid #232636', borderRadius:4, padding:'4px 6px' }} />
+    <input type="number" step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} style={{ width: 90, background: '#0f1115', color: '#c7cfdb', border: '1px solid #232636', borderRadius: 4, padding: '4px 6px' }} />
   )
 }
 
@@ -64,7 +64,7 @@ export default function Inspector() {
               probe.src = inlined
               return
             }
-          } catch {}
+          } catch { }
           resolve()
         }
         img.src = src
@@ -82,25 +82,25 @@ export default function Inspector() {
       {selectedNode?.kind?.type === 'screen' && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Screen</div>
-          <div style={{ display:'grid', gap:8 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <label style={{ display:'flex', alignItems:'center', gap:6 }}>
-                <input type="checkbox" checked={(selectedNode.kind?.enabled ?? true)} onChange={(e)=>updateScreenEnabled(selectedNode.id, e.target.checked)} />
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={(selectedNode.kind?.enabled ?? true)} onChange={(e) => updateScreenEnabled(selectedNode.id, e.target.checked)} />
                 <span>Enabled</span>
               </label>
             </div>
             <div>
-              <div style={{ marginBottom:4, opacity:0.8 }}>Position (X, Y px)</div>
-              <div style={{ display:'flex', gap:6 }}>
-                <NumberInput value={selectedNode.transform.position.x} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
-                <NumberInput value={selectedNode.transform.position.y} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
+              <div style={{ marginBottom: 4, opacity: 0.8 }}>Position (X, Y px)</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <NumberInput value={selectedNode.transform.position.x} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
+                <NumberInput value={selectedNode.transform.position.y} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
               </div>
             </div>
             <div>
-              <div style={{ marginBottom:4, opacity:0.8 }}>Resolution (W, H px)</div>
-              <div style={{ display:'flex', gap:6 }}>
-                <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v)=>updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
-                <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v)=>updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
+              <div style={{ marginBottom: 4, opacity: 0.8 }}>Resolution (W, H px)</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
+                <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
               </div>
             </div>
           </div>
@@ -111,27 +111,27 @@ export default function Inspector() {
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Clip</div>
           <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>ID: {selectedMedia.id}</div>
-          <div style={{ marginTop:8 }}>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Timing (Start, Duration s)</div>
-            <div style={{ display:'flex', gap:6 }}>
-              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v)=>useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
-              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v)=>useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
+          <div style={{ marginTop: 8 }}>
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Timing (Start, Duration s)</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
+              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
             </div>
           </div>
           <div>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Position (X, Y px)</div>
-            <div style={{ display:'flex', gap:6 }}>
-              <NumberInput step={1} value={selectedMedia.position?.x ?? 0} onChange={(v)=>updateClipTransform({ timelineId: selectedMedia.id, position: { x: Math.round(v) } })} />
-              <NumberInput step={1} value={selectedMedia.position?.y ?? 0} onChange={(v)=>updateClipTransform({ timelineId: selectedMedia.id, position: { y: Math.round(v) } })} />
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Position (X, Y px)</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <NumberInput step={1} value={selectedMedia.position?.x ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, position: { x: Math.round(v) } })} />
+              <NumberInput step={1} value={selectedMedia.position?.y ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, position: { y: Math.round(v) } })} />
             </div>
           </div>
-          <div style={{ marginTop:8 }}>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Size (W, H px)</div>
-            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+          <div style={{ marginTop: 8 }}>
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Size (W, H px)</div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <NumberInput
                 step={1}
                 value={selectedMedia.scale?.x ?? (naturalSize?.w ?? 0)}
-                onChange={(v)=>{
+                onChange={(v) => {
                   if (keepAR) {
                     const baseW = selectedMedia.scale?.x ?? naturalSize?.w ?? 0
                     const baseH = selectedMedia.scale?.y ?? naturalSize?.h ?? 0
@@ -146,7 +146,7 @@ export default function Inspector() {
               <NumberInput
                 step={1}
                 value={selectedMedia.scale?.y ?? (naturalSize?.h ?? 0)}
-                onChange={(v)=>{
+                onChange={(v) => {
                   if (keepAR) {
                     const baseW = selectedMedia.scale?.x ?? naturalSize?.w ?? 0
                     const baseH = selectedMedia.scale?.y ?? naturalSize?.h ?? 0
@@ -158,46 +158,93 @@ export default function Inspector() {
                   }
                 }}
               />
-              <button type="button" onClick={()=>setKeepAR(!keepAR)} style={{ opacity: keepAR ? 1 : 0.7 }}>Aspect</button>
-              <button type="button" onClick={()=>{ if (naturalSize) updateClipTransform({ timelineId: selectedMedia.id, scale: { x: naturalSize.w, y: naturalSize.h } }) }}>Reset</button>
+              <button type="button" onClick={() => setKeepAR(!keepAR)} style={{ opacity: keepAR ? 1 : 0.7 }}>Aspect</button>
+              <button type="button" onClick={() => { if (naturalSize) updateClipTransform({ timelineId: selectedMedia.id, scale: { x: naturalSize.w, y: naturalSize.h } }) }}>Reset</button>
+            </div>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Opacity (0-1)</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <NumberInput step={0.1} value={selectedMedia.opacity ?? 1} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, opacity: v })} />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, borderTop: '1px solid #232636', paddingTop: 8 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Effects</div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <EffectControl label="Brightness" effect="brightness" defaultValue={1} step={0.1} media={selectedMedia} />
+              <EffectControl label="Contrast" effect="contrast" defaultValue={1} step={0.1} media={selectedMedia} />
+              <EffectControl label="Saturation" effect="saturate" defaultValue={1} step={0.1} media={selectedMedia} />
+              <EffectControl label="Grayscale" effect="grayscale" defaultValue={0} step={0.1} media={selectedMedia} />
+              <EffectControl label="Sepia" effect="sepia" defaultValue={0} step={0.1} media={selectedMedia} />
+              <EffectControl label="Hue Rotate (deg)" effect="hue-rotate" defaultValue={0} step={1} media={selectedMedia} />
+              <EffectControl label="Invert" effect="invert" defaultValue={0} step={0.1} media={selectedMedia} />
+              <EffectControl label="Blur (px)" effect="blur" defaultValue={0} step={1} media={selectedMedia} />
             </div>
           </div>
         </div>
       )}
 
       {selectedNode && (
-        <div style={{ display:'grid', gap:8 }}>
-          <div style={{ opacity:0.8 }}>
-            <div style={{ fontWeight:600 }}>{selectedNode.name || selectedNode.id}</div>
-            <div style={{ fontSize:12, opacity:0.7 }}>{selectedNode.id}</div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ opacity: 0.8 }}>
+            <div style={{ fontWeight: 600 }}>{selectedNode.name || selectedNode.id}</div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>{selectedNode.id}</div>
           </div>
           <div>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Position</div>
-            <div style={{ display:'flex', gap:6 }}>
-              <NumberInput value={selectedNode.transform.position.x} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
-              <NumberInput value={selectedNode.transform.position.y} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
-              <NumberInput value={selectedNode.transform.position.z} onChange={(v)=>updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, z: v } })} />
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Position</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <NumberInput value={selectedNode.transform.position.x} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
+              <NumberInput value={selectedNode.transform.position.y} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
+              <NumberInput value={selectedNode.transform.position.z} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, z: v } })} />
             </div>
           </div>
           <div>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Scale</div>
-            <div style={{ display:'flex', gap:6 }}>
-              <NumberInput value={selectedNode.transform.scale.x} onChange={(v)=>updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, x: v } })} />
-              <NumberInput value={selectedNode.transform.scale.y} onChange={(v)=>updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, y: v } })} />
-              <NumberInput value={selectedNode.transform.scale.z} onChange={(v)=>updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, z: v } })} />
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Scale</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <NumberInput value={selectedNode.transform.scale.x} onChange={(v) => updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, x: v } })} />
+              <NumberInput value={selectedNode.transform.scale.y} onChange={(v) => updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, y: v } })} />
+              <NumberInput value={selectedNode.transform.scale.z} onChange={(v) => updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, z: v } })} />
             </div>
           </div>
           <div>
-            <div style={{ marginBottom:4, opacity:0.8 }}>Rotation (quaternion)</div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:6 }}>
-              <NumberInput value={selectedNode.transform.rotation.x} step={0.01} onChange={(v)=>updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, x: v } })} />
-              <NumberInput value={selectedNode.transform.rotation.y} step={0.01} onChange={(v)=>updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, y: v } })} />
-              <NumberInput value={selectedNode.transform.rotation.z} step={0.01} onChange={(v)=>updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, z: v } })} />
-              <NumberInput value={selectedNode.transform.rotation.w} step={0.01} onChange={(v)=>updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, w: v } })} />
+            <div style={{ marginBottom: 4, opacity: 0.8 }}>Rotation (quaternion)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+              <NumberInput value={selectedNode.transform.rotation.x} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, x: v } })} />
+              <NumberInput value={selectedNode.transform.rotation.y} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, y: v } })} />
+              <NumberInput value={selectedNode.transform.rotation.z} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, z: v } })} />
+              <NumberInput value={selectedNode.transform.rotation.w} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, w: v } })} />
             </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function EffectControl({ label, effect, defaultValue, step, media }) {
+  const updateClipEffect = useEditorStore((s) => s.updateClipEffect)
+  const data = media.effects?.[effect] || {}
+  const enabled = data.enabled ?? false
+  const value = data.value ?? defaultValue
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flex: 1 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => updateClipEffect({ timelineId: media.id, effect, enabled: e.target.checked })}
+        />
+        <span style={{ opacity: enabled ? 1 : 0.7 }}>{label}</span>
+      </label>
+      <div style={{ opacity: enabled ? 1 : 0.5, pointerEvents: enabled ? 'auto' : 'none' }}>
+        <NumberInput
+          step={step}
+          value={value}
+          onChange={(v) => updateClipEffect({ timelineId: media.id, effect, value: v })}
+        />
+      </div>
     </div>
   )
 }

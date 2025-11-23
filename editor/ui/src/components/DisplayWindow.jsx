@@ -22,11 +22,25 @@ export default function DisplayWindow() {
     if (rt && typeof rt.EventsOn === 'function') {
       off1 = rt.EventsOn('display:snapshot', (payload) => {
         const p = payload || {}
+        let newSnap = p
         if (p.raw && !p.project && !p.scene) {
-          try { const js = JSON.parse(p.raw); setSnapshot({ project: js.project, scene: js.scene, time: p.time }) } catch { setSnapshot({ project: null, scene: null, time: p.time }) }
-        } else {
-          setSnapshot(p)
+          try {
+            const js = JSON.parse(p.raw)
+            newSnap = { project: js.project, scene: js.scene, time: p.time }
+          } catch {
+            newSnap = { project: null, scene: null, time: p.time }
+          }
         }
+
+        setSnapshot(prev => {
+          const nextProj = newSnap.project
+          // Optimization: if incoming project has no media (undefined), preserve previous media
+          // This allows sending lightweight updates during dragging
+          if (nextProj && nextProj.media === undefined && prev?.project?.media) {
+            nextProj.media = prev.project.media
+          }
+          return newSnap
+        })
         setPlayTime(Number(p.time || 0))
       })
       off2 = rt.EventsOn('display:time', (payload) => {
@@ -40,7 +54,17 @@ export default function DisplayWindow() {
       })
     } else {
       // Fallback: custom DOM events
-      const h1 = (e) => { const d = e.detail || {}; setSnapshot(d); setPlayTime(Number(d.time || 0)) }
+      const h1 = (e) => {
+        const d = e.detail || {}
+        setSnapshot(prev => {
+          const nextProj = d.project
+          if (nextProj && nextProj.media === undefined && prev?.project?.media) {
+            nextProj.media = prev.project.media
+          }
+          return d
+        })
+        setPlayTime(Number(d.time || 0))
+      }
       const h2 = (e) => { setPlayTime(Number((e.detail && e.detail.time) || 0)) }
       const h3 = (e) => { const sid = e.detail && e.detail.screenId; if (!sid || sid === screenId) { try { window.close() } catch { } } }
       window.addEventListener('display:snapshot', h1)
@@ -121,8 +145,24 @@ export default function DisplayWindow() {
         const top = cy - (tm.position?.y || 0) - h / 2
         const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
         const isVideo = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
+
+        // Build filter string
+        const effects = tm.effects || {}
+        const filters = []
+        if (tm.blur) filters.push(`blur(${tm.blur}px)`) // Legacy blur
+        if (effects.blur?.enabled) filters.push(`blur(${effects.blur.value}px)`)
+        if (effects.brightness?.enabled) filters.push(`brightness(${effects.brightness.value})`)
+        if (effects.contrast?.enabled) filters.push(`contrast(${effects.contrast.value})`)
+        if (effects.saturate?.enabled) filters.push(`saturate(${effects.saturate.value})`)
+        if (effects.grayscale?.enabled) filters.push(`grayscale(${effects.grayscale.value})`)
+        if (effects.sepia?.enabled) filters.push(`sepia(${effects.sepia.value})`)
+        if (effects['hue-rotate']?.enabled) filters.push(`hue-rotate(${effects['hue-rotate'].value}deg)`)
+        if (effects.invert?.enabled) filters.push(`invert(${effects.invert.value})`)
+
+        const filterStyle = filters.length ? filters.join(' ') : 'none'
+
         return (
-          <div key={tm.clip_id} style={{ position: 'absolute', left, top, width: w, height: h, overflow: 'hidden' }}>
+          <div key={tm.clip_id} style={{ position: 'absolute', left, top, width: w, height: h, overflow: 'hidden', opacity: tm.opacity ?? 1, filter: filterStyle }}>
             {isVideo ? (
               <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width: '100%', height: '100%' }} />
             ) : meta?.src ? (

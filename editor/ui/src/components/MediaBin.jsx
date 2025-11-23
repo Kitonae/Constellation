@@ -3,11 +3,25 @@ import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
 import MediaThumb from './MediaThumb.jsx'
 
-export default function MediaBin() {
-  const media = useEditorStore((s) => s.project?.media || [])
+function AddClipButton({ clipId }) {
   const time = useEditorStore((s) => s.time)
-  const addMediaClip = useEditorStore((s) => s.addMediaClip)
   const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
+
+  return (
+    <button
+      onClick={() => addClipToTimeline({ clipId, startAt: time })}
+      title={`Insert at ${time.toFixed(2)}s`}
+      aria-label={`Insert at ${time.toFixed(2)} seconds`}
+      style={{ width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}
+    >
+      +
+    </button>
+  )
+}
+
+export default React.memo(function MediaBin() {
+  const media = useEditorStore((s) => s.project?.media || [])
+  const addMediaClip = useEditorStore((s) => s.addMediaClip)
   const startImport = useEditorStore((s) => s.startImport)
   const updateImportProgress = useEditorStore((s) => s.updateImportProgress)
   const finishImport = useEditorStore((s) => s.finishImport)
@@ -117,14 +131,7 @@ export default function MediaBin() {
               <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name || m.id}</div>
               <div style={{ fontSize: 12, opacity: 0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
             </div>
-            <button
-              onClick={() => addClipToTimeline({ clipId: m.id, startAt: time })}
-              title={`Insert at ${time.toFixed(2)}s`}
-              aria-label={`Insert at ${time.toFixed(2)} seconds`}
-              style={{ width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}
-            >
-              +
-            </button>
+            <AddClipButton clipId={m.id} />
           </div>
         ))}
       </div>
@@ -137,7 +144,7 @@ export default function MediaBin() {
       )}
     </div>
   )
-}
+})
 
 function toFileUri(p) {
   let norm = p.replace(/\\/g, '/')
