@@ -85,13 +85,36 @@ export default function DisplayWindow() {
     // No per-screen filtering; render all active clips
     const res = []
     for (const t of project?.timeline?.tracks || []) {
-      if (!t.media) continue
-      const m = t.media
-      const start = (m.start ?? m.start_at_seconds) || 0
-      const dur = Math.max(0, m.duration ?? ((m.out_seconds - m.in_seconds) || 0))
-      if (time < start || time > start + dur) continue
-      const clip = mediaById[m.clip_id]
-      res.push({ tm: m, clip })
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+
+      const overlaps = new Set()
+      for (let j = 0; j < mediaList.length; j++) {
+        for (let k = j + 1; k < mediaList.length; k++) {
+          const m1 = mediaList[j]
+          const m2 = mediaList[k]
+          const s1 = m1.start ?? m1.start_at_seconds ?? 0
+          const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
+          const e1 = s1 + d1
+
+          const s2 = m2.start ?? m2.start_at_seconds ?? 0
+          const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
+          const e2 = s2 + d2
+
+          if (s1 < e2 && s2 < e1) {
+            overlaps.add(m1.id)
+            overlaps.add(m2.id)
+          }
+        }
+      }
+
+      for (const m of mediaList) {
+        if (overlaps.has(m.id)) continue
+        const start = (m.start ?? m.start_at_seconds) || 0
+        const dur = Math.max(0, m.duration ?? ((m.out_seconds - m.in_seconds) || 0))
+        if (time < start || time > start + dur) continue
+        const clip = mediaById[m.clip_id]
+        res.push({ tm: m, clip })
+      }
     }
     return res
   }, [snapshot, screenId, playTime])
@@ -102,7 +125,7 @@ export default function DisplayWindow() {
       const vid = ref.current
       if (!vid) return
       // Find clip by id
-      const m = snapshot?.project?.timeline?.tracks?.map(t => t.media).find(mm => mm && mm.id === id)
+      const m = snapshot?.project?.timeline?.tracks?.flatMap(t => Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])).find(mm => mm && mm.id === id)
       if (!m) return
       const start = (m.start ?? m.start_at_seconds) || 0
       const offset = Math.max(0, playTime - start)
@@ -146,6 +169,22 @@ export default function DisplayWindow() {
         const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
         const isVideo = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
 
+        // Calculate fade opacity
+        const start = (tm.start ?? tm.start_at_seconds) || 0
+        const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
+        const timeInClip = playTime - start
+        const fadeIn = tm.fade_in ?? 0
+        const fadeOut = tm.fade_out ?? 0
+        let fadeOpacity = 1
+
+        if (fadeIn > 0 && timeInClip < fadeIn) {
+          fadeOpacity = Math.min(1, Math.max(0, timeInClip / fadeIn))
+        } else if (fadeOut > 0 && timeInClip > dur - fadeOut) {
+          fadeOpacity = Math.min(1, Math.max(0, (dur - timeInClip) / fadeOut))
+        }
+
+        const finalOpacity = (tm.opacity ?? 1) * fadeOpacity
+
         // Build filter string
         const effects = tm.effects || {}
         const filters = []
@@ -162,7 +201,7 @@ export default function DisplayWindow() {
         const filterStyle = filters.length ? filters.join(' ') : 'none'
 
         return (
-          <div key={tm.clip_id} style={{ position: 'absolute', left, top, width: w, height: h, overflow: 'hidden', opacity: tm.opacity ?? 1, filter: filterStyle }}>
+          <div key={tm.clip_id} style={{ position: 'absolute', left, top, width: w, height: h, overflow: 'hidden', opacity: finalOpacity, filter: filterStyle }}>
             {isVideo ? (
               <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width: '100%', height: '100%' }} />
             ) : meta?.src ? (

@@ -13,11 +13,14 @@ export default function Timeline() {
   const addTrack = useEditorStore((s) => s.addTrack)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
+  const selectedTrackIndex = useEditorStore((s) => s.selectedTrackIndex)
+  const setSelectedTrackIndex = useEditorStore((s) => s.setSelectedTrackIndex)
   const maxClipEnd = useMemo(() => {
     let max = 0
     for (const t of tracks) {
-      if (t.media) {
-        const end = (t.media.start ?? t.media.start_at_seconds ?? 0) + (t.media.duration ?? ((t.media.out_seconds - t.media.in_seconds) || 0))
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      for (const m of mediaList) {
+        const end = (m.start ?? m.start_at_seconds ?? 0) + (m.duration ?? ((m.out_seconds - m.in_seconds) || 0))
         if (end > max) max = end
       }
     }
@@ -223,7 +226,7 @@ export default function Timeline() {
   }, [timelineWidth, duration, project, pxPerSecond])
 
   return (
-    <div style={{ padding: 8, color: '#c7cfdb', height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div style={{ padding: 8, color: '#c7cfdb', height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', minHeight: 0, userSelect: 'none', WebkitUserSelect: 'none' }}>
       <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', zIndex: 5, pointerEvents: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div>Timeline</div>
@@ -286,14 +289,54 @@ export default function Timeline() {
       </div>
       {/* Tracks (labels separated for alignment with ruler) */}
       <div style={{ display: 'flex', marginTop: 8, flex: 1, minHeight: 0 }}>
-        <div ref={tracksLabelsRef} style={{ width: LABEL_W, flex: '0 0 auto', padding: '8px 0', height: '100%', overflowY: 'auto' }}>
-          {tracks.map((t, i) =>
-            <div key={i} style={{ height: 28, margin: '6px 0', marginRight: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 8 }}>
-              <div style={{ fontSize: 12, opacity: 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{`Track ${i + 1}`}</div>
-            </div>
-          )}
-          <div style={{ height: 28, margin: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <IconButton label="Add Track" onClick={addTrack}>＋</IconButton>
+        <div ref={tracksLabelsRef} className="no-scrollbar" style={{ width: LABEL_W, flex: '0 0 auto', padding: '8px 0', height: '100%', overflowY: 'auto' }}>
+          {tracks.map((t, i) => {
+            const isSelected = selectedTrackIndex === i
+            return (
+              <div
+                key={i}
+                onClick={() => setSelectedTrackIndex(i)}
+                style={{
+                  height: 28,
+                  boxSizing: 'border-box',
+                  margin: 0,
+                  marginRight: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingRight: 8,
+                  background: isSelected ? '#354066' : 'transparent',
+                  cursor: 'pointer',
+                  borderRadius: '4px 0 0 4px',
+                  borderRight: isSelected ? '2px solid #6aa0ff' : 'none',
+                  borderBottom: '1px dashed #232636'
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: isSelected ? 1 : 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingLeft: 8 }}>{`Track ${i + 1}`}</div>
+              </div>
+            )
+          })}
+          <div style={{ height: 36, boxSizing: 'border-box', margin: 0, display: 'flex', padding: 5, borderBottom: '1px solid transparent' }}>
+            <button
+              onClick={addTrack}
+              title="Add Track"
+              style={{
+                flex: 1,
+                background: '#161820',
+                color: '#c7cfdb',
+                border: '1px dashed rgb(35, 38, 54)',
+                borderRadius: 4,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                fontSize: 12,
+                lineHeight: 1
+              }}
+            >
+              ＋
+            </button>
           </div>
         </div>
         <div
@@ -317,72 +360,145 @@ export default function Timeline() {
         >
           <div ref={tracksInnerRef} style={{ position: 'relative', width: timelineWidth, padding: '8px 0' }}>
             {tracks.map((t, i) => {
-              const m = t.media
-              if (!m) {
-                // Empty track placeholder
-                return (
-                  <div key={i} style={{ position: 'relative', height: 28, margin: '6px 0', zIndex: 0, borderBottom: '1px dashed #232636' }} />
-                )
-              }
-              const startVal = (m.start ?? m.start_at_seconds) || 0
-              const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-              const isDragging = drag?.timelineId === m.id && drag.currentStart !== undefined
-              const effectiveStart = isDragging ? drag.currentStart : startVal
-              const left = effectiveStart * pxPerSecond
-              const width = Math.max(0, durVal) * pxPerSecond
-              const clip = mediaById[m.clip_id]
-              const label = clip?.name || clip?.id || m.clip_id
-              const isSelected = selectedClipId === m.id
+              const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
 
-              // Vertical drag calculation
-              const ROW_HEIGHT = 40 // 28px height + 6px top + 6px bottom
-              const verticalOffset = (drag?.timelineId === m.id && drag.currentY !== undefined) ? drag.currentY : 0
-              const zIndex = (drag?.timelineId === m.id) ? 100 : 1
+              // Overlap detection
+              const overlaps = new Set()
+              for (let j = 0; j < mediaList.length; j++) {
+                for (let k = j + 1; k < mediaList.length; k++) {
+                  const m1 = mediaList[j]
+                  const m2 = mediaList[k]
+                  const s1 = m1.start ?? m1.start_at_seconds ?? 0
+                  const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
+                  const e1 = s1 + d1
+
+                  const s2 = m2.start ?? m2.start_at_seconds ?? 0
+                  const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
+                  const e2 = s2 + d2
+
+                  if (s1 < e2 && s2 < e1) {
+                    overlaps.add(m1.id)
+                    overlaps.add(m2.id)
+                  }
+                }
+              }
 
               return (
-                <div key={i} style={{ position: 'relative', height: 28, margin: '6px 0', zIndex }}>
-                  <div
-                    onClick={(e) => { e.stopPropagation(); setSelectedClip(m.id) }}
-                    onPointerDown={(e) => {
-                      if (e.button !== 0) return
-                      e.stopPropagation()
-                      try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
-                      const tAt = timeFromClientX(e.clientX)
-                      const offset = tAt - (m.start ?? m.start_at_seconds ?? 0)
-                      const d = { timelineId: m.id, startAtOffset: offset, startY: e.clientY, currentY: 0, originalIndex: i }
-                      setDrag(d)
-                      dragRef.current = d
-                    }}
-                    onPointerMove={(e) => {
-                      if (!dragRef.current || dragRef.current.timelineId !== m.id) return
-                      const tAt = timeFromClientX(e.clientX)
-                      const newStart = tAt - dragRef.current.startAtOffset
-                      const dy = e.clientY - dragRef.current.startY
-                      dragRef.current = { ...dragRef.current, currentStart: newStart, currentY: dy }
-                      setDrag({ ...dragRef.current })
-                    }}
-                    onPointerUp={(e) => {
-                      if (dragRef.current?.timelineId === m.id) {
-                        const d = dragRef.current
-                        // Horizontal commit
-                        if (d.currentStart !== undefined) {
-                          useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: d.currentStart })
-                        }
-                        // Vertical commit (reorder)
-                        if (d.currentY !== undefined) {
-                          const rowDelta = Math.round(d.currentY / ROW_HEIGHT)
-                          if (rowDelta !== 0) {
-                            useEditorStore.getState().reorderClip(m.id, d.originalIndex + rowDelta)
+                <div key={i} style={{ position: 'relative', height: 28, margin: 0, zIndex: 1, background: selectedTrackIndex === i ? 'rgba(53, 64, 102, 0.2)' : 'transparent', borderRadius: '0 4px 4px 0' }}>
+                  {mediaList.map((m) => {
+                    const startVal = (m.start ?? m.start_at_seconds) || 0
+                    const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
+                    const isDragging = drag?.timelineId === m.id && drag.currentStart !== undefined
+                    const effectiveStart = isDragging ? drag.currentStart : startVal
+                    const left = effectiveStart * pxPerSecond
+                    const width = Math.max(0, durVal) * pxPerSecond
+                    const clip = mediaById[m.clip_id]
+                    const label = clip?.name || clip?.id || m.clip_id
+                    const isSelected = selectedClipId === m.id
+                    const isOverlapping = overlaps.has(m.id)
+
+                    // Vertical drag calculation
+                    const ROW_HEIGHT = 28
+                    const verticalOffset = (drag?.timelineId === m.id && drag.currentY !== undefined) ? drag.currentY : 0
+                    const zIndex = (drag?.timelineId === m.id) ? 100 : 1
+
+                    const fadeIn = m.fade_in || 0
+                    const fadeOut = m.fade_out || 0
+                    const fadeInWidth = fadeIn * pxPerSecond
+                    const fadeOutWidth = fadeOut * pxPerSecond
+
+                    return (
+                      <div
+                        key={m.id}
+                        onClick={(e) => { e.stopPropagation(); setSelectedClip(m.id) }}
+                        onPointerDown={(e) => {
+                          if (e.button !== 0) return
+                          e.stopPropagation()
+                          try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
+                          const tAt = timeFromClientX(e.clientX)
+                          const offset = tAt - (m.start ?? m.start_at_seconds ?? 0)
+                          const d = { timelineId: m.id, startAtOffset: offset, startY: e.clientY, currentY: 0, originalIndex: i }
+                          setDrag(d)
+                          dragRef.current = d
+                        }}
+                        onPointerMove={(e) => {
+                          if (!dragRef.current || dragRef.current.timelineId !== m.id) return
+                          const tAt = timeFromClientX(e.clientX)
+                          const newStart = tAt - dragRef.current.startAtOffset
+                          const dy = e.clientY - dragRef.current.startY
+                          dragRef.current = { ...dragRef.current, currentStart: newStart, currentY: dy }
+                          setDrag({ ...dragRef.current })
+                        }}
+                        onPointerUp={(e) => {
+                          if (dragRef.current?.timelineId === m.id) {
+                            const d = dragRef.current
+                            // Horizontal commit
+                            if (d.currentStart !== undefined) {
+                              useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: d.currentStart })
+                            }
+                            // Vertical commit (reorder)
+                            if (d.currentY !== undefined) {
+                              const rowDelta = Math.round(d.currentY / ROW_HEIGHT)
+                              if (rowDelta !== 0) {
+                                useEditorStore.getState().reorderClip(m.id, d.originalIndex + rowDelta)
+                              }
+                            }
+                            setDrag(null)
+                            dragRef.current = null
                           }
-                        }
-                        setDrag(null)
-                        dragRef.current = null
-                      }
-                      try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
-                    }}
-                    style={{ position: 'absolute', left, top: verticalOffset, width, height: '100%', background: isSelected ? '#354066' : '#2a2f45', border: `1px solid ${isSelected ? '#6aa0ff' : '#3a4060'}`, boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none', borderRadius: 4, display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden', cursor: 'grab', transition: drag?.timelineId === m.id ? 'none' : 'top 0.2s ease' }} title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s`}>
-                    <span style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', fontSize: 12 }}>{label}</span>
-                  </div>
+                          try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
+                        }}
+                        style={{
+                          position: 'absolute',
+                          left,
+                          top: verticalOffset,
+                          width,
+                          height: 28,
+                          boxSizing: 'border-box',
+                          background: isOverlapping ? '#4a2a2a' : (isSelected ? '#354066' : '#2a2f45'),
+                          border: `1px solid ${isOverlapping ? '#ff4444' : (isSelected ? '#6aa0ff' : '#3a4060')}`,
+                          boxShadow: isSelected ? '0 0 0 1px #6aa0ff66' : 'none',
+                          borderRadius: 4,
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '0 8px',
+                          overflow: 'hidden',
+                          cursor: 'grab',
+                          transition: drag?.timelineId === m.id ? 'none' : 'top 0.2s ease',
+                          zIndex
+                        }}
+                        title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s${isOverlapping ? ' (Overlapping)' : ''}`}
+                      >
+                        {fadeIn > 0 && (
+                          <div style={{
+                            position: 'absolute',
+                            left: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: fadeInWidth,
+                            background: 'repeating-linear-gradient(-45deg, rgba(255,255,255,0.1), rgba(255,255,255,0.1) 5px, transparent 5px, transparent 10px)',
+                            pointerEvents: 'none',
+                            zIndex: 2
+                          }} />
+                        )}
+                        {fadeOut > 0 && (
+                          <div style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: fadeOutWidth,
+                            background: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.1), rgba(255,255,255,0.1) 5px, transparent 5px, transparent 10px)',
+                            pointerEvents: 'none',
+                            zIndex: 2
+                          }} />
+                        )}
+                        <span style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', fontSize: 12, position: 'relative', zIndex: 3 }}>{label}</span>
+                        {isOverlapping && <div style={{ position: 'absolute', right: 4, top: 0, bottom: 0, display: 'flex', alignItems: 'center', color: '#ff4444', fontWeight: 'bold' }}>!</div>}
+                      </div>
+                    )
+                  })}
+                  <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderBottom: '1px dashed #232636', pointerEvents: 'none', zIndex: 0 }} />
                 </div>
               )
             })}

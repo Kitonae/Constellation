@@ -12,10 +12,12 @@ import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
 import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
+import SaveShowDialog from './components/SaveShowDialog.jsx'
+import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
 
 export default function App() {
   const fileRef = useRef(null)
-  const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode, showOutputOverlay, toggleOutputOverlay, addScreenNode } = useEditorStore()
+  const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode, showOutputOverlay, toggleOutputOverlay, addScreenNode, newProject, addMediaClip } = useEditorStore()
   const [fileName, setFileName] = useState('')
   const [addr, setAddr] = useState('http://127.0.0.1:50051')
   const [status, setStatus] = useState('')
@@ -27,8 +29,97 @@ export default function App() {
   const rightPaneDragRef = useRef(null) // { startX, startW }
   const rightPaneRef = useRef(null)
   // Resizable footer (timeline) height
-  const [timelineHeight, setTimelineHeight] = useState(200)
+  const [timelineHeight, setTimelineHeight] = useState(350)
   const footerDragRef = useRef(null) // { startY, startH }
+  const [showSaveDialog, setShowSaveDialog] = useState(false)
+
+  // Initialize default project on startup
+  useEffect(() => {
+    if (!useEditorStore.getState().project) {
+      newProject()
+    }
+  }, [])
+
+  // Global drag and drop handler for importing media
+  useEffect(() => {
+    const onDragOver = (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    const onDrop = async (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const files = Array.from(e.dataTransfer.files || [])
+      if (!files.length) return
+
+      for (const file of files) {
+        const name = file.name
+        // Filter for media types
+        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) continue
+
+        const id = `clip-${Math.random().toString(36).slice(2, 8)}`
+        let initialUri = null
+        
+        // Check for path property (Electron/WebView2)
+        const path = file.path
+        const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path))
+
+        if (isAbsolute) {
+            initialUri = toFileUri(path)
+        } else {
+             // Fallback for web: use data URL for images, object URL for videos
+             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
+             if (isVideo) {
+                 initialUri = URL.createObjectURL(file)
+             } else {
+                 try {
+                    initialUri = await fileToDataUrl(file)
+                 } catch (err) {
+                    console.warn('data URL conversion failed', err)
+                    initialUri = URL.createObjectURL(file)
+                 }
+             }
+        }
+        
+        let duration = 10
+        if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
+          try {
+            const meta = await getVideoMetadata(file || initialUri)
+            if (meta?.duration) duration = meta.duration
+          } catch (e) {
+            console.warn('Failed to get video metadata', e)
+          }
+        }
+
+        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
+      }
+    }
+
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [addMediaClip])
+
+  // Initialize sidecar file server for video support in dev mode
+  useEffect(() => {
+    if (window.go?.main?.App?.GetFileServerPort) {
+      window.go.main.App.GetFileServerPort().then(port => {
+        if (port > 0) {
+          console.log('Using sidecar file server at port', port)
+          setFileServerBaseUrl(`http://localhost:${port}`)
+          useEditorStore.getState().addLog({ level: 'info', message: `Video sidecar active on port ${port}` })
+        }
+      }).catch(err => {
+        console.warn('Failed to get file server port', err)
+        useEditorStore.getState().addLog({ level: 'error', message: `Sidecar error: ${err}` })
+      })
+    } else {
+      useEditorStore.getState().addLog({ level: 'warn', message: 'Wails API not available' })
+    }
+  }, [])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -112,21 +203,17 @@ export default function App() {
     <div className="layout">
       <header>
         <MenuBar
-          onOpenProject={() => fileRef.current?.click()}
-          onAddImage={onAddImage}
-          onAddScreen={() => {
-            // Create a default screen without prompting
-            addScreenNode({ pixels: [1920, 1080] })
+          onNewShow={() => {
+            if (confirm('Create new show? Unsaved changes will be lost.')) {
+              newProject()
+            }
           }}
-          onSaveShow={async () => {
-            try {
-              const wrapper = buildProjectWrapper(project, scene)
-              if (!window.__TAURI__) { alert('Saving requires backend environment'); return }
-              // TODO: Implement Wails save dialog
-              setStatus('Save not implemented in web mode')
-            } catch (e) {
-              setStatus('Save failed: ' + e)
-              addLog({ level: 'error', message: 'Save failed: ' + e })
+          onOpenProject={() => fileRef.current?.click()}
+          onSaveShow={() => setShowSaveDialog(true)}
+          onPackageShow={() => alert('Package Show not implemented')}
+          onQuit={() => {
+            if (confirm('Quit?')) {
+              window.close()
             }
           }}
           viewMode={viewMode}
@@ -249,6 +336,31 @@ export default function App() {
       <TopConsoleDrawer />
       <LoadingOverlay />
       <GlobalTicker />
+      <SaveShowDialog
+        open={showSaveDialog}
+        onClose={() => setShowSaveDialog(false)}
+        defaultName={project?.name || 'show'}
+        onSave={(name) => {
+          try {
+            const wrapper = buildProjectWrapper(project, scene)
+            // Update project name in wrapper if needed, or just use filename
+            if (wrapper.project) wrapper.project.name = name
+
+            const blob = new Blob([JSON.stringify(wrapper, null, 2)], { type: 'application/json' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = name + '.json'
+            a.click()
+            URL.revokeObjectURL(url)
+            setStatus('Show saved as ' + name)
+            addLog({ level: 'info', message: 'Show saved as ' + name })
+          } catch (e) {
+            setStatus('Save failed: ' + e)
+            addLog({ level: 'error', message: 'Save failed: ' + e })
+          }
+        }}
+      />
     </div>
   )
 }
@@ -277,4 +389,30 @@ async function onAddImage() {
   useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
   useEditorStore.getState().addLog({ level: 'info', message: `Added image: ${name}` })
   return
+}
+
+function toFileUri(p) {
+  let norm = p.replace(/\\/g, '/')
+  // Encode path parts to handle spaces and special characters
+  const parts = norm.split('/')
+  const encodedParts = parts.map(part => encodeURIComponent(part))
+  norm = encodedParts.join('/')
+  
+  // Restore drive letter colon if it was encoded
+  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
+
+  if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
+  if (norm.startsWith('/')) return `file://${norm}`
+  return `file://${norm}`
+}
+
+async function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    try {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = (e) => reject(e)
+      reader.readAsDataURL(file)
+    } catch (e) { reject(e) }
+  })
 }

@@ -1,6 +1,7 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
+import { getVideoMetadata } from '../utils/videoUtils.js'
 import MediaThumb from './MediaThumb.jsx'
 
 function AddClipButton({ clipId }) {
@@ -50,17 +51,43 @@ export default React.memo(function MediaBin() {
 
         const id = `clip-${Math.random().toString(36).slice(2, 8)}`
         let initialUri = null
-        if (file) {
+        
+        // Prefer path if available and absolute (Wails/Electron)
+        // Check for POSIX root '/' or Windows drive 'C:\' or 'C:/'
+        const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path));
+
+        if (isAbsolute) {
+            initialUri = toFileUri(path)
+        } else if (file) {
+             // Fallback for web: use data URL for images, object URL for videos (not persistent)
+             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
+             if (isVideo) {
+                 initialUri = URL.createObjectURL(file)
+             } else {
+                 try {
+                    initialUri = await fileToDataUrl(file)
+                 } catch (err) {
+                    console.warn('data URL conversion failed', err)
+                    initialUri = URL.createObjectURL(file)
+                 }
+             }
+        }
+        
+        if (!initialUri) {
+          initialUri = toFileUri(String(path || file?.name || 'media'))
+        }
+
+        let duration = 10
+        if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
           try {
-            initialUri = await fileToDataUrl(file)
-          } catch (err) {
-            console.warn('data URL conversion failed', err)
+            const meta = await getVideoMetadata(file || initialUri)
+            if (meta?.duration) duration = meta.duration
+          } catch (e) {
+            console.warn('Failed to get video metadata', e)
           }
         }
-        if (!initialUri) {
-          initialUri = toFileUri(String(path || file?.name))
-        }
-        addMediaClip({ id, name, uri: initialUri, duration_seconds: 10 })
+
+        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
         i++
       }
     } catch (e) {
@@ -148,6 +175,16 @@ export default React.memo(function MediaBin() {
 
 function toFileUri(p) {
   let norm = p.replace(/\\/g, '/')
+  // Encode path parts to handle spaces and special characters
+  // We split by '/' to avoid encoding the separators
+  const parts = norm.split('/')
+  const encodedParts = parts.map(part => encodeURIComponent(part))
+  norm = encodedParts.join('/')
+  
+  // Restore drive letter colon if it was encoded
+  // e.g. "C%3A" -> "C:"
+  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
+
   if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
   if (norm.startsWith('/')) return `file://${norm}`
   return `file://${norm}`
