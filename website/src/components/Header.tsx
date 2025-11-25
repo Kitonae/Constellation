@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import logo from '../assets/logo.png';
 
 interface HeaderProps {
     isDarkMode: boolean;
@@ -26,7 +27,7 @@ const Header = ({ isDarkMode, setIsDarkMode }: HeaderProps) => {
     return (
         <header className="flex items-center justify-between px-8 py-6 max-w-7xl mx-auto w-full">
             <div className="flex items-center gap-2">
-                <img src="/logo.png" alt="Constellation Logo" className="w-8 h-8" />
+                <img src={logo} alt="Constellation Logo" className="w-8 h-8" />
                 <span className={`text-xl font-light ${isDarkMode ? 'text-gray-300' : 'text-[#5f6368]'}`}>Constellation</span>
             </div>
 
