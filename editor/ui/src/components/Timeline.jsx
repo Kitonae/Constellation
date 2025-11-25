@@ -12,6 +12,7 @@ export default function Timeline() {
   const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
   const addTrack = useEditorStore((s) => s.addTrack)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
   const selectedTrackIndex = useEditorStore((s) => s.selectedTrackIndex)
   const setSelectedTrackIndex = useEditorStore((s) => s.setSelectedTrackIndex)
@@ -47,11 +48,11 @@ export default function Timeline() {
   const lastDisplayRef = useRef(0)
   const rulerPlayheadRef = useRef(null)
   const tracksPlayheadRef = useRef(null)
-  const tracksLabelsRef = useRef(null)
+  // labels are integrated into the tracks viewport now (single scrollbar)
   const seekingRef = useRef(false)
 
   // Layout constants shared by slider, playhead and hit-testing
-  const LABEL_W = 90
+  const LABEL_W = 120
   const ROW_MARGIN_X = 8
   const GRID_GAP = 8
 
@@ -101,7 +102,9 @@ export default function Timeline() {
     function recalc() {
       const vp = tracksViewportRef.current
       if (!vp) return
-      const width = Math.max(vp.clientWidth, Math.round(duration * pxPerSecond))
+      // Only the timeline area (to the right of labels) should determine width
+      const visibleTrackWidth = Math.max(0, vp.clientWidth - LABEL_W)
+      const width = Math.max(visibleTrackWidth, Math.round(duration * pxPerSecond))
       setTimelineWidth(width)
       setTracksViewportHeight(vp.clientHeight || 0)
     }
@@ -124,18 +127,7 @@ export default function Timeline() {
     return () => { rvp.removeEventListener('scroll', syncFromR); tvp.removeEventListener('scroll', syncFromT) }
   }, [])
 
-  // Sync vertical scroll between labels and tracks
-  useEffect(() => {
-    const lv = tracksLabelsRef.current
-    const tv = tracksViewportRef.current
-    if (!lv || !tv) return
-    let lock = false
-    function syncFromT() { if (lock) return; lock = true; lv.scrollTop = tv.scrollTop; lock = false }
-    function syncFromL() { if (lock) return; lock = true; tv.scrollTop = lv.scrollTop; lock = false }
-    tv.addEventListener('scroll', syncFromT)
-    lv.addEventListener('scroll', syncFromL)
-    return () => { tv.removeEventListener('scroll', syncFromT); lv.removeEventListener('scroll', syncFromL) }
-  }, [])
+  // Vertical scroll sync no longer needed; labels are inside the same viewport
 
   const stop = useCallback(() => { const st = useEditorStore.getState(); st.stop() }, [])
 
@@ -205,7 +197,7 @@ export default function Timeline() {
       const clamped = Math.max(0, Math.min(dur, t))
       const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
-      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
+      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = (LABEL_W + x) + 'px'
       const now = performance.now()
       if (now - lastDisplayRef.current > 125) { // ~8fps UI update for timecode
         lastDisplayRef.current = now
