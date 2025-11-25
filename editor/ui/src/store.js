@@ -1,5 +1,16 @@
 import { create } from 'zustand'
 import { parseProject } from './utils/parseProject.js'
+import { setFileServerBaseUrl } from './utils/videoUtils.js'
+
+// Initialize file server base URL if in Wails environment
+if (window.go?.main?.App?.GetFileServerPort) {
+  window.go.main.App.GetFileServerPort().then(port => {
+    if (port > 0) {
+      console.log('Using sidecar file server at port', port)
+      setFileServerBaseUrl(`http://localhost:${port}`)
+    }
+  }).catch(err => console.warn('Failed to get file server port', err))
+}
 
 export const useEditorStore = create((set, get) => ({
   project: null,
@@ -7,11 +18,13 @@ export const useEditorStore = create((set, get) => ({
   time: 0,
   playing: false,
   importingMediaCount: 0,
+  importingMediaCountUpdatedAt: 0,
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
   selectedId: null,
   selectedClipId: null, // primary selected timeline item id
   selectedClipIds: [], // multi-select support for stage/timeline
+  selectedTrackIndex: null, // selected track index
   gizmoMode: 'translate',
   // Console/logging state
   logs: [], // { id, level, message, time }
@@ -35,10 +48,32 @@ export const useEditorStore = create((set, get) => ({
     return { project: { ...s.project, media } }
   }),
   clearLogs: () => set({ logs: [] }),
-  beginImport: () => set((s) => ({ importingMediaCount: Math.max(0, (s.importingMediaCount||0) + 1) })),
-  endImport: () => set((s) => ({ importingMediaCount: Math.max(0, (s.importingMediaCount||0) - 1) })),
+  beginImport: () => set((s) => {
+    const next = Math.max(0, (s.importingMediaCount || 0) + 1)
+    console.debug('[import] begin ->', next)
+    return { importingMediaCount: next, importingMediaCountUpdatedAt: Date.now() }
+  }),
+  endImport: () => set((s) => {
+    const next = Math.max(0, (s.importingMediaCount || 0) - 1)
+    console.debug('[import] end ->', next)
+    return { importingMediaCount: next, importingMediaCountUpdatedAt: Date.now() }
+  }),
+  resetImportingIfStuck: () => set((s) => {
+    if (s.importingMediaCount > 0 && Date.now() - (s.importingMediaCountUpdatedAt || 0) > 15000) {
+      queueLog('warn', 'Import appeared stuck >15s; auto-reset')
+      console.warn('[import] auto-reset stuck imports')
+      return { importingMediaCount: 0, importProgress: null }
+    }
+    return {}
+  }),
+  // Detailed import progress
+  importProgress: null, // { current, total, filename, cancelled }
+  startImport: (total) => set({ importProgress: { current: 0, total, filename: '', cancelled: false } }),
+  updateImportProgress: (current, filename) => set((s) => s.importProgress ? { importProgress: { ...s.importProgress, current, filename } } : {}),
+  cancelImport: () => set((s) => s.importProgress ? { importProgress: { ...s.importProgress, cancelled: true } } : {}),
+  finishImport: () => set({ importProgress: null }),
   toggleConsole: () => set((s) => ({ consoleOpen: !s.consoleOpen })),
-  setViewMode: (mode) => set({ viewMode: mode === '3d' ? '3d' : '2d' }),
+  setViewMode: (mode) => set({ viewMode: (mode === '3d' || mode === 'output') ? mode : '2d' }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === '2d' ? '3d' : '2d' })),
   toggleOutputOverlay: () => set((s) => ({ showOutputOverlay: !s.showOutputOverlay })),
   addScreenNode: ({ name, pixels, position, scale }) => set((s) => {
@@ -63,6 +98,23 @@ export const useEditorStore = create((set, get) => ({
   }),
   loadProject: (json) => {
     const proj = parseProject(json)
+    // Migrate legacy tracks (single media object -> array)
+    if (proj.timeline?.tracks) {
+      proj.timeline.tracks = proj.timeline.tracks.map(t => {
+        if (t.media && !Array.isArray(t.media)) {
+          return { ...t, media: [t.media] }
+        }
+        if (!t.media && !Array.isArray(t.media)) {
+          return { ...t, media: [] }
+        }
+        return t
+      })
+    }
+    set({ project: proj, scene: proj.scene, selectedId: null, time: 0 })
+  },
+  newProject: () => {
+    const scene = { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
+    const proj = defaultProject(scene)
     set({ project: proj, scene: proj.scene, selectedId: null, time: 0 })
   },
   // Add a generic media clip to the project's media bin
@@ -79,8 +131,14 @@ export const useEditorStore = create((set, get) => ({
     // If we had to create a default project, also ensure scene is set in store
     return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
   }),
+  addTrack: () => set((s) => {
+    const tl = s.project?.timeline
+    if (!tl) return {}
+    const tracks = [...(tl.tracks || []), { media: [] }]
+    return { project: { ...s.project, timeline: { ...tl, tracks } } }
+  }),
   // Insert an existing clip onto the timeline
-  addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale }) => set((s) => {
+  addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale, trackIndex }) => set((s) => {
     if (!s.project) return {}
     const clip = (s.project.media || []).find((m) => m.id === clipId)
     if (!clip) return {}
@@ -100,9 +158,58 @@ export const useEditorStore = create((set, get) => ({
       position: position ? { x: toInt(position.x, 0), y: toInt(position.y, 0) } : { x: 0, y: 0 },
       // 0 means use natural dimensions; renderer falls back to image width/height
       scale: scale ? { x: toInt(scale.x, 0), y: toInt(scale.y, 0) } : { x: 0, y: 0 },
+      fade_in: 0,
+      fade_out: 0,
     }
     const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + dur) }
-    const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
+    let tracks = [...(nextTimeline.tracks ?? [])]
+
+    let finalTrackIndex = -1
+
+    if (typeof trackIndex === 'number' && trackIndex >= 0) {
+      // Explicit track target (e.g. Drag & Drop)
+      finalTrackIndex = trackIndex
+    } else if (typeof s.selectedTrackIndex === 'number' && s.selectedTrackIndex >= 0 && s.selectedTrackIndex < tracks.length) {
+      // Use selected track if available
+      finalTrackIndex = s.selectedTrackIndex
+    } else {
+      // Find first available track with space
+      const start = tm.start
+      const end = start + tm.duration
+      for (let i = 0; i < tracks.length; i++) {
+        const t = tracks[i]
+        const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+        let hasOverlap = false
+        for (const m of mediaList) {
+          const s2 = m.start ?? m.start_at_seconds ?? 0
+          const d2 = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
+          const e2 = s2 + d2
+          if (start < e2 && s2 < end) {
+            hasOverlap = true
+            break
+          }
+        }
+        if (!hasOverlap) {
+          finalTrackIndex = i
+          break
+        }
+      }
+    }
+
+    if (finalTrackIndex >= 0 && finalTrackIndex < tracks.length) {
+      // Add to existing track
+      const existing = tracks[finalTrackIndex].media || []
+      const mediaList = Array.isArray(existing) ? existing : (existing ? [existing] : [])
+      tracks[finalTrackIndex] = { ...tracks[finalTrackIndex], media: [...mediaList, tm] }
+    } else {
+      // Append new track (or insert at specific index if provided but out of bounds)
+      if (finalTrackIndex >= 0) {
+        tracks.splice(finalTrackIndex, 0, { media: [tm] })
+      } else {
+        tracks.push({ media: [tm] })
+      }
+    }
+
     const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? dur))
     queueLog('info', `Inserted clip '${clip.name}' at ${tm.start_at_seconds.toFixed(2)}s`)
     return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } } }
@@ -129,9 +236,11 @@ export const useEditorStore = create((set, get) => ({
       position: { x: 0, y: 0 },
       // 0 means use natural dimensions; renderer falls back to image width/height
       scale: { x: 0, y: 0 },
+      fade_in: 0,
+      fade_out: 0,
     }
     const nextTimeline = baseProj.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + duration) }
-    const tracks = [...(nextTimeline.tracks ?? []), { media: tm }]
+    const tracks = [...(nextTimeline.tracks ?? []), { media: [tm] }]
     const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? duration))
     queueLog('info', `Added image '${clip.name}' targeting ${tm.target_node_id || 'scene'} at ${tm.start_at_seconds.toFixed(2)}s`)
     const nextProj = {
@@ -142,19 +251,53 @@ export const useEditorStore = create((set, get) => ({
     return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
   }),
   // Update a timeline clip's 2D transform parameters
-  updateClipTransform: ({ clipId, timelineId, position, scale }) => set((s) => {
+  updateClipTransform: ({ clipId, timelineId, position, scale, opacity, blur, fade_in, fade_out }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tracks = (s.project.timeline.tracks || []).map((t) => {
-      const m = t.media
-      const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-      if (!m || !match) return t
-      const nextPos = position
-        ? { x: toInt(position.x, m.position?.x ?? 0), y: toInt(position.y, m.position?.y ?? 0) }
-        : (m.position ? { x: toInt(m.position.x, 0), y: toInt(m.position.y, 0) } : { x: 0, y: 0 })
-      const nextScale = scale
-        ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
-        : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
-      return { media: { ...m, position: nextPos, scale: nextScale } }
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const nextMediaList = mediaList.map((m) => {
+        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
+        if (!m || !match) return m
+        const nextPos = position
+          ? { x: toInt(position.x, m.position?.x ?? 0), y: toInt(position.y, m.position?.y ?? 0) }
+          : (m.position ? { x: toInt(m.position.x, 0), y: toInt(m.position.y, 0) } : { x: 0, y: 0 })
+        const nextScale = scale
+          ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
+          : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
+        const nextOpacity = (opacity !== undefined)
+          ? Math.max(0, Math.min(1, parseFloat(opacity)))
+          : (m.opacity ?? 1)
+        const nextBlur = (blur !== undefined)
+          ? Math.max(0, parseFloat(blur))
+          : (m.blur ?? 0)
+        const nextFadeIn = (fade_in !== undefined)
+          ? Math.max(0, parseFloat(fade_in))
+          : (m.fade_in ?? 0)
+        const nextFadeOut = (fade_out !== undefined)
+          ? Math.max(0, parseFloat(fade_out))
+          : (m.fade_out ?? 0)
+        return { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur, fade_in: nextFadeIn, fade_out: nextFadeOut }
+      })
+      return { ...t, media: nextMediaList }
+    })
+    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
+  }),
+  // Update a specific effect for a clip
+  updateClipEffect: ({ timelineId, effect, value, enabled }) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tracks = (s.project.timeline.tracks || []).map((t) => {
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const nextMediaList = mediaList.map((m) => {
+        if (!m || m.id !== timelineId) return m
+        const prevEffects = m.effects || {}
+        const prevEffect = prevEffects[effect] || {}
+        const nextEffect = {
+          value: value !== undefined ? value : (prevEffect.value ?? 0),
+          enabled: enabled !== undefined ? enabled : (prevEffect.enabled ?? false)
+        }
+        return { ...m, effects: { ...prevEffects, [effect]: nextEffect } }
+      })
+      return { ...t, media: nextMediaList }
     })
     return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
   }),
@@ -164,11 +307,14 @@ export const useEditorStore = create((set, get) => ({
     const tl = s.project.timeline
     const duration = Math.max(0, tl.duration_seconds ?? 0)
     const tracks = (tl.tracks || []).map((t) => {
-      const m = t.media
-      const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-      if (!m || !match) return t
-      const nextStart = Math.max(0, Math.min(duration, startAt ?? m.start ?? m.start_at_seconds ?? 0))
-      return { media: { ...m, start_at_seconds: nextStart, start: nextStart } }
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const nextMediaList = mediaList.map((m) => {
+        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
+        if (!m || !match) return m
+        const nextStart = Math.max(0, Math.min(duration, startAt ?? m.start ?? m.start_at_seconds ?? 0))
+        return { ...m, start_at_seconds: nextStart, start: nextStart }
+      })
+      return { ...t, media: nextMediaList }
     })
     return { project: { ...s.project, timeline: { ...tl, tracks } } }
   }),
@@ -178,20 +324,56 @@ export const useEditorStore = create((set, get) => ({
     const tl = s.project.timeline
     const nextDur = Math.max(0, duration ?? 0)
     const tracks = (tl.tracks || []).map((t) => {
-      const m = t.media
-      const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-      if (!m || !match) return t
-      return { media: { ...m, duration: nextDur, out_seconds: (m.in_seconds || 0) + nextDur } }
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const nextMediaList = mediaList.map((m) => {
+        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
+        if (!m || !match) return m
+        return { ...m, duration: nextDur, out_seconds: (m.in_seconds || 0) + nextDur }
+      })
+      return { ...t, media: nextMediaList }
     })
     // Recompute timeline duration_seconds as max end
     const duration_seconds = tracks.reduce((acc, t) => {
-      const m = t.media
-      if (!m) return acc
-      const st = m.start ?? m.start_at_seconds ?? 0
-      const dur = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-      return Math.max(acc, st + dur)
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      return mediaList.reduce((acc2, m) => {
+        if (!m) return acc2
+        const st = m.start ?? m.start_at_seconds ?? 0
+        const dur = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
+        return Math.max(acc2, st + dur)
+      }, acc)
     }, tl.duration_seconds || 0)
     return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds } } }
+  }),
+  reorderClip: (clipId, newIndex) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tl = s.project.timeline
+    const tracks = [...tl.tracks]
+
+    // Find and remove the clip from its current track
+    let movedClip = null
+    const nextTracks = tracks.map(t => {
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const idx = mediaList.findIndex(m => m.id === clipId)
+      if (idx !== -1) {
+        movedClip = mediaList[idx]
+        const newMedia = [...mediaList]
+        newMedia.splice(idx, 1)
+        return { ...t, media: newMedia }
+      }
+      return t
+    })
+
+    if (!movedClip) return {}
+
+    // Clamp target track index
+    const targetIndex = Math.max(0, Math.min(nextTracks.length - 1, newIndex))
+
+    // Add to target track
+    const targetTrack = nextTracks[targetIndex]
+    const targetMedia = Array.isArray(targetTrack.media) ? targetTrack.media : (targetTrack.media ? [targetTrack.media] : [])
+    nextTracks[targetIndex] = { ...targetTrack, media: [...targetMedia, movedClip] }
+
+    return { project: { ...s.project, timeline: { ...tl, tracks: nextTracks } } }
   }),
   tick: (dt) => {
     if (!get().playing) return
@@ -213,22 +395,28 @@ export const useEditorStore = create((set, get) => ({
   setSelected: (id) => set({ selectedId: id }),
   setSelectedClip: (clipId) => set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] }),
   setSelectedClips: (clipIds) => set({ selectedClipIds: Array.isArray(clipIds) ? clipIds : [], selectedClipId: (clipIds && clipIds.length ? clipIds[0] : null) }),
+  setSelectedTrackIndex: (index) => set({ selectedTrackIndex: index }),
   setGizmoMode: (mode) => set({ gizmoMode: mode }),
-  updateNodeTransform: (id, next) => set((s) => ({ scene: {
-    ...s.scene,
-    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => ({
-      ...node,
-      transform: {
-        position: next.position ?? node.transform.position,
-        rotation: next.rotation ?? node.transform.rotation,
-        scale: next.scale ?? node.transform.scale,
-      }
-    })))
-  } })),
+  updateNodeTransform: (id, next) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => ({
+        ...node,
+        transform: {
+          position: next.position ?? node.transform.position,
+          rotation: next.rotation ?? node.transform.rotation,
+          scale: next.scale ?? node.transform.scale,
+        }
+      })))
+    }
+  })),
   // Remove a clip instance from the timeline by timeline item id
   removeClip: (clipId) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
-    const tracks = (s.project.timeline.tracks || []).filter((t) => !(t.media && t.media.id === clipId))
+    const tracks = (s.project.timeline.tracks || []).map((t) => {
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      return { ...t, media: mediaList.filter((m) => m.id !== clipId) }
+    })
     const nextTl = { ...(s.project.timeline || {}), tracks }
     return { project: { ...s.project, timeline: nextTl }, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId }
   }),
@@ -238,31 +426,40 @@ export const useEditorStore = create((set, get) => ({
     const nextMedia = (s.project.media || []).filter((m) => m.id !== clipId)
     let nextTl = s.project.timeline || null
     if (nextTl?.tracks?.length) {
-      const tracks = nextTl.tracks.filter((t) => !(t.media && t.media.clip_id === clipId))
-      nextTl = { ...nextTl, tracks }
+      if (nextTl?.tracks?.length) {
+        const tracks = nextTl.tracks.map((t) => {
+          const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+          return { ...t, media: mediaList.filter((m) => m.clip_id !== clipId) }
+        })
+        nextTl = { ...nextTl, tracks }
+      }
     }
     const nextProject = { ...s.project, media: nextMedia, ...(nextTl ? { timeline: nextTl } : {}) }
     const selectedClipId = s.selectedClipId === clipId ? null : s.selectedClipId
     return { project: nextProject, selectedClipId }
   }),
-  updateScreenPixels: (id, pixels) => set((s) => ({ scene: {
-    ...s.scene,
-    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
-      if (node.kind?.type === 'screen') {
-        return { ...node, kind: { ...node.kind, pixels: [pixels[0] | 0, pixels[1] | 0] } }
-      }
-      return node
-    }))
-  } })),
-  updateScreenEnabled: (id, enabled) => set((s) => ({ scene: {
-    ...s.scene,
-    roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
-      if (node.kind?.type === 'screen') {
-        return { ...node, kind: { ...node.kind, enabled: !!enabled } }
-      }
-      return node
-    }))
-  } })),
+  updateScreenPixels: (id, pixels) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+        if (node.kind?.type === 'screen') {
+          return { ...node, kind: { ...node.kind, pixels: [pixels[0] | 0, pixels[1] | 0] } }
+        }
+        return node
+      }))
+    }
+  })),
+  updateScreenEnabled: (id, enabled) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+        if (node.kind?.type === 'screen') {
+          return { ...node, kind: { ...node.kind, enabled: !!enabled } }
+        }
+        return node
+      }))
+    }
+  })),
   removeScreenNode: (id) => set((s) => {
     if (!s.scene?.roots) return {}
     function removeNodeRec(node, targetId) {
@@ -278,13 +475,14 @@ export const useEditorStore = create((set, get) => ({
     return { scene: { ...s.scene, roots }, selectedId: s.selectedId === id ? null : s.selectedId }
   }),
 }))
+window.useEditorStore = useEditorStore
 
-  // Helper to enqueue a log entry without needing a store setter in scope
-  function queueLog(level, message) {
+// Helper to enqueue a log entry without needing a store setter in scope
+function queueLog(level, message) {
   try {
     const fn = useEditorStore.getState().addLog
     if (fn) fn({ level, message })
-  } catch {}
+  } catch { }
 }
 
 // Integer coercion helper for pixel-based values
@@ -301,7 +499,7 @@ function defaultProject(scene) {
     name: 'Untitled',
     scene: baseScene,
     media: [],
-    timeline: { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: 60 },
+    timeline: { id: 'tl', name: 'Timeline', tracks: [{ media: [] }], events: [], duration_seconds: 60 },
   }
 }
 

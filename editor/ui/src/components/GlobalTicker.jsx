@@ -16,13 +16,15 @@ export default function GlobalTicker() {
       // Throttle display updates: only when playing and at ~20fps
       try {
         const s = useEditorStore.getState()
+        // Import watchdog
+        try { s.resetImportingIfStuck && s.resetImportingIfStuck() } catch { }
         if (s.playing && hasOpenDisplays()) {
           if (!loop._lastEmitAt || now - loop._lastEmitAt > 50) {
-            try { broadcastToDisplays('display:time', { time: s.time }) } catch {}
+            try { broadcastToDisplays('display:time', { time: s.time }) } catch { }
             loop._lastEmitAt = now
           }
         }
-      } catch {}
+      } catch { }
       rafRef.current = requestAnimationFrame(loop)
     }
     rafRef.current = requestAnimationFrame(loop)
@@ -35,23 +37,13 @@ export default function GlobalTicker() {
       try {
         if (!playing && time !== prevTime && hasOpenDisplays()) {
           const st = useEditorStore.getState()
-          broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time })
+          // Optimization: during seek, project structure doesn't change, so we don't need to resend media
+          const projToSend = st.project ? { ...st.project, media: undefined } : null
+          broadcastToDisplays('display:snapshot', { project: projToSend, scene: st.scene, time })
         }
-      } catch {}
+      } catch { }
     })
-    return () => { try { unsub() } catch {} }
-  }, [])
-
-  // When project/scene changes, push a full snapshot to displays if any are open
-  useEffect(() => {
-    const unsub = useEditorStore.subscribe((s) => [s.project, s.scene, s.time, s.playing], ([project, scene, time, playing], [prevProject, prevScene]) => {
-      try {
-        if (hasOpenDisplays() && (project !== prevProject || scene !== prevScene)) {
-          broadcastToDisplays('display:snapshot', { project, scene, time })
-        }
-      } catch {}
-    })
-    return () => { try { unsub() } catch {} }
+    return () => { try { unsub() } catch { } }
   }, [])
 
   return null

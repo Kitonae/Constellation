@@ -2,7 +2,7 @@ import React from 'react'
 import { useEditorStore } from '../store.js'
 import ConsolePanel from './ConsolePanel.jsx'
 
-export default function TopConsoleDrawer(){
+export default function TopConsoleDrawer() {
   const open = useEditorStore((s) => s.consoleOpen)
 
   return (
@@ -19,7 +19,7 @@ export default function TopConsoleDrawer(){
         background: '#0b0d12',
         borderBottom: '1px solid #232636',
         boxShadow: '0 6px 16px rgba(0,0,0,0.5)',
-        zIndex: 1000,
+        zIndex: 4000,
         pointerEvents: open ? 'auto' : 'none',
       }}
     >

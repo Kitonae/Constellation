@@ -1,108 +1,209 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
-import { openMediaDialog } from '../utils/tauriCompat.js'
+import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
+import { getVideoMetadata } from '../utils/videoUtils.js'
 import MediaThumb from './MediaThumb.jsx'
-import { cacheMediaFromPath } from '../utils/cacheMedia.js'
 
-export default function MediaBin() {
-  const media = useEditorStore((s) => s.project?.media || [])
+function AddClipButton({ clipId }) {
   const time = useEditorStore((s) => s.time)
-  const addMediaClip = useEditorStore((s) => s.addMediaClip)
   const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
-  const beginImport = useEditorStore((s) => s.beginImport)
-  const endImport = useEditorStore((s) => s.endImport)
+
+  return (
+    <button
+      onClick={() => addClipToTimeline({ clipId, startAt: time })}
+      title={`Insert at ${time.toFixed(2)}s`}
+      aria-label={`Insert at ${time.toFixed(2)} seconds`}
+      style={{ width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}
+    >
+      +
+    </button>
+  )
+}
+
+export default React.memo(function MediaBin() {
+  const media = useEditorStore((s) => s.project?.media || [])
+  const addMediaClip = useEditorStore((s) => s.addMediaClip)
+  const startImport = useEditorStore((s) => s.startImport)
+  const updateImportProgress = useEditorStore((s) => s.updateImportProgress)
+  const finishImport = useEditorStore((s) => s.finishImport)
   const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
   const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
-  // Remove local button spinner; we'll show spinner in thumbnail instead
 
-  const onImportImage = async () => {
+  const processEntries = async (entries) => {
+    if (!entries || !entries.length) return
+    startImport(entries.length)
     try {
-      beginImport()
-      const filePath = await openMediaDialog()
-      if (!filePath) return
-      const name = String(filePath).split(/[\\\/]/).pop()
-      // Create media entry immediately so its card appears
-      const provisionalUri = toFileUri(String(filePath))
-      const id = `clip-${Math.random().toString(36).slice(2, 8)}`
-      addMediaClip({ id, name, uri: provisionalUri, duration_seconds: 10 })
-      // Cache in background and update URI when ready
-      try {
-        const cached = await cacheMediaFromPath(String(filePath))
-        if (cached && cached !== provisionalUri) {
-          try { useEditorStore.getState().setMediaUri(id, cached) } catch {}
+      let i = 0
+      for (const { file, path } of entries) {
+        if (useEditorStore.getState().importProgress?.cancelled) break
+
+        const name = String(path || file?.name || 'media').split(/[\\\/]/).pop()
+        updateImportProgress(i, name)
+
+        // Yield to allow UI updates
+        await new Promise(r => setTimeout(r, 0))
+
+        // Filter out non-media files if folder import picked up junk
+        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
+          i++
+          continue
         }
-      } catch {}
+
+        const id = `clip-${Math.random().toString(36).slice(2, 8)}`
+        let initialUri = null
+        
+        // Prefer path if available and absolute (Wails/Electron)
+        // Check for POSIX root '/' or Windows drive 'C:\' or 'C:/'
+        const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path));
+
+        if (isAbsolute) {
+            initialUri = toFileUri(path)
+        } else if (file) {
+             // Fallback for web: use data URL for images, object URL for videos (not persistent)
+             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
+             if (isVideo) {
+                 initialUri = URL.createObjectURL(file)
+             } else {
+                 try {
+                    initialUri = await fileToDataUrl(file)
+                 } catch (err) {
+                    console.warn('data URL conversion failed', err)
+                    initialUri = URL.createObjectURL(file)
+                 }
+             }
+        }
+        
+        if (!initialUri) {
+          initialUri = toFileUri(String(path || file?.name || 'media'))
+        }
+
+        let duration = 10
+        if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
+          try {
+            const meta = await getVideoMetadata(file || initialUri)
+            if (meta?.duration) duration = meta.duration
+          } catch (e) {
+            console.warn('Failed to get video metadata', e)
+          }
+        }
+
+        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
+        i++
+      }
     } catch (e) {
       console.error(e)
       alert('Import failed: ' + e)
     } finally {
-      endImport()
+      finishImport()
     }
   }
+
+  const onImportFiles = async () => {
+    const entries = await openMediaFiles()
+    await processEntries(entries)
+  }
+
+  const onImportFolder = async () => {
+    const entries = await openMediaFolder()
+    await processEntries(entries)
+  }
+
+  React.useEffect(() => {
+    if (!menu.open) return
+    const close = () => setMenu(m => ({ ...m, open: false }))
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [menu.open])
 
   return (
     <div
       style={{ padding: 8, color: '#c7cfdb', borderTop: '1px solid #232636' }}
-      onContextMenu={(e)=>{
+      onContextMenu={(e) => {
         e.preventDefault()
         setMenu({ open: true, x: e.clientX, y: e.clientY, clipId: null })
       }}
-      onClick={()=>{ if (menu.open) setMenu({ open:false, x:0, y:0, clipId:null }) }}
+      onClick={() => { if (menu.open) setMenu({ open: false, x: 0, y: 0, clipId: null }) }}
     >
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
         <div style={{ fontWeight: 600 }}>Media Bin</div>
-        <button onClick={onImportImage} title="Add New" aria-label="Add New" style={{ position:'relative' }}>Add New</button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            const rect = e.currentTarget.getBoundingClientRect()
+            setMenu({ open: true, x: rect.left, y: rect.bottom + 4, clipId: null })
+          }}
+          title="Add New"
+          aria-label="Add New"
+          style={{ position: 'relative' }}
+        >
+          Add New
+        </button>
       </div>
       {!media.length && <div style={{ opacity: 0.7 }}>No media yet.</div>}
-      <div style={{ display:'grid', gap: 6 }}>
+      <div style={{ display: 'grid', gap: 6 }}>
         {media.map((m) => (
           <div
             key={m.id}
             draggable
-            onContextMenu={(e)=>{ e.preventDefault(); e.stopPropagation(); setMenu({ open:true, x:e.clientX, y:e.clientY, clipId: m.id }) }}
-            onDragStart={(e)=>{
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenu({ open: true, x: e.clientX, y: e.clientY, clipId: m.id }) }}
+            onDragStart={(e) => {
               // Transfer the clip id for timeline drop
               e.dataTransfer.setData('application/x-constellation-clip-id', m.id)
               e.dataTransfer.setData('text/plain', m.id)
               e.dataTransfer.effectAllowed = 'copyMove'
             }}
-            style={{ display:'flex', alignItems:'center', gap:10, padding:'6px 8px', background:'#0f1115', border:'1px solid #232636', borderRadius:4, cursor:'grab' }}>
+            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, cursor: 'grab', minWidth: 0 }}>
             <MediaThumb uri={m.uri} alt={m.name || m.id} size={48} />
-            <div style={{ flex: 1, overflow:'hidden', textOverflow:'ellipsis' }} title={m.uri}>
-              <div style={{ fontWeight:600, whiteSpace:'nowrap' }}>{m.name || m.id}</div>
-              <div style={{ fontSize:12, opacity:0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
+            <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }} title={m.uri}>
+              <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name || m.id}</div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
             </div>
-            <button
-              onClick={() => addClipToTimeline({ clipId: m.id, startAt: time })}
-              title={`Insert at ${time.toFixed(2)}s`}
-              aria-label={`Insert at ${time.toFixed(2)} seconds`}
-              style={{ width: 28, height: 28, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:16 }}
-            >
-              +
-            </button>
+            <AddClipButton clipId={m.id} />
           </div>
         ))}
       </div>
       {menu.open && (
-        <div style={{ position:'fixed', left: menu.x, top: menu.y, background:'#0f1115', border:'1px solid #232636', borderRadius:4, zIndex: 2000, minWidth: 160, boxShadow:'0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e)=>e.stopPropagation()}>
-          <MenuItem label="Add Image…" onClick={()=>{ setMenu({ open:false, x:0, y:0, clipId:null }); onImportImage() }} />
-          {menu.clipId && <MenuItem label="Remove" onClick={()=>{ removeMediaClip(menu.clipId); setMenu({ open:false, x:0, y:0, clipId:null }) }} />}
+        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+          <MenuItem label="Add Files…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFiles() }} />
+          <MenuItem label="Add Folder…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFolder() }} />
+          {menu.clipId && <MenuItem label="Remove" onClick={() => { removeMediaClip(menu.clipId); setMenu({ open: false, x: 0, y: 0, clipId: null }) }} />}
         </div>
       )}
     </div>
   )
-}
+})
 
 function toFileUri(p) {
   let norm = p.replace(/\\/g, '/')
+  // Encode path parts to handle spaces and special characters
+  // We split by '/' to avoid encoding the separators
+  const parts = norm.split('/')
+  const encodedParts = parts.map(part => encodeURIComponent(part))
+  norm = encodedParts.join('/')
+  
+  // Restore drive letter colon if it was encoded
+  // e.g. "C%3A" -> "C:"
+  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
+
   if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
   if (norm.startsWith('/')) return `file://${norm}`
   return `file://${norm}`
 }
 
+async function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    try {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = (e) => reject(e)
+      reader.readAsDataURL(file)
+    } catch (e) { reject(e) }
+  })
+}
+
 function MenuItem({ label, onClick }) {
   return (
-    <button type="button" onClick={onClick} style={{ display:'block', width:'100%', textAlign:'left', background:'transparent', color:'#c7cfdb', border:'none', padding:'8px 12px', cursor:'pointer' }} onMouseDown={(e)=>e.preventDefault()}>
+    <button type="button" onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'transparent', color: '#c7cfdb', border: 'none', padding: '8px 12px', cursor: 'pointer' }} onMouseDown={(e) => e.preventDefault()}>
       {label}
     </button>
   )

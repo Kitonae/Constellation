@@ -1,0 +1,23 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Constellation Editor",
+  "outputfilename": "constellation-editor",
+  "frontend:dir": "frontend",
+  "frontend:install": "npm --prefix ../ui install",
+  "frontend:build": "cmd /c echo skip-build",
+  "frontend:dev:watcher": "npm --prefix ../ui run dev",
+  "frontend:dev:serverUrl": "http://localhost:5173",
+  "author": {
+    "name": "Kitonae"
+  },
+  "info": {
+    "companyName": "Constellation",
+    "productName": "Constellation Editor",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2025",
+    "comments": "Video display control editor"
+  },
+  "wailsjsdir": "../ui/src/wails",
+  "version": "2",
+  "outputType": "desktop"
+}
