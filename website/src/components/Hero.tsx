@@ -1,3 +1,5 @@
+import logo from '../assets/logo.png';
+
 interface HeroProps {
     isDarkMode: boolean;
 }
@@ -6,7 +8,7 @@ const Hero = ({ isDarkMode }: HeroProps) => {
     return (
         <div className="flex flex-col items-center justify-center text-center px-4">
             <div className="flex items-center gap-2 mb-8">
-                <img src="/logo.png" alt="Constellation Logo" className="w-8 h-8" />
+                <img src={logo} alt="Constellation Logo" className="w-8 h-8" />
                 <span className={`text-xl font-light ${isDarkMode ? 'text-gray-300' : 'text-[#5f6368]'}`}>Constellation</span>
             </div>
             <h1 className={`text-[3rem] leading-[1.1] font-sans ${isDarkMode ? 'text-white' : 'text-[#121317]'} max-w-4xl mb-12`}>
