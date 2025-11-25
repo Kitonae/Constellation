@@ -17,10 +17,9 @@ export default function DisplayWindow() {
   }
 
   useEffect(() => {
-    let off1 = null, off2 = null, off3 = null
-    const rt = (typeof window !== 'undefined') ? (window.runtime || null) : null
-    if (rt && typeof rt.EventsOn === 'function') {
-      off1 = rt.EventsOn('display:snapshot', (payload) => {
+    const handleMessage = (ev) => {
+      const { event, payload } = ev.data || {}
+      if (event === 'display:snapshot') {
         const p = payload || {}
         let newSnap = p
         if (p.raw && !p.project && !p.scene) {
@@ -31,51 +30,26 @@ export default function DisplayWindow() {
             newSnap = { project: null, scene: null, time: p.time }
           }
         }
-
         setSnapshot(prev => {
           const nextProj = newSnap.project
-          // Optimization: if incoming project has no media (undefined), preserve previous media
-          // This allows sending lightweight updates during dragging
           if (nextProj && nextProj.media === undefined && prev?.project?.media) {
             nextProj.media = prev.project.media
           }
           return newSnap
         })
         setPlayTime(Number(p.time || 0))
-      })
-      off2 = rt.EventsOn('display:time', (payload) => {
+      } else if (event === 'display:time') {
         setPlayTime(Number((payload && payload.time) || 0))
-      })
-      off3 = rt.EventsOn('display:close', (payload) => {
+      } else if (event === 'display:close') {
         const sid = payload && payload.screenId
         if (!sid || sid === screenId) {
           try { window.close() } catch { }
         }
-      })
-    } else {
-      // Fallback: custom DOM events
-      const h1 = (e) => {
-        const d = e.detail || {}
-        setSnapshot(prev => {
-          const nextProj = d.project
-          if (nextProj && nextProj.media === undefined && prev?.project?.media) {
-            nextProj.media = prev.project.media
-          }
-          return d
-        })
-        setPlayTime(Number(d.time || 0))
       }
-      const h2 = (e) => { setPlayTime(Number((e.detail && e.detail.time) || 0)) }
-      const h3 = (e) => { const sid = e.detail && e.detail.screenId; if (!sid || sid === screenId) { try { window.close() } catch { } } }
-      window.addEventListener('display:snapshot', h1)
-      window.addEventListener('display:time', h2)
-      window.addEventListener('display:close', h3)
-      off1 = () => window.removeEventListener('display:snapshot', h1)
-      off2 = () => window.removeEventListener('display:time', h2)
-      off3 = () => window.removeEventListener('display:close', h3)
     }
-    return () => { try { off1 && off1() } catch { } try { off2 && off2() } catch { } try { off3 && off3() } catch { } }
-  }, [])
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [screenId])
 
   const active = useMemo(() => {
     if (!snapshot) return []

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -20,14 +21,28 @@ func main() {
 	// Create application instance
 	app := NewApp()
 
+	// Create sub FS for assets
+	subAssets, err := fs.Sub(assets, "frontend/dist")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// Create application with options
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:  "Constellation Editor",
 		Width:  1440,
 		Height: 900,
 		AssetServer: &assetserver.Options{
-			Assets:  assets,
-			Handler: NewFileLoader(),
+			Assets: subAssets,
+			Middleware: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/fs/" {
+						NewFileLoader(nil).ServeHTTP(w, r)
+						return
+					}
+					next.ServeHTTP(w, r)
+				})
+			},
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
@@ -67,8 +82,9 @@ func (a *App) startup(ctx context.Context) {
 	listener, err := net.Listen("tcp", "localhost:0")
 	if err == nil {
 		a.fileServerPort = listener.Addr().(*net.TCPAddr).Port
+		subAssets, _ := fs.Sub(assets, "frontend/dist")
 		a.fileServer = &http.Server{
-			Handler: NewFileLoader(),
+			Handler: NewFileLoader(subAssets),
 		}
 		go func() {
 			if err := a.fileServer.Serve(listener); err != nil && err != http.ErrServerClosed {

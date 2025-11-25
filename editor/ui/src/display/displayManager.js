@@ -1,4 +1,5 @@
 import { useEditorStore } from '../store.js'
+import { GetFileServerPort } from '../wails/wailsjs/go/main/App.js'
 
 const opened = new Map()
 
@@ -8,43 +9,59 @@ export function hasOpenDisplays() {
 
 export async function openDisplayWindow(screenId, width, height) {
   const label = `display-${screenId}`
-  if (opened.has(label)) return opened.get(label)
-  const rt = (typeof window !== 'undefined') ? (window.runtime || null) : null
+  if (opened.has(label)) {
+    const existing = opened.get(label)
+    if (existing.win && !existing.win.closed) {
+      existing.win.focus()
+      return existing
+    }
+  }
+  
   const w = Math.max(100, Math.floor(width))
   const h = Math.max(100, Math.floor(height))
-  if (rt && typeof rt.EventsEmit === 'function') {
-    try { rt.EventsEmit('display:open', { screenId, width: w, height: h }) } catch {}
-  } else {
-    try { const url = `/?display=1&screenId=${encodeURIComponent(screenId)}&w=${w}&h=${h}`; window.open(url, label, `width=${w},height=${h},resizable=yes`) } catch {}
-  }
-  opened.set(label, { screenId, width, height })
-  // After opening, push a snapshot
+  
+  let url = `/?display=1&screenId=${encodeURIComponent(screenId)}&w=${w}&h=${h}`
+  
+  // Try to get sidecar port for external window
   try {
-    const s = useEditorStore.getState()
-    const wrapper = { project: s.project, scene: s.scene }
-    if (rt && typeof rt.EventsEmit === 'function') {
-      try { rt.EventsEmit('display:snapshot', { project: wrapper.project, scene: wrapper.scene, time: s.time || 0 }) } catch {}
-    } else {
-      try { window.dispatchEvent(new CustomEvent('display:snapshot', { detail: { project: wrapper.project, scene: wrapper.scene, time: s.time || 0 } })) } catch {}
+    const port = await GetFileServerPort()
+    if (port > 0) {
+      url = `http://localhost:${port}/?display=1&screenId=${encodeURIComponent(screenId)}&w=${w}&h=${h}`
     }
-  } catch {}
+  } catch (e) {
+    console.warn('Failed to get sidecar port, using relative URL', e)
+  }
+
+  const win = window.open(url, label, `width=${w},height=${h},resizable=yes`)
+  
+  opened.set(label, { screenId, width, height, win })
+  
+  // After opening, push a snapshot via postMessage
+  setTimeout(() => {
+    try {
+      const s = useEditorStore.getState()
+      broadcastToDisplays('display:snapshot', { project: s.project, scene: s.scene, time: s.time || 0 })
+    } catch {}
+  }, 500)
+  
   return opened.get(label)
 }
 
 export function closeDisplayWindow(screenId) {
   const label = `display-${screenId}`
-  const rt = (typeof window !== 'undefined') ? (window.runtime || null) : null
-  try {
-    if (rt && typeof rt.EventsEmit === 'function') rt.EventsEmit('display:close', { screenId })
-    else window.dispatchEvent(new CustomEvent('display:close', { detail: { screenId } }))
-  } catch {}
+  broadcastToDisplays('display:close', { screenId })
   opened.delete(label)
 }
 
 export function broadcastToDisplays(event, payload) {
-  const rt = (typeof window !== 'undefined') ? (window.runtime || null) : null
-  try {
-    if (rt && typeof rt.EventsEmit === 'function') rt.EventsEmit(event, payload)
-    else window.dispatchEvent(new CustomEvent(event, { detail: payload }))
-  } catch {}
+  // Use postMessage to all opened windows
+  for (const [label, data] of opened.entries()) {
+    if (data.win && !data.win.closed) {
+      try {
+        data.win.postMessage({ event, payload }, '*')
+      } catch (e) {
+        console.error('Failed to postMessage to', label, e)
+      }
+    }
+  }
 }
