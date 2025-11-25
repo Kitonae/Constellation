@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react';
 
-const ConstellationBackground = () => {
+interface ConstellationBackgroundProps {
+    isDarkMode: boolean;
+}
+
+const ConstellationBackground = ({ isDarkMode }: ConstellationBackgroundProps) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
@@ -59,10 +63,12 @@ const ConstellationBackground = () => {
                 if (star.y < 0) star.y = canvas.height;
                 if (star.y > canvas.height) star.y = 0;
 
-                // Draw star
+                // Draw star with color based on dark mode
                 ctx.beginPath();
                 ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(60, 60, 80, ${star.opacity})`;
+                ctx.fillStyle = isDarkMode
+                    ? `rgba(200, 200, 220, ${star.opacity})`
+                    : `rgba(60, 60, 80, ${star.opacity})`;
                 ctx.fill();
 
                 // Draw connections
@@ -77,7 +83,9 @@ const ConstellationBackground = () => {
                         ctx.beginPath();
                         ctx.moveTo(star.x, star.y);
                         ctx.lineTo(other.x, other.y);
-                        ctx.strokeStyle = `rgba(60, 60, 80, ${opacity})`;
+                        ctx.strokeStyle = isDarkMode
+                            ? `rgba(200, 200, 220, ${opacity})`
+                            : `rgba(60, 60, 80, ${opacity})`;
                         ctx.lineWidth = 1;
                         ctx.stroke();
                     }
@@ -92,7 +100,7 @@ const ConstellationBackground = () => {
         return () => {
             window.removeEventListener('resize', resizeCanvas);
         };
-    }, []);
+    }, [isDarkMode]);
 
     return (
         <canvas
