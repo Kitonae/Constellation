@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -8,10 +9,14 @@ import (
 	"strings"
 )
 
-type FileLoader struct{}
+type FileLoader struct {
+	assets fs.FS
+}
 
-func NewFileLoader() *FileLoader {
-	return &FileLoader{}
+func NewFileLoader(assets fs.FS) *FileLoader {
+	return &FileLoader{
+		assets: assets,
+	}
 }
 
 func (h *FileLoader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,5 +51,11 @@ func (h *FileLoader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, path)
 		return
 	}
+
+	if h.assets != nil {
+		http.FileServer(http.FS(h.assets)).ServeHTTP(w, r)
+		return
+	}
+
 	w.WriteHeader(http.StatusNotFound)
 }
