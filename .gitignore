@@ -12,7 +12,9 @@ build/
 
 # Editor
 .idea/
-.vscode/
+# .vscode/
+!.vscode/launch.json
+!.vscode/tasks.json
 *.swp
 *.swo
 *.bak

@@ -1,0 +1,25 @@
+const Hero = () => {
+    return (
+        <div className="flex flex-col items-center justify-center text-center px-4">
+            <div className="flex items-center gap-2 mb-8">
+                <img src="/logo.png" alt="Constellation Logo" className="w-8 h-8" />
+                <span className="text-xl font-light text-[#5f6368]">Constellation</span>
+            </div>
+            <h1 className="text-[3rem] leading-[1.1] font-sans text-[#121317] max-w-4xl mb-12">
+                <span className="font-[450]">Your media universe</span>
+                <br />
+                <span className="text-[2rem] text-[#5f6368] font-normal">Beautifully organised and presented</span>
+            </h1>
+            <div className="flex gap-4">
+                <button className="bg-[#1a73e8] text-white px-6 py-3 rounded-full font-medium hover:bg-[#1557b0] transition-colors">
+                    Download for MacOS
+                </button>
+                <button className="text-[#1a73e8] px-6 py-3 rounded-full font-medium hover:bg-gray-100 transition-colors border border-[#dadce0]">
+                    Explore use cases
+                </button>
+            </div>
+        </div>
+    );
+};
+
+export default Hero;
