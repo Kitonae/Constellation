@@ -2,9 +2,83 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useEditorStore } from '../store.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 
-function NumberInput({ value, onChange, step = 0.1 }) {
+function NumberInput({ value, onChange, step = 0.1, style }) {
   return (
-    <input type="number" step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} style={{ width: 90, background: '#0f1115', color: '#c7cfdb', border: '1px solid #232636', borderRadius: 4, padding: '4px 6px' }} />
+    <input
+      type="number"
+      step={step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      style={{
+        width: '100%',
+        background: '#0f1115',
+        color: '#c7cfdb',
+        border: '1px solid #232636',
+        borderRadius: 4,
+        padding: '4px 8px',
+        fontSize: 12,
+        boxSizing: 'border-box',
+        outline: 'none',
+        transition: 'border-color 0.2s',
+        ...style
+      }}
+      onFocus={(e) => e.target.style.borderColor = '#4a5568'}
+      onBlur={(e) => e.target.style.borderColor = '#232636'}
+    />
+  )
+}
+
+function Divider() {
+  return <div style={{ height: 1, background: '#232636', margin: '4px 0' }} />
+}
+
+function Category({ title, children, defaultOpen = true, actions }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div style={{ borderBottom: '1px solid #232636' }}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{
+          padding: '8px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          userSelect: 'none',
+          background: '#1b1e26',
+          transition: 'background 0.2s'
+        }}
+        onMouseEnter={(e) => e.currentTarget.style.background = '#232636'}
+        onMouseLeave={(e) => e.currentTarget.style.background = '#1b1e26'}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ 
+            fontSize: 10, 
+            opacity: 0.6, 
+            color: '#c7cfdb',
+            transform: open ? 'rotate(90deg)' : 'none', 
+            transition: 'transform 0.2s',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 12,
+            height: 12
+          }}>▶</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#e1e4e8' }}>{title}</span>
+        </div>
+        {actions && <div onClick={e => e.stopPropagation()}>{actions}</div>}
+      </div>
+      {open && <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: 16 }}>{children}</div>}
+    </div>
+  )
+}
+
+function PropertyRow({ label, children, style }) {
+  return (
+    <div style={style}>
+      {label && <div style={{ marginBottom: 6, fontSize: 11, opacity: 0.6, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 500, color: '#c7cfdb' }}>{label}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>{children}</div>
+    </div>
   )
 }
 
@@ -35,7 +109,9 @@ export default function Inspector() {
   const selectedMedia = useMemo(() => {
     if (!selectedClipId || !project?.timeline?.tracks) return null
     for (const t of project.timeline.tracks) {
-      if (t.media && t.media.id === selectedClipId) return t.media
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const found = mediaList.find(m => m.id === selectedClipId)
+      if (found) return found
     }
     return null
   }, [project, selectedClipId])
@@ -74,60 +150,35 @@ export default function Inspector() {
     return () => { cancelled = true }
   }, [selectedClip?.uri])
 
-  return (
-    <div style={{ padding: 8, color: '#c7cfdb' }}>
-      <div style={{ fontWeight: 600, marginBottom: 8 }}>Inspector</div>
-      {!selectedNode && !selectedMedia && <div style={{ opacity: 0.7 }}>No selection.</div>}
+  if (!selectedNode && !selectedMedia) {
+    return <div style={{ padding: 16, opacity: 0.5, textAlign: 'center', fontSize: 13, color: '#c7cfdb' }}>No selection</div>
+  }
 
+  return (
+    <div style={{ height: '100%', overflowY: 'auto', background: '#13151a', color: '#c7cfdb' }}>
       {selectedNode?.kind?.type === 'screen' && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>Screen</div>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input type="checkbox" checked={(selectedNode.kind?.enabled ?? true)} onChange={(e) => updateScreenEnabled(selectedNode.id, e.target.checked)} />
-                <span>Enabled</span>
-              </label>
-            </div>
-            <div>
-              <div style={{ marginBottom: 4, opacity: 0.8 }}>Position (X, Y px)</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <NumberInput value={selectedNode.transform.position.x} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
-                <NumberInput value={selectedNode.transform.position.y} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
-              </div>
-            </div>
-            <div>
-              <div style={{ marginBottom: 4, opacity: 0.8 }}>Resolution (W, H px)</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
-                <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
-              </div>
-            </div>
+        <Category title="Screen Settings">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+              <input type="checkbox" checked={(selectedNode.kind?.enabled ?? true)} onChange={(e) => updateScreenEnabled(selectedNode.id, e.target.checked)} />
+              <span style={{ fontSize: 12, color: '#c7cfdb' }}>Enabled</span>
+            </label>
           </div>
-        </div>
+          <PropertyRow label="Resolution (W x H)">
+            <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
+            <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
+          </PropertyRow>
+        </Category>
       )}
 
       {selectedMedia && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>Clip</div>
-          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>ID: {selectedMedia.id}</div>
-          <div style={{ marginTop: 8 }}>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Timing (Start, Duration s)</div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
-              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
-            </div>
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Position (X, Y px)</div>
-            <div style={{ display: 'flex', gap: 6 }}>
+        <>
+          <Category title="Transform">
+            <PropertyRow label="Position (X, Y)">
               <NumberInput step={1} value={selectedMedia.position?.x ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, position: { x: Math.round(v) } })} />
               <NumberInput step={1} value={selectedMedia.position?.y ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, position: { y: Math.round(v) } })} />
-            </div>
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Size (W, H px)</div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            </PropertyRow>
+            <PropertyRow label="Size (W, H)">
               <NumberInput
                 step={1}
                 value={selectedMedia.scale?.x ?? (naturalSize?.w ?? 0)}
@@ -158,71 +209,106 @@ export default function Inspector() {
                   }
                 }}
               />
-              <button type="button" onClick={() => setKeepAR(!keepAR)} style={{ opacity: keepAR ? 1 : 0.7 }}>Aspect</button>
-              <button type="button" onClick={() => { if (naturalSize) updateClipTransform({ timelineId: selectedMedia.id, scale: { x: naturalSize.w, y: naturalSize.h } }) }}>Reset</button>
-            </div>
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Opacity (0-1)</div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <NumberInput step={0.1} value={selectedMedia.opacity ?? 1} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, opacity: v })} />
-            </div>
-          </div>
+            </PropertyRow>
+            
+            <Divider />
 
-          <div style={{ marginTop: 12, borderTop: '1px solid #232636', paddingTop: 8 }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Effects</div>
-            <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => setKeepAR(!keepAR)}
+                style={{
+                  flex: 1,
+                  padding: '6px 8px',
+                  background: keepAR ? '#354066' : '#161820',
+                  border: `1px solid ${keepAR ? '#6aa0ff' : '#232636'}`,
+                  color: keepAR ? '#fff' : '#c7cfdb',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              >
+                {keepAR ? 'AspectRatio: Locked' : 'AspectRatio: Free'}
+              </button>
+              <button
+                onClick={() => { if (naturalSize) updateClipTransform({ timelineId: selectedMedia.id, scale: { x: naturalSize.w, y: naturalSize.h } }) }}
+                style={{
+                  padding: '6px 8px',
+                  background: '#161820',
+                  border: '1px solid #232636',
+                  color: '#c7cfdb',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              >
+                Reset Size
+              </button>
+            </div>
+          </Category>
+
+          <Category title="Timing">
+            <PropertyRow label="Start / Duration (s)">
+              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
+              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
+            </PropertyRow>
+            <PropertyRow label="Fade In / Out (s)">
+              <NumberInput step={0.1} value={selectedMedia.fade_in ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_in: v })} />
+              <NumberInput step={0.1} value={selectedMedia.fade_out ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_out: v })} />
+            </PropertyRow>
+          </Category>
+
+          <Category title="Appearance">
+            <PropertyRow label="Opacity">
+              <NumberInput step={0.1} value={selectedMedia.opacity ?? 1} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, opacity: v })} />
+            </PropertyRow>
+          </Category>
+
+          <Category title="Effects" defaultOpen={false}>
+            <div style={{ display: 'grid', gap: 12 }}>
               <EffectControl label="Brightness" effect="brightness" defaultValue={1} step={0.1} media={selectedMedia} />
               <EffectControl label="Contrast" effect="contrast" defaultValue={1} step={0.1} media={selectedMedia} />
               <EffectControl label="Saturation" effect="saturate" defaultValue={1} step={0.1} media={selectedMedia} />
-              <EffectControl label="Grayscale" effect="grayscale" defaultValue={0} step={0.1} media={selectedMedia} />
-              <EffectControl label="Sepia" effect="sepia" defaultValue={0} step={0.1} media={selectedMedia} />
-              <EffectControl label="Hue Rotate (deg)" effect="hue-rotate" defaultValue={0} step={1} media={selectedMedia} />
-              <EffectControl label="Invert" effect="invert" defaultValue={0} step={0.1} media={selectedMedia} />
-              <EffectControl label="Blur (px)" effect="blur" defaultValue={0} step={1} media={selectedMedia} />
+              <EffectControl label="Grayscale" effect="grayscale" defaultValue={1} hasValue={false} media={selectedMedia} />
+              <EffectControl label="Sepia" effect="sepia" defaultValue={1} hasValue={false} media={selectedMedia} />
+              <EffectControl label="Hue Rotate" effect="hue-rotate" defaultValue={0} step={1} media={selectedMedia} />
+              <EffectControl label="Invert" effect="invert" defaultValue={1} hasValue={false} media={selectedMedia} />
+              <EffectControl label="Blur" effect="blur" defaultValue={0} step={1} media={selectedMedia} />
             </div>
-          </div>
-        </div>
+          </Category>
+        </>
       )}
 
       {selectedNode && (
-        <div style={{ display: 'grid', gap: 8 }}>
-          <div style={{ opacity: 0.8 }}>
-            <div style={{ fontWeight: 600 }}>{selectedNode.name || selectedNode.id}</div>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>{selectedNode.id}</div>
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Position</div>
-            <div style={{ display: 'flex', gap: 6 }}>
+        <>
+          <Category title="Node Transform">
+            <PropertyRow label="Position (X, Y, Z)">
               <NumberInput value={selectedNode.transform.position.x} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, x: v } })} />
               <NumberInput value={selectedNode.transform.position.y} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, y: v } })} />
               <NumberInput value={selectedNode.transform.position.z} onChange={(v) => updateNodeTransform(selectedNode.id, { position: { ...selectedNode.transform.position, z: v } })} />
-            </div>
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Scale</div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            </PropertyRow>
+            <PropertyRow label="Scale (X, Y, Z)">
               <NumberInput value={selectedNode.transform.scale.x} onChange={(v) => updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, x: v } })} />
               <NumberInput value={selectedNode.transform.scale.y} onChange={(v) => updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, y: v } })} />
               <NumberInput value={selectedNode.transform.scale.z} onChange={(v) => updateNodeTransform(selectedNode.id, { scale: { ...selectedNode.transform.scale, z: v } })} />
-            </div>
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, opacity: 0.8 }}>Rotation (quaternion)</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
-              <NumberInput value={selectedNode.transform.rotation.x} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, x: v } })} />
-              <NumberInput value={selectedNode.transform.rotation.y} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, y: v } })} />
-              <NumberInput value={selectedNode.transform.rotation.z} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, z: v } })} />
-              <NumberInput value={selectedNode.transform.rotation.w} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, w: v } })} />
-            </div>
-          </div>
-        </div>
+            </PropertyRow>
+            <PropertyRow label="Rotation (Quaternion X, Y, Z, W)">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <NumberInput value={selectedNode.transform.rotation.x} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, x: v } })} />
+                <NumberInput value={selectedNode.transform.rotation.y} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, y: v } })} />
+                <NumberInput value={selectedNode.transform.rotation.z} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, z: v } })} />
+                <NumberInput value={selectedNode.transform.rotation.w} step={0.01} onChange={(v) => updateNodeTransform(selectedNode.id, { rotation: { ...selectedNode.transform.rotation, w: v } })} />
+              </div>
+            </PropertyRow>
+          </Category>
+        </>
       )}
     </div>
   )
 }
 
-function EffectControl({ label, effect, defaultValue, step, media }) {
+function EffectControl({ label, effect, defaultValue, step, media, hasValue = true }) {
   const updateClipEffect = useEditorStore((s) => s.updateClipEffect)
   const data = media.effects?.[effect] || {}
   const enabled = data.enabled ?? false
@@ -234,17 +320,24 @@ function EffectControl({ label, effect, defaultValue, step, media }) {
         <input
           type="checkbox"
           checked={enabled}
-          onChange={(e) => updateClipEffect({ timelineId: media.id, effect, enabled: e.target.checked })}
+          onChange={(e) => {
+            const isEnabled = e.target.checked
+            const update = { enabled: isEnabled }
+            if (isEnabled && !hasValue) update.value = 1
+            updateClipEffect({ timelineId: media.id, effect, ...update })
+          }}
         />
         <span style={{ opacity: enabled ? 1 : 0.7 }}>{label}</span>
       </label>
-      <div style={{ opacity: enabled ? 1 : 0.5, pointerEvents: enabled ? 'auto' : 'none' }}>
-        <NumberInput
-          step={step}
-          value={value}
-          onChange={(v) => updateClipEffect({ timelineId: media.id, effect, value: v })}
-        />
-      </div>
+      {hasValue && (
+        <div style={{ width: 60, opacity: enabled ? 1 : 0.5, pointerEvents: enabled ? 'auto' : 'none' }}>
+          <NumberInput
+            step={step}
+            value={value}
+            onChange={(v) => updateClipEffect({ timelineId: media.id, effect, value: v })}
+          />
+        </div>
+      )}
     </div>
   )
 }

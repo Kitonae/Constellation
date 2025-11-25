@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
 import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
+import { resolveFileUrl } from '../utils/videoUtils.js'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
@@ -24,8 +25,9 @@ export default function Viewport2D() {
   const [pan, setPan] = useState(null) // { startX, startY, startLeft, startTop }
   const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
   const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
-  const [dragClip, setDragClip] = useState(null) // { id, startX, startY, origX, origY }
+  const [dragClip, setDragClip] = useState(null) // { targets: { [id]: { origX, origY, currentX, currentY } }, startX, startY, isDragging }
   const dragClipRef = useRef(null)
+  const clipDraggedRef = useRef(false)
   const [menu, setMenu] = useState({ open: false, x: 0, y: 0 })
   const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
   const draggedRef = useRef(false)
@@ -34,9 +36,12 @@ export default function Viewport2D() {
   // Global failsafe: if the pointer is released outside the element, end any active clip drag
   useEffect(() => {
     const endDrag = (e) => {
-      if (dragClipRef.current && dragClipRef.current.currentX !== undefined && e.type !== 'pointercancel') {
-        const { id, currentX, currentY } = dragClipRef.current
-        useEditorStore.getState().updateClipTransform({ timelineId: id, position: { x: currentX, y: currentY } })
+      if (dragClipRef.current && dragClipRef.current.targets && e.type !== 'pointercancel') {
+        Object.entries(dragClipRef.current.targets).forEach(([id, data]) => {
+          if (data.currentX !== undefined) {
+            useEditorStore.getState().updateClipTransform({ timelineId: id, position: { x: data.currentX, y: data.currentY } })
+          }
+        })
       }
       setDragClip((d) => d ? null : d)
       dragClipRef.current = null
@@ -82,7 +87,31 @@ export default function Viewport2D() {
   const mediaById = useMemo(() => Object.fromEntries((project?.media || []).map(m => [m.id, m])), [project])
   const allTimelineItems = useMemo(() => {
     const tracks = project?.timeline?.tracks || []
-    return tracks.filter(t => t.media).map(t => t.media)
+    return tracks.flatMap(t => {
+      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+
+      const overlaps = new Set()
+      for (let j = 0; j < mediaList.length; j++) {
+        for (let k = j + 1; k < mediaList.length; k++) {
+          const m1 = mediaList[j]
+          const m2 = mediaList[k]
+          const s1 = m1.start ?? m1.start_at_seconds ?? 0
+          const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
+          const e1 = s1 + d1
+
+          const s2 = m2.start ?? m2.start_at_seconds ?? 0
+          const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
+          const e2 = s2 + d2
+
+          if (s1 < e2 && s2 < e1) {
+            overlaps.add(m1.id)
+            overlaps.add(m2.id)
+          }
+        }
+      }
+
+      return mediaList.filter(m => !overlaps.has(m.id))
+    })
   }, [project])
   const clipRefs = useRef(new Map())
   const getClipRef = (id) => {
@@ -496,10 +525,29 @@ export default function Viewport2D() {
             const start = (tm.start ?? tm.start_at_seconds) || 0
             const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
             const isActive = tNow >= start && tNow <= start + dur
+
+            // Calculate fade opacity
+            const timeInClip = tNow - start
+            const fadeIn = tm.fade_in ?? 0
+            const fadeOut = tm.fade_out ?? 0
+            let fadeOpacity = 1
+
+            if (fadeIn > 0 && timeInClip < fadeIn) {
+              fadeOpacity = Math.min(1, timeInClip / fadeIn)
+            } else if (fadeOut > 0 && timeInClip > dur - fadeOut) {
+              fadeOpacity = Math.min(1, (dur - timeInClip) / fadeOut)
+            }
+
+            const finalOpacity = (tm.opacity ?? 1) * fadeOpacity
+
             return (
               <div key={idx} ref={getClipRef(tm.id)}
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (clipDraggedRef.current) {
+                    clipDraggedRef.current = false
+                    return
+                  }
                   if (e.ctrlKey) {
                     if (selectedClipIds.includes(tm.id)) {
                       setSelectedClips(selectedClipIds.filter(id => id !== tm.id))
@@ -515,24 +563,58 @@ export default function Viewport2D() {
                   if (e.button !== 0) return
                   e.stopPropagation()
                   try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
-                  const d = { id: tm.id, startX: e.clientX, startY: e.clientY, origX: mpos.x || 0, origY: mpos.y || 0 }
+
+                  const isSelected = selectedClipIds.includes(tm.id)
+                  const draggingIds = isSelected ? [...new Set([...selectedClipIds, tm.id])] : [tm.id]
+                  const targets = {}
+                  draggingIds.forEach(id => {
+                    const item = allTimelineItems.find(m => m.id === id)
+                    if (item) {
+                      targets[id] = {
+                        origX: item.position?.x || 0,
+                        origY: item.position?.y || 0
+                      }
+                    }
+                  })
+
+                  const d = { startX: e.clientX, startY: e.clientY, targets, isDragging: false }
                   setDragClip(d)
                   dragClipRef.current = d
+                  clipDraggedRef.current = false
                 }}
                 onPointerMove={(e) => {
-                  if (!dragClipRef.current || dragClipRef.current.id !== tm.id) return
+                  if (!dragClipRef.current) return
                   if ((e.buttons & 1) === 0) { setDragClip(null); dragClipRef.current = null; return }
+
                   const dx = e.clientX - dragClipRef.current.startX
                   const dy = e.clientY - dragClipRef.current.startY
-                  const nextX = dragClipRef.current.origX + dx / ratio
-                  const nextY = dragClipRef.current.origY - dy / ratio
-                  dragClipRef.current = { ...dragClipRef.current, currentX: nextX, currentY: nextY }
-                  setDragClip({ ...dragClipRef.current })
+
+                  if (!dragClipRef.current.isDragging && Math.hypot(dx, dy) > 3) {
+                    dragClipRef.current.isDragging = true
+                  }
+
+                  const newTargets = {}
+                  Object.entries(dragClipRef.current.targets).forEach(([id, init]) => {
+                    newTargets[id] = {
+                      ...init,
+                      currentX: init.origX + dx / ratio,
+                      currentY: init.origY - dy / ratio
+                    }
+                  })
+
+                  const newDrag = { ...dragClipRef.current, targets: newTargets }
+                  dragClipRef.current = newDrag
+                  setDragClip(newDrag)
                 }}
                 onPointerUp={(e) => {
-                  if (dragClipRef.current?.id === tm.id) {
-                    if (dragClipRef.current.currentX !== undefined) {
-                      useEditorStore.getState().updateClipTransform({ timelineId: tm.id, position: { x: dragClipRef.current.currentX, y: dragClipRef.current.currentY } })
+                  if (dragClipRef.current) {
+                    if (dragClipRef.current.isDragging) {
+                      clipDraggedRef.current = true
+                      Object.entries(dragClipRef.current.targets).forEach(([id, data]) => {
+                        if (data.currentX !== undefined) {
+                          useEditorStore.getState().updateClipTransform({ timelineId: id, position: { x: data.currentX, y: data.currentY } })
+                        }
+                      })
                     }
                     setDragClip(null)
                     dragClipRef.current = null
@@ -540,12 +622,12 @@ export default function Viewport2D() {
                   try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
                 }}
                 onDragStart={(e) => { e.preventDefault() }}
-                onPointerCancel={(e) => { if (dragClipRef.current?.id === tm.id) { setDragClip(null); dragClipRef.current = null } try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
+                onPointerCancel={(e) => { if (dragClipRef.current) { setDragClip(null); dragClipRef.current = null } try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
                 title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds || 0).toFixed?.(2)}s)`}
                 style={{
                   position: 'absolute',
-                  left: (dragClip?.id === tm.id && dragClip.currentX !== undefined) ? (cx + dragClip.currentX * ratio - w / 2) : left,
-                  top: (dragClip?.id === tm.id && dragClip.currentY !== undefined) ? (cy - dragClip.currentY * ratio - h / 2) : top,
+                  left: (dragClip?.targets?.[tm.id]?.currentX !== undefined) ? (cx + dragClip.targets[tm.id].currentX * ratio - w / 2) : left,
+                  top: (dragClip?.targets?.[tm.id]?.currentY !== undefined) ? (cy - dragClip.targets[tm.id].currentY * ratio - h / 2) : top,
                   width: w,
                   height: h,
                   background: '#0b0d12',
@@ -565,7 +647,7 @@ export default function Viewport2D() {
                   MozUserSelect: 'none',
                   WebkitUserDrag: 'none',
                   touchAction: 'none',
-                  opacity: tm.opacity ?? 1,
+                  opacity: finalOpacity,
                   filter: (() => {
                     const effects = tm.effects || {}
                     const filters = []
@@ -675,13 +757,13 @@ function VideoFrame({ clip, refEl, style }) {
       try {
         const uri = String(clip?.uri || '')
         if (!refEl?.current) return
-        // Handle data:, http(s):, and file:// in Tauri
-        if (/^data:/.test(uri) || /^https?:/.test(uri)) {
+        // Handle data:, http(s):, blob:, and file:// in Tauri
+        if (/^data:/.test(uri) || /^https?:/.test(uri) || /^blob:/.test(uri)) {
           refEl.current.src = uri
           return
         }
         if (uri.startsWith('file://')) {
-          // (Tauri support removed)
+          refEl.current.src = resolveFileUrl(uri)
           return
         }
       } catch { }
@@ -689,7 +771,7 @@ function VideoFrame({ clip, refEl, style }) {
     setSrc()
   }, [clip?.uri, refEl])
   return (
-    <video ref={refEl} muted playsInline preload="auto" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
+    <video ref={refEl} muted playsInline preload="auto" crossOrigin="anonymous" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
   )
 }
 

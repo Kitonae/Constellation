@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import Spinner from './Spinner.jsx'
+import { generateVideoThumbnail } from '../utils/videoUtils.js'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -22,9 +23,13 @@ const MIME_BY_EXT = {
 function extFromUri(uri) {
   try {
     const u = String(uri)
+    // Handle blob URLs or data URLs by skipping them if they don't look like paths,
+    // but here we just want to extract extension from the end of the string.
+    // If uri is a filename like "video.mp4", it works too.
     const q = u.split('?')[0]
     const p = q.split('#')[0]
     const s = p.split('.')
+    if (s.length < 2) return ''
     return (s[s.length - 1] || '').toLowerCase()
   } catch { return '' }
 }
@@ -88,7 +93,12 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
   const [src, setSrc] = useState(null)
   const [error, setError] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  const ext = useMemo(() => extFromUri(uri), [uri])
+  const ext = useMemo(() => {
+    const e = extFromUri(uri)
+    if (e) return e
+    // Fallback: try to get extension from alt text (filename) if uri is a blob/data url
+    return extFromUri(alt)
+  }, [uri, alt])
   const isVideo = useMemo(() => isVideoExt(ext), [ext])
   const mime = useMemo(() => MIME_BY_EXT[ext] || (isVideo ? 'video/*' : 'image/*'), [ext, isVideo])
   const [triedInlineFallback, setTriedInlineFallback] = useState(false)
@@ -100,10 +110,15 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
 
     async function load() {
       if (isVideo) {
-        // Attempt to load cached PNG thumbnail for video; if missing, generate and write to cache
-        // Attempt to load cached PNG thumbnail for video; if missing, generate and write to cache
-        // (Tauri cache support removed)
-        setSrc(null)
+        try {
+          const thumb = await generateVideoThumbnail(uri)
+          if (cancelled) return
+          setSrc(thumb)
+        } catch (e) {
+          console.warn('Failed to generate video thumbnail', e)
+          useEditorStore.getState().addLog({ level: 'error', message: `Thumb error: ${e.message}` })
+          setSrc(null)
+        }
         return
       }
       const resolved = await resolveImageSrc(uri, mime)

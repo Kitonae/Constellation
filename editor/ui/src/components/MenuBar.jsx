@@ -14,10 +14,11 @@ function useClickAway(ref, onAway) {
 }
 
 export default function MenuBar({
+  onNewShow,
   onOpenProject,
-  onAddImage,
-  onAddScreen,
   onSaveShow,
+  onPackageShow,
+  onQuit,
   viewMode,
   setViewMode,
   gizmoMode,
@@ -69,10 +70,12 @@ export default function MenuBar({
   return (
     <div ref={wrapRef} className="toolbar" style={{ gap: 10, alignItems: 'center', position: 'relative', zIndex: 2000 }}>
       <Menu id="file" title="File">
-        <Item onClick={onOpenProject}>Open Project…</Item>
-        <Item onClick={onAddImage}>Add Image…</Item>
-        <Item onClick={onAddScreen}>Add Screen…</Item>
+        <Item onClick={onNewShow}>New Show</Item>
+        <Item onClick={onOpenProject}>Open Show…</Item>
         <Item onClick={onSaveShow}>Save Show…</Item>
+        <Item onClick={onPackageShow}>Package Show…</Item>
+        <div style={{ height: 1, background: '#232636', margin: '4px 0' }} />
+        <Item onClick={onQuit}>Quit</Item>
       </Menu>
 
       <Menu id="view" title="View">
