@@ -49,6 +49,7 @@ export default function Timeline() {
   const rulerPlayheadRef = useRef(null)
   const tracksPlayheadRef = useRef(null)
   // labels are integrated into the tracks viewport now (single scrollbar)
+  const tracksLabelsRef = useRef(null)
   const seekingRef = useRef(false)
 
   // Layout constants shared by slider, playhead and hit-testing
@@ -197,7 +198,7 @@ export default function Timeline() {
       const clamped = Math.max(0, Math.min(dur, t))
       const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
-      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = (LABEL_W + x) + 'px'
+      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
       const now = performance.now()
       if (now - lastDisplayRef.current > 125) { // ~8fps UI update for timecode
         lastDisplayRef.current = now
