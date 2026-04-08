@@ -76,7 +76,7 @@ export const useEditorStore = create((set, get) => ({
   setViewMode: (mode) => set({ viewMode: (mode === '3d' || mode === 'output') ? mode : '2d' }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === '2d' ? '3d' : '2d' })),
   toggleOutputOverlay: () => set((s) => ({ showOutputOverlay: !s.showOutputOverlay })),
-  addScreenNode: ({ name, pixels, position, scale }) => set((s) => {
+  addScreenNode: ({ name, pixels, position, scale, screenType }) => set((s) => {
     const px = pixels || [1920, 1080]
     const scene = s.scene || { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
     const id = `screen-${Math.random().toString(36).slice(2, 8)}`
@@ -89,7 +89,7 @@ export const useEditorStore = create((set, get) => ({
         scale: scale || { x: 1, y: 1, z: 1 },
       },
       children: [],
-      kind: { type: 'screen', pixels: [px[0] | 0, px[1] | 0], enabled: true },
+      kind: { type: 'screen', screenType: screenType || 'web', pixels: [px[0] | 0, px[1] | 0], enabled: true },
     }
     const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
     // Ensure a project exists so Apply can work
@@ -444,6 +444,17 @@ export const useEditorStore = create((set, get) => ({
       roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
         if (node.kind?.type === 'screen') {
           return { ...node, kind: { ...node.kind, pixels: [pixels[0] | 0, pixels[1] | 0] } }
+        }
+        return node
+      }))
+    }
+  })),
+  updateScreenType: (id, screenType) => set((s) => ({
+    scene: {
+      ...s.scene,
+      roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+        if (node.kind?.type === 'screen') {
+          return { ...node, kind: { ...node.kind, screenType } }
         }
         return node
       }))

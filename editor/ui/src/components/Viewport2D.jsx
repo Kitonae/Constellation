@@ -718,9 +718,9 @@ export default function Viewport2D() {
       {menu.open && (
         <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 5000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => { e.stopPropagation() }} onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.preventDefault()}>
           <StageMenu
-            onAddScreen={() => {
+            onAddScreen={(screenType) => {
               setMenu({ open: false, x: 0, y: 0 })
-              useEditorStore.getState().addScreenNode({ pixels: [1920, 1080] })
+              useEditorStore.getState().addScreenNode({ pixels: [1920, 1080], screenType })
             }}
             onRemoveClip={() => {
               setMenu({ open: false, x: 0, y: 0 })
@@ -793,12 +793,14 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
     const py = node.kind?.pixels?.[1] || 0
     const w = Math.max(2, px * (ratio))
     const h = Math.max(2, py * (ratio))
+    const isRenderer = (node.kind?.screenType || 'web') === 'renderer'
+    const borderColor = isSelected || highlight ? '#ffcc00' : (isRenderer ? '#8b5cf6' : '#2a3148')
     return (
       <>
         <div
           onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
-          title={node.name || node.id}
-          style={{ position: 'absolute', left: x - w / 2, top: y - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : '#101520', border: `2px ${highlight ? 'dashed' : 'solid'} ${isSelected || highlight ? '#ffcc00' : '#2a3148'}`, borderRadius: 4, zIndex: 1 }}
+          title={`${node.name || node.id} (${node.kind?.screenType || 'web'})`}
+          style={{ position: 'absolute', left: x - w / 2, top: y - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : (isRenderer ? '#1a1028' : '#101520'), border: `2px ${highlight ? 'dashed' : 'solid'} ${borderColor}`, borderRadius: 4, zIndex: 1 }}
         />
         {children}
       </>
@@ -836,7 +838,8 @@ function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
   }, [selectedId, scene])
   return (
     <div>
-      <MenuItem label="Add Screen" onClick={onAddScreen} />
+      <MenuItem label="Add Web Screen" onClick={() => onAddScreen('web')} />
+      <MenuItem label="Add Renderer Screen" onClick={() => onAddScreen('renderer')} />
       {hasSelectedClip && <MenuItem label="Remove Selected Clip" onClick={onRemoveClip} />}
       {isScreenSelected && <MenuItem label="Remove Screen" onClick={onRemoveScreen} />}
     </div>
@@ -920,7 +923,9 @@ function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedCli
   } else if (selectedId) {
     const n = nodeIndex.get(selectedId)
     if (n) {
-      const prefix = n.kind?.type === 'screen' ? 'Screen' : 'Node'
+      const prefix = n.kind?.type === 'screen'
+        ? `Screen (${n.kind?.screenType || 'web'})`
+        : 'Node'
       text = `${prefix}: ${n.name || n.id}`
     }
   }

@@ -36,6 +36,7 @@ function parseNode(n) {
       case 'screen':
         node.kind = {
           type: 'screen',
+          screenType: k.screenType || 'web',
           pixels: Array.isArray(k.pixels) ? [k.pixels[0] | 0, k.pixels[1] | 0] : [0, 0],
           enabled: k.enabled ?? true,
         }
@@ -56,7 +57,7 @@ function parseNode(n) {
     }
   } else {
     // Legacy schema compatibility
-    if (n.screen) node.kind = { type: 'screen', pixels: [n.screen.pixels_x, n.screen.pixels_y], enabled: n.screen.enabled ?? true }
+    if (n.screen) node.kind = { type: 'screen', screenType: n.screen.screenType || 'web', pixels: [n.screen.pixels_x, n.screen.pixels_y], enabled: n.screen.enabled ?? true }
     if (n.light) node.kind = { type: 'light', light: n.light }
     if (n.camera) node.kind = { type: 'camera', cam: n.camera }
     if (n.mesh) node.kind = { type: 'mesh', mesh: n.mesh }

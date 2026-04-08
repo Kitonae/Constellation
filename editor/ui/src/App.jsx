@@ -150,15 +150,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleConsole])
 
-  // Open/close display windows based on enabled screens
+  // Open/close display windows based on enabled web screens
   useEffect(() => {
     const roots = scene?.roots || []
     for (const n of roots) {
       if (n.kind?.type === 'screen') {
         const enabled = (n.kind?.enabled ?? true)
+        const isWeb = (n.kind?.screenType || 'web') === 'web'
         const px = n.kind?.pixels?.[0] || 0
         const py = n.kind?.pixels?.[1] || 0
-        if (enabled && px > 0 && py > 0) {
+        if (enabled && isWeb && px > 0 && py > 0) {
           openDisplayWindow(n.id, px, py)
         } else {
           closeDisplayWindow(n.id)
@@ -245,9 +246,10 @@ export default function App() {
             for (const n of roots) {
               if (n.kind?.type === 'screen') {
                 const enabled = (n.kind?.enabled ?? true)
+                const isWeb = (n.kind?.screenType || 'web') === 'web'
                 const px = n.kind?.pixels?.[0] || 0
                 const py = n.kind?.pixels?.[1] || 0
-                if (enabled && px > 0 && py > 0) {
+                if (enabled && isWeb && px > 0 && py > 0) {
                   try { await openDisplayWindow(n.id, px, py) } catch { }
                 }
               }

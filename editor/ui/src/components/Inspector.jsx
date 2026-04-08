@@ -90,6 +90,7 @@ export default function Inspector() {
   const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform)
   const updateScreenPixels = useEditorStore((s) => s.updateScreenPixels)
   const updateScreenEnabled = useEditorStore((s) => s.updateScreenEnabled)
+  const updateScreenType = useEditorStore((s) => s.updateScreenType)
   const project = useEditorStore((s) => s.project)
   const [keepAR, setKeepAR] = useState(true)
   const [naturalSize, setNaturalSize] = useState(null) // { w, h }
@@ -158,6 +159,26 @@ export default function Inspector() {
     <div style={{ height: '100%', overflowY: 'auto', background: '#13151a', color: '#c7cfdb' }}>
       {selectedNode?.kind?.type === 'screen' && (
         <Category title="Screen Settings">
+          <PropertyRow label="Type">
+            <select
+              value={selectedNode.kind?.screenType || 'web'}
+              onChange={(e) => updateScreenType(selectedNode.id, e.target.value)}
+              style={{
+                width: '100%',
+                background: '#0f1115',
+                color: '#c7cfdb',
+                border: '1px solid #232636',
+                borderRadius: 4,
+                padding: '4px 8px',
+                fontSize: 12,
+                outline: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="web">Web</option>
+              <option value="renderer">Renderer</option>
+            </select>
+          </PropertyRow>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
               <input type="checkbox" checked={(selectedNode.kind?.enabled ?? true)} onChange={(e) => updateScreenEnabled(selectedNode.id, e.target.checked)} />
