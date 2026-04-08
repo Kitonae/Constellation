@@ -2,22 +2,47 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
+	"io"
 	"mime"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// ReadFileBase64 reads a local file and returns a data URL (data:<mime>;base64,<data>)
-// Used by the React frontend under Wails to display thumbnails for file:// URIs.
-// Errors are returned as Go errors so the caller can surface/log them.
-func (a *App) ReadFileBase64(path string) (string, error) {
+const maxFileBytes = 50 * 1024 * 1024 // 50 MB cap for base64 encoding
+
+// FileService handles file reading and base64 encoding.
+type FileService struct{}
+
+// ReadFileBase64 reads a local file and returns a data URL (data:<mime>;base64,<data>).
+func (fs *FileService) ReadFileBase64(path string) (string, error) {
 	if path == "" {
 		return "", os.ErrNotExist
 	}
-	data, err := os.ReadFile(path)
+
+	cleaned := filepath.Clean(path)
+	if err := validateFSPath(cleaned); err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+
+	f, err := os.Open(cleaned)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+	if info.Size() > maxFileBytes {
+		return "", fmt.Errorf("file too large for base64 encoding (%d bytes, max %d)", info.Size(), maxFileBytes)
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext != "" {
@@ -50,6 +75,14 @@ func (a *App) ReadFileBase64(path string) (string, error) {
 		mimeType = "video/x-m4v"
 	case "mpg", "mpeg":
 		mimeType = "video/mpeg"
+	case "gltf":
+		mimeType = "model/gltf+json"
+	case "glb":
+		mimeType = "model/gltf-binary"
+	case "obj":
+		mimeType = "text/plain"
+	case "stl":
+		mimeType = "model/stl"
 	default:
 		if mt := mime.TypeByExtension("." + ext); mt != "" {
 			mimeType = mt

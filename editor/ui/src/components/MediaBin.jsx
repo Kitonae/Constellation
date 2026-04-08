@@ -2,6 +2,7 @@ import React from 'react'
 import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
 import { getVideoMetadata } from '../utils/videoUtils.js'
+import { toFileUri, fileToDataUrl } from '../utils/mediaUtils.js'
 import MediaThumb from './MediaThumb.jsx'
 
 function AddClipButton({ clipId }) {
@@ -27,6 +28,7 @@ export default React.memo(function MediaBin() {
   const updateImportProgress = useEditorStore((s) => s.updateImportProgress)
   const finishImport = useEditorStore((s) => s.finishImport)
   const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
+  const addModelNode = useEditorStore((s) => s.addModelNode)
   const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
 
   const processEntries = async (entries) => {
@@ -44,7 +46,7 @@ export default React.memo(function MediaBin() {
         await new Promise(r => setTimeout(r, 0))
 
         // Filter out non-media files if folder import picked up junk
-        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
+        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg|gltf|glb|obj)$/i.test(name)) {
           i++
           continue
         }
@@ -77,7 +79,7 @@ export default React.memo(function MediaBin() {
           initialUri = toFileUri(String(path || file?.name || 'media'))
         }
 
-        let duration = 10
+        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
         if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
           try {
             const meta = await getVideoMetadata(file || initialUri)
@@ -166,6 +168,13 @@ export default React.memo(function MediaBin() {
         <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
           <MenuItem label="Add Files…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFiles() }} />
           <MenuItem label="Add Folder…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFolder() }} />
+          {menu.clipId && isModelClip(menu.clipId, media) && (
+            <MenuItem label="Add to Scene" onClick={() => {
+              const clip = media.find(m => m.id === menu.clipId)
+              if (clip) addModelNode({ name: clip.name, uri: clip.uri })
+              setMenu({ open: false, x: 0, y: 0, clipId: null })
+            }} />
+          )}
           {menu.clipId && <MenuItem label="Remove" onClick={() => { removeMediaClip(menu.clipId); setMenu({ open: false, x: 0, y: 0, clipId: null }) }} />}
         </div>
       )}
@@ -173,32 +182,13 @@ export default React.memo(function MediaBin() {
   )
 })
 
-function toFileUri(p) {
-  let norm = p.replace(/\\/g, '/')
-  // Encode path parts to handle spaces and special characters
-  // We split by '/' to avoid encoding the separators
-  const parts = norm.split('/')
-  const encodedParts = parts.map(part => encodeURIComponent(part))
-  norm = encodedParts.join('/')
-  
-  // Restore drive letter colon if it was encoded
-  // e.g. "C%3A" -> "C:"
-  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
 
-  if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
-  if (norm.startsWith('/')) return `file://${norm}`
-  return `file://${norm}`
-}
 
-async function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    try {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = (e) => reject(e)
-      reader.readAsDataURL(file)
-    } catch (e) { reject(e) }
-  })
+function isModelClip(clipId, media) {
+  const clip = media.find(m => m.id === clipId)
+  if (!clip) return false
+  const name = String(clip.name || clip.uri || '')
+  return /\.(gltf|glb|obj)$/i.test(name)
 }
 
 function MenuItem({ label, onClick }) {

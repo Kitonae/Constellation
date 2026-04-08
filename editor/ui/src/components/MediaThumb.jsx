@@ -89,6 +89,10 @@ function isVideoExt(ext) {
   return ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
 }
 
+function isModelExt(ext) {
+  return ['gltf', 'glb', 'obj'].includes(ext)
+}
+
 export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
   const [src, setSrc] = useState(null)
   const [error, setError] = useState(false)
@@ -100,6 +104,7 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
     return extFromUri(alt)
   }, [uri, alt])
   const isVideo = useMemo(() => isVideoExt(ext), [ext])
+  const isModel = useMemo(() => isModelExt(ext), [ext])
   const mime = useMemo(() => MIME_BY_EXT[ext] || (isVideo ? 'video/*' : 'image/*'), [ext, isVideo])
   const [triedInlineFallback, setTriedInlineFallback] = useState(false)
 
@@ -109,6 +114,11 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
     setLoaded(false)
 
     async function load() {
+      if (isModel) {
+        setSrc(null)
+        setLoaded(true)
+        return
+      }
       if (isVideo) {
         try {
           const thumb = await generateVideoThumbnail(uri)
@@ -142,7 +152,9 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
       justifyContent: 'center',
       flex: '0 0 auto',
     }}>
-      {isVideo ? (
+      {isModel ? (
+        <span style={{ fontSize: 11, color: '#a78bfa', opacity: 0.9, fontWeight: 600 }}>3D</span>
+      ) : isVideo ? (
         src ? (
           <img
             src={src}

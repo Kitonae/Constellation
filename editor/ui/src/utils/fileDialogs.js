@@ -51,7 +51,7 @@ export async function openMediaFile() {
 }
 
 export async function openMediaFiles() {
-  return await chooseFiles('image/*,video/*', true, false)
+  return await chooseFiles('image/*,video/*,.gltf,.glb,.obj', true, false)
 }
 
 export async function openMediaFolder() {

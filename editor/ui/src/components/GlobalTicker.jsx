@@ -18,10 +18,17 @@ export default function GlobalTicker() {
         const s = useEditorStore.getState()
         // Import watchdog
         try { s.resetImportingIfStuck && s.resetImportingIfStuck() } catch { }
-        if (s.playing && hasOpenDisplays()) {
-          if (!loop._lastEmitAt || now - loop._lastEmitAt > 50) {
-            try { broadcastToDisplays('display:time', { time: s.time }) } catch { }
-            loop._lastEmitAt = now
+        if (s.playing) {
+          if (hasOpenDisplays()) {
+            if (!loop._lastEmitAt || now - loop._lastEmitAt > 50) {
+              try { broadcastToDisplays('display:time', { time: s.time }) } catch { }
+              loop._lastEmitAt = now
+            }
+          }
+          // Push time to native renderers via Go SSE
+          if (!loop._lastRendererPush || now - loop._lastRendererPush > 16) {
+            try { window.go?.main?.App?.PushTime(s.time) } catch { }
+            loop._lastRendererPush = now
           }
         }
       } catch { }
@@ -35,11 +42,14 @@ export default function GlobalTicker() {
   useEffect(() => {
     const unsub = useEditorStore.subscribe((s) => [s.time, s.playing], ([time, playing], [prevTime]) => {
       try {
-        if (!playing && time !== prevTime && hasOpenDisplays()) {
-          const st = useEditorStore.getState()
-          // Optimization: during seek, project structure doesn't change, so we don't need to resend media
-          const projToSend = st.project ? { ...st.project, media: undefined } : null
-          broadcastToDisplays('display:snapshot', { project: projToSend, scene: st.scene, time })
+        if (!playing && time !== prevTime) {
+          if (hasOpenDisplays()) {
+            const st = useEditorStore.getState()
+            const projToSend = st.project ? { ...st.project, media: undefined } : null
+            broadcastToDisplays('display:snapshot', { project: projToSend, scene: st.scene, time })
+          }
+          // Push seek time to native renderers
+          try { window.go?.main?.App?.PushTime(time) } catch { }
         }
       } catch { }
     })

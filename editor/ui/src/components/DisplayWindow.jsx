@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
-// Listen for Wails runtime events
 import { resolveImageSrc } from './MediaThumb.jsx'
+import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 
 export default function DisplayWindow() {
   const params = new URLSearchParams(window.location.search)
@@ -61,25 +61,7 @@ export default function DisplayWindow() {
     for (const t of project?.timeline?.tracks || []) {
       const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
 
-      const overlaps = new Set()
-      for (let j = 0; j < mediaList.length; j++) {
-        for (let k = j + 1; k < mediaList.length; k++) {
-          const m1 = mediaList[j]
-          const m2 = mediaList[k]
-          const s1 = m1.start ?? m1.start_at_seconds ?? 0
-          const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
-          const e1 = s1 + d1
-
-          const s2 = m2.start ?? m2.start_at_seconds ?? 0
-          const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
-          const e2 = s2 + d2
-
-          if (s1 < e2 && s2 < e1) {
-            overlaps.add(m1.id)
-            overlaps.add(m2.id)
-          }
-        }
-      }
+      const overlaps = computeOverlaps(mediaList)
 
       for (const m of mediaList) {
         if (overlaps.has(m.id)) continue
@@ -143,36 +125,8 @@ export default function DisplayWindow() {
         const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
         const isVideo = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
 
-        // Calculate fade opacity
-        const start = (tm.start ?? tm.start_at_seconds) || 0
-        const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
-        const timeInClip = playTime - start
-        const fadeIn = tm.fade_in ?? 0
-        const fadeOut = tm.fade_out ?? 0
-        let fadeOpacity = 1
-
-        if (fadeIn > 0 && timeInClip < fadeIn) {
-          fadeOpacity = Math.min(1, Math.max(0, timeInClip / fadeIn))
-        } else if (fadeOut > 0 && timeInClip > dur - fadeOut) {
-          fadeOpacity = Math.min(1, Math.max(0, (dur - timeInClip) / fadeOut))
-        }
-
-        const finalOpacity = (tm.opacity ?? 1) * fadeOpacity
-
-        // Build filter string
-        const effects = tm.effects || {}
-        const filters = []
-        if (tm.blur) filters.push(`blur(${tm.blur}px)`) // Legacy blur
-        if (effects.blur?.enabled) filters.push(`blur(${effects.blur.value}px)`)
-        if (effects.brightness?.enabled) filters.push(`brightness(${effects.brightness.value})`)
-        if (effects.contrast?.enabled) filters.push(`contrast(${effects.contrast.value})`)
-        if (effects.saturate?.enabled) filters.push(`saturate(${effects.saturate.value})`)
-        if (effects.grayscale?.enabled) filters.push(`grayscale(${effects.grayscale.value})`)
-        if (effects.sepia?.enabled) filters.push(`sepia(${effects.sepia.value})`)
-        if (effects['hue-rotate']?.enabled) filters.push(`hue-rotate(${effects['hue-rotate'].value}deg)`)
-        if (effects.invert?.enabled) filters.push(`invert(${effects.invert.value})`)
-
-        const filterStyle = filters.length ? filters.join(' ') : 'none'
+        const finalOpacity = computeFadeOpacity(tm, playTime)
+        const filterStyle = buildFilterString(tm)
 
         return (
           <div key={tm.clip_id} style={{ position: 'absolute', left, top, width: w, height: h, overflow: 'hidden', opacity: finalOpacity, filter: filterStyle }}>

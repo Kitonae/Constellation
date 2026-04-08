@@ -189,6 +189,9 @@ export default function Inspector() {
             <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
             <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
           </PropertyRow>
+          {(selectedNode.kind?.screenType || 'web') === 'renderer' && (
+            <RendererStatusRow screenId={selectedNode.id} />
+          )}
         </Category>
       )}
 
@@ -301,6 +304,16 @@ export default function Inspector() {
         </>
       )}
 
+      {selectedNode?.kind?.type === 'model' && (
+        <Category title="Model">
+          <PropertyRow label="File">
+            <div style={{ fontSize: 12, wordBreak: 'break-all', opacity: 0.8 }}>
+              {selectedNode.name || String(selectedNode.kind.uri || '').split(/[\\\/]/).pop() || 'Unknown'}
+            </div>
+          </PropertyRow>
+        </Category>
+      )}
+
       {selectedNode && (
         <>
           <Category title="Node Transform">
@@ -325,6 +338,37 @@ export default function Inspector() {
           </Category>
         </>
       )}
+    </div>
+  )
+}
+
+function RendererStatusRow({ screenId }) {
+  const [status, setStatus] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function poll() {
+      while (!cancelled) {
+        try {
+          const s = await window.go?.main?.App?.GetRendererStatus(screenId)
+          if (!cancelled && s) setStatus(s)
+        } catch { }
+        await new Promise(r => setTimeout(r, 2000))
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [screenId])
+
+  const state = status?.state || 'stopped'
+  const fps = status?.fps || 0
+  const stateColor = state === 'ready' ? '#4ade80' : state === 'launching' ? '#facc15' : state === 'error' ? '#f87171' : '#6b7280'
+
+  return (
+    <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+      <div style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor, flexShrink: 0 }} />
+      <span style={{ opacity: 0.7 }}>Renderer: {state}</span>
+      {fps > 0 && <span style={{ opacity: 0.5 }}>{fps.toFixed(1)} FPS</span>}
     </div>
   )
 }

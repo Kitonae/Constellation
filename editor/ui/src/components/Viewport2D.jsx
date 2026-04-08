@@ -3,6 +3,9 @@ import { useEditorStore } from '../store.js'
 import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
+import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
+import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
+import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
@@ -90,26 +93,7 @@ export default function Viewport2D() {
     return tracks.flatMap(t => {
       const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
 
-      const overlaps = new Set()
-      for (let j = 0; j < mediaList.length; j++) {
-        for (let k = j + 1; k < mediaList.length; k++) {
-          const m1 = mediaList[j]
-          const m2 = mediaList[k]
-          const s1 = m1.start ?? m1.start_at_seconds ?? 0
-          const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
-          const e1 = s1 + d1
-
-          const s2 = m2.start ?? m2.start_at_seconds ?? 0
-          const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
-          const e2 = s2 + d2
-
-          if (s1 < e2 && s2 < e1) {
-            overlaps.add(m1.id)
-            overlaps.add(m2.id)
-          }
-        }
-      }
-
+      const overlaps = computeOverlaps(mediaList)
       return mediaList.filter(m => !overlaps.has(m.id))
     })
   }, [project])
@@ -133,81 +117,11 @@ export default function Viewport2D() {
     return res
   }, [allTimelineItems, nodeIndex, mediaById])
 
-  // Subscribe to time to update active clip visibility/positions without full recalculation via React state each frame
-  useEffect(() => {
-    const unsub = useEditorStore.subscribe((state) => {
-      const t = state.time || 0
-      const now = performance.now()
-      if (now - lastTimeUiRef.current > 125) { lastTimeUiRef.current = now; setTimeDisplay(t) }
-      // Update class visibility
-      clipRefs.current.forEach((ref, id) => {
-        const el = ref.current
-        if (!el) return
-        const m = allTimelineItems.find(mm => mm.id === id)
-        if (!m) return
-        const start = (m.start ?? m.start_at_seconds) || 0
-        const dur = Math.max(0, (m.duration ?? ((m.out_seconds - m.in_seconds) || 0)))
-        const active = t >= start && t <= start + dur
-        el.style.display = active ? 'flex' : 'none'
-      })
-      // Sync video currentTime to timeline offset
-      videoRefs.current.forEach((ref, id) => {
-        const vid = ref.current
-        if (!vid) return
-        const m = allTimelineItems.find(mm => mm.id === id)
-        if (!m) return
-        const start = (m.start ?? m.start_at_seconds) || 0
-        const offset = Math.max(0, t - start)
-        try {
-          if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset
-        } catch { }
-      })
-    })
-    return () => { try { unsub() } catch { } }
-  }, [allTimelineItems])
+  // 60fps store subscription for clip visibility + video sync (extracted hook)
+  useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems, setTimeDisplay, lastTimeUiRef)
 
-  // Preload image sources and natural sizes for clips used in placements
-  useEffect(() => {
-    let cancelled = false
-    async function ensureMeta() {
-      for (const { clip, tm } of placements) {
-        if (!clip?.uri || imageMeta[tm.clip_id]) continue
-        // Skip videos for meta probe; use defaults
-        const ext = String(clip.uri).split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-        if (['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)) continue
-        const src = await resolveImageSrc(clip.uri)
-        if (cancelled) return
-        if (!src) continue
-        await new Promise((resolve) => {
-          const img = new Image()
-          img.onload = () => {
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: img.naturalWidth, h: img.naturalHeight, src } }))
-            resolve()
-          }
-          img.onerror = async () => {
-            // Try inline fallback if asset protocol blocks access (403)
-            try {
-              const inlined = await inlineFromUri(clip.uri)
-              if (inlined) {
-                const probe = new Image()
-                probe.onload = () => {
-                  setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: probe.naturalWidth, h: probe.naturalHeight, src: inlined } }))
-                  resolve()
-                }
-                probe.onerror = () => resolve()
-                probe.src = inlined
-                return
-              }
-            } catch { }
-            resolve()
-          }
-          img.src = src
-        })
-      }
-    }
-    ensureMeta()
-    return () => { cancelled = true }
-  }, [placements, imageMeta])
+  // Preload image natural sizes for clip placements (extracted hook)
+  useImageMetaLoader(placements, imageMeta, setImageMeta)
 
   // Center the scroll on first mount
   useEffect(() => {
@@ -526,19 +440,7 @@ export default function Viewport2D() {
             const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
             const isActive = tNow >= start && tNow <= start + dur
 
-            // Calculate fade opacity
-            const timeInClip = tNow - start
-            const fadeIn = tm.fade_in ?? 0
-            const fadeOut = tm.fade_out ?? 0
-            let fadeOpacity = 1
-
-            if (fadeIn > 0 && timeInClip < fadeIn) {
-              fadeOpacity = Math.min(1, timeInClip / fadeIn)
-            } else if (fadeOut > 0 && timeInClip > dur - fadeOut) {
-              fadeOpacity = Math.min(1, (dur - timeInClip) / fadeOut)
-            }
-
-            const finalOpacity = (tm.opacity ?? 1) * fadeOpacity
+            const finalOpacity = computeFadeOpacity(tm, tNow)
 
             return (
               <div key={idx} ref={getClipRef(tm.id)}
@@ -648,20 +550,7 @@ export default function Viewport2D() {
                   WebkitUserDrag: 'none',
                   touchAction: 'none',
                   opacity: finalOpacity,
-                  filter: (() => {
-                    const effects = tm.effects || {}
-                    const filters = []
-                    if (tm.blur) filters.push(`blur(${tm.blur}px)`)
-                    if (effects.blur?.enabled) filters.push(`blur(${effects.blur.value}px)`)
-                    if (effects.brightness?.enabled) filters.push(`brightness(${effects.brightness.value})`)
-                    if (effects.contrast?.enabled) filters.push(`contrast(${effects.contrast.value})`)
-                    if (effects.saturate?.enabled) filters.push(`saturate(${effects.saturate.value})`)
-                    if (effects.grayscale?.enabled) filters.push(`grayscale(${effects.grayscale.value})`)
-                    if (effects.sepia?.enabled) filters.push(`sepia(${effects.sepia.value})`)
-                    if (effects['hue-rotate']?.enabled) filters.push(`hue-rotate(${effects['hue-rotate'].value}deg)`)
-                    if (effects.invert?.enabled) filters.push(`invert(${effects.invert.value})`)
-                    return filters.length ? filters.join(' ') : 'none'
-                  })()
+                  filter: buildFilterString(tm)
                 }}
               >
                 {(() => {

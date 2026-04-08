@@ -1,7 +1,51 @@
-import React, { useEffect, useRef } from 'react'
-import { Canvas } from '@react-three/fiber'
-import { OrbitControls, TransformControls, Edges } from '@react-three/drei'
+import React, { useEffect, useRef, useState, useMemo, Suspense } from 'react'
+import { Canvas, useLoader } from '@react-three/fiber'
+import { OrbitControls, TransformControls, Edges, useGLTF } from '@react-three/drei'
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { useEditorStore } from '../store.js'
+
+function resolveModelUrl(uri) {
+  if (!uri) return null
+  const u = String(uri)
+  if (u.startsWith('file://')) {
+    try {
+      const url = new URL(u)
+      let p = decodeURI(url.pathname)
+      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
+      const port = useEditorStore.getState()._fileServerPort
+      if (port) return `http://localhost:${port}/fs/${p}`
+      return null
+    } catch { return null }
+  }
+  if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('blob:') || u.startsWith('data:')) return u
+  return u
+}
+
+function GltfModel({ url }) {
+  const { scene } = useGLTF(url)
+  const cloned = useMemo(() => scene.clone(true), [scene])
+  return <primitive object={cloned} />
+}
+
+function ObjModel({ url }) {
+  const obj = useLoader(OBJLoader, url)
+  const cloned = useMemo(() => obj.clone(true), [obj])
+  return <primitive object={cloned} />
+}
+
+function ModelMesh({ uri }) {
+  const url = resolveModelUrl(uri)
+  const ext = useMemo(() => {
+    if (!uri) return ''
+    const parts = String(uri).split('.')
+    return (parts[parts.length - 1] || '').toLowerCase().split('?')[0]
+  }, [uri])
+
+  if (!url) return <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>
+
+  if (ext === 'obj') return <ObjModel url={url} />
+  return <GltfModel url={url} />
+}
 
 function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
   const group = useRef()
@@ -61,6 +105,53 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
     return (
       <group position={[position.x, position.y, position.z]}>
         <pointLight args={[col, node.kind.light.intensity, node.kind.light.range]} />
+        {children}
+      </group>
+    )
+  }
+
+  if (node.kind?.type === 'model') {
+    const content = (
+      <group ref={group} position={[position.x, position.y, position.z]} quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]} scale={[scale.x, scale.y, scale.z]}>
+        <Suspense fallback={<mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>}>
+          <ModelMesh uri={node.kind.uri} />
+        </Suspense>
+        {isSelected && (
+          <mesh onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}>
+            <boxGeometry args={[1, 1, 1]} />
+            <meshBasicMaterial visible={false} />
+          </mesh>
+        )}
+        {children}
+      </group>
+    )
+    if (isSelected) {
+      return (
+        <TransformControls object={group} mode={gizmoMode} onObjectChange={() => {
+          const obj = group.current
+          if (!obj) return
+          onTransform(node.id, {
+            position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+            rotation: { x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w },
+            scale: { x: obj.scale.x, y: obj.scale.y, z: obj.scale.z },
+          })
+        }}>
+          {content}
+        </TransformControls>
+      )
+    }
+    // Make model clickable for selection when not selected
+    return (
+      <group
+        ref={group}
+        position={[position.x, position.y, position.z]}
+        quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]}
+        scale={[scale.x, scale.y, scale.z]}
+        onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}
+      >
+        <Suspense fallback={<mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>}>
+          <ModelMesh uri={node.kind.uri} />
+        </Suspense>
         {children}
       </group>
     )

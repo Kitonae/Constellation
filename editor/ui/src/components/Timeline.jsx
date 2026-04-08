@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { useEditorStore } from '../store.js'
 import { broadcastToDisplays } from '../display/displayManager.js'
+import { computeOverlaps } from '../utils/mediaUtils.js'
 
 export default function Timeline() {
   const project = useEditorStore((s) => s.project)
@@ -355,26 +356,7 @@ export default function Timeline() {
             {tracks.map((t, i) => {
               const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
 
-              // Overlap detection
-              const overlaps = new Set()
-              for (let j = 0; j < mediaList.length; j++) {
-                for (let k = j + 1; k < mediaList.length; k++) {
-                  const m1 = mediaList[j]
-                  const m2 = mediaList[k]
-                  const s1 = m1.start ?? m1.start_at_seconds ?? 0
-                  const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
-                  const e1 = s1 + d1
-
-                  const s2 = m2.start ?? m2.start_at_seconds ?? 0
-                  const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
-                  const e2 = s2 + d2
-
-                  if (s1 < e2 && s2 < e1) {
-                    overlaps.add(m1.id)
-                    overlaps.add(m2.id)
-                  }
-                }
-              }
+              const overlaps = computeOverlaps(mediaList)
 
               return (
                 <div key={i} style={{ position: 'relative', height: 28, margin: 0, zIndex: 1, background: selectedTrackIndex === i ? 'rgba(53, 64, 102, 0.2)' : 'transparent', borderRadius: '0 4px 4px 0' }}>

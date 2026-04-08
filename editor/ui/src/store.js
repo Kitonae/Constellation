@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { parseProject } from './utils/parseProject.js'
 import { setFileServerBaseUrl } from './utils/videoUtils.js'
+import { toFileUri } from './utils/mediaUtils.js'
 
 // Initialize file server base URL if in Wails environment
 if (window.go?.main?.App?.GetFileServerPort) {
@@ -8,11 +9,14 @@ if (window.go?.main?.App?.GetFileServerPort) {
     if (port > 0) {
       console.log('Using sidecar file server at port', port)
       setFileServerBaseUrl(`http://localhost:${port}`)
+      // Store port for model URL resolution
+      useEditorStore.setState({ _fileServerPort: port })
     }
   }).catch(err => console.warn('Failed to get file server port', err))
 }
 
 export const useEditorStore = create((set, get) => ({
+  _fileServerPort: 0,
   project: null,
   scene: null,
   time: 0,
@@ -21,6 +25,8 @@ export const useEditorStore = create((set, get) => ({
   importingMediaCountUpdatedAt: 0,
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
+  remoteAddr: 'localhost:9090',
+  setRemoteAddr: (addr) => set({ remoteAddr: addr }),
   selectedId: null,
   selectedClipId: null, // primary selected timeline item id
   selectedClipIds: [], // multi-select support for stage/timeline
@@ -471,6 +477,25 @@ export const useEditorStore = create((set, get) => ({
       }))
     }
   })),
+  addModelNode: ({ name, uri, position, scale }) => set((s) => {
+    const scene = s.scene || { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
+    const id = `model-${Math.random().toString(36).slice(2, 8)}`
+    const node = {
+      id,
+      name: name || 'Model',
+      transform: {
+        position: position || { x: 0, y: 0, z: 0 },
+        rotation: { x: 0, y: 0, z: 0, w: 1 },
+        scale: scale || { x: 1, y: 1, z: 1 },
+      },
+      children: [],
+      kind: { type: 'model', uri },
+    }
+    const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
+    const proj = s.project || defaultProject(nextScene)
+    queueLog('info', `Added 3D model '${node.name}' to scene`)
+    return { scene: nextScene, project: proj, selectedId: id }
+  }),
   removeScreenNode: (id) => set((s) => {
     if (!s.scene?.roots) return {}
     function removeNodeRec(node, targetId) {
@@ -548,17 +573,3 @@ function findNode(nodes, id) {
   return null
 }
 
-function toFileUri(p) {
-  // Normalize separators
-  let norm = p.replace(/\\/g, '/')
-  // Windows drive letter path
-  if (/^[A-Za-z]:\//.test(norm)) {
-    return `file:///${norm}`
-  }
-  // Already starts with '/' (POSIX)
-  if (norm.startsWith('/')) {
-    return `file://${norm}`
-  }
-  // Fallback
-  return `file://${norm}`
-}

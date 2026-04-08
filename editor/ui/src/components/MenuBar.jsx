@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useEditorStore } from '../store.js'
 
 function useClickAway(ref, onAway) {
   useEffect(() => {
@@ -17,23 +18,17 @@ export default function MenuBar({
   onNewShow,
   onOpenProject,
   onSaveShow,
-  onPackageShow,
-  onQuit,
-  viewMode,
-  setViewMode,
-  gizmoMode,
-  setGizmoMode,
-  onDeselect,
-  addr,
-  setAddr,
-  onApply,
-  onRemotePlay,
-  onRemotePause,
-  onRemoteStop,
   onReopenDisplays,
-  showOutputOverlay,
-  toggleOutputOverlay,
 }) {
+  const viewMode = useEditorStore((s) => s.viewMode)
+  const setViewMode = useEditorStore((s) => s.setViewMode)
+  const gizmoMode = useEditorStore((s) => s.gizmoMode)
+  const setGizmoMode = useEditorStore((s) => s.setGizmoMode)
+  const showOutputOverlay = useEditorStore((s) => s.showOutputOverlay)
+  const toggleOutputOverlay = useEditorStore((s) => s.toggleOutputOverlay)
+  const setSelected = useEditorStore((s) => s.setSelected)
+  const addr = useEditorStore((s) => s.remoteAddr)
+  const setAddr = useEditorStore((s) => s.setRemoteAddr)
   const [open, setOpen] = useState(null) // 'file' | 'view' | 'remote' | null
   const wrapRef = useRef(null)
   useClickAway(wrapRef, () => setOpen(null))
@@ -75,9 +70,9 @@ export default function MenuBar({
         <Item onClick={onNewShow}>New Show</Item>
         <Item onClick={onOpenProject}>Open Show…</Item>
         <Item onClick={onSaveShow}>Save Show…</Item>
-        <Item onClick={onPackageShow}>Package Show…</Item>
+        <Item onClick={() => alert('Package Show not implemented')}>Package Show…</Item>
         <div style={{ height: 1, background: '#232636', margin: '4px 0' }} />
-        <Item onClick={onQuit}>Quit</Item>
+        <Item onClick={() => { if (confirm('Quit?')) window.close() }}>Quit</Item>
       </Menu>
 
       <Menu id="view" title="View" disabled>
@@ -96,7 +91,7 @@ export default function MenuBar({
           <button onClick={() => { setOpen(null); setGizmoMode('rotate') }} style={{ opacity: gizmoMode === 'rotate' ? 1 : 0.6 }}>Rotate</button>
           <button onClick={() => { setOpen(null); setGizmoMode('scale') }} style={{ opacity: gizmoMode === 'scale' ? 1 : 0.6 }}>Scale</button>
         </div>
-        <Item onClick={onDeselect}>Deselect</Item>
+        <Item onClick={() => setSelected(null)}>Deselect</Item>
       </Menu>
 
       <Menu id="remote" title="Remote" disabled>
@@ -105,11 +100,14 @@ export default function MenuBar({
           <input value={addr} onChange={(e) => setAddr(e.target.value)} style={{ width: 240, background: '#0f1115', color: '#c7cfdb', border: '1px solid #232636', borderRadius: 4, padding: '4px 6px' }} />
         </div>
         <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems: 'center' }}>
-          <button type="button" onPointerDown={() => { setOpen(null); onApply() }} onClick={(e) => e.preventDefault()}>Apply</button>
-          <button type="button" onPointerDown={() => { setOpen(null); onRemotePlay() }} onClick={(e) => e.preventDefault()}>Play</button>
-          <button type="button" onPointerDown={() => { setOpen(null); onRemotePause() }} onClick={(e) => e.preventDefault()}>Pause</button>
-          <button type="button" onPointerDown={() => { setOpen(null); onRemoteStop() }} onClick={(e) => e.preventDefault()}>Stop</button>
-          <button type="button" onPointerDown={() => { setOpen(null); onReopenDisplays && onReopenDisplays() }} onClick={(e) => e.preventDefault()}>Re-open Displays</button>
+          <button type="button" onPointerDown={async () => {
+            setOpen(null)
+            try { const { applyProject } = await import('../utils/wailsApi.js'); await applyProject(addr, JSON.stringify(useEditorStore.getState().project)) } catch (e) { console.error('Apply failed:', e) }
+          }} onClick={(e) => e.preventDefault()}>Apply</button>
+          <button type="button" onPointerDown={async () => { setOpen(null); try { const { play } = await import('../utils/wailsApi.js'); await play(addr) } catch {} }} onClick={(e) => e.preventDefault()}>Play</button>
+          <button type="button" onPointerDown={async () => { setOpen(null); try { const { pause } = await import('../utils/wailsApi.js'); await pause(addr) } catch {} }} onClick={(e) => e.preventDefault()}>Pause</button>
+          <button type="button" onPointerDown={async () => { setOpen(null); try { const { stop } = await import('../utils/wailsApi.js'); await stop(addr) } catch {} }} onClick={(e) => e.preventDefault()}>Stop</button>
+          <button type="button" onPointerDown={() => { setOpen(null); onReopenDisplays?.() }} onClick={(e) => e.preventDefault()}>Re-open Displays</button>
         </div>
       </Menu>
     </div>
