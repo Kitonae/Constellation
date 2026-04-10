@@ -598,6 +598,12 @@ export function getMediaSession() {
   if (!_mediaSession) {
     _mediaSession = createMediaSession({
       getStore: () => useEditorStore.getState(),
+      broadcastFn: async (event, payload) => {
+        try {
+          const { broadcastToDisplays } = await import('./display/displayManager.js')
+          broadcastToDisplays(event, payload)
+        } catch { }
+      },
       uiUpdateInterval: 100,
     })
 

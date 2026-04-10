@@ -1,6 +1,7 @@
-// UI dialog helpers that work without Tauri by using a hidden file input.
+// UI dialog helpers — prefer native Wails dialogs (returns absolute paths),
+// fall back to HTML <input> when not in Wails.
 
-// Internal helper returning an array of { file, path } objects.
+// Internal helper returning an array of { file, path } objects via HTML input.
 function chooseFiles(accept, multiple = false, directory = false) {
   return new Promise((resolve) => {
     const input = document.createElement('input')
@@ -18,7 +19,6 @@ function chooseFiles(accept, multiple = false, directory = false) {
       const files = Array.from(input.files || [])
       document.body.removeChild(input)
       if (!files.length) { resolve([]); return }
-      // Browser security: f.path is not exposed; use name only.
       resolve(files.map(f => ({ file: f, path: f.path || f.name })))
     }, { once: true })
     input.addEventListener('cancel', () => {
@@ -51,10 +51,34 @@ export async function openMediaFile() {
 }
 
 export async function openMediaFiles() {
+  // In Wails, use the native dialog which returns absolute paths directly.
+  // This avoids blob: URIs which can't work in cross-origin display windows.
+  if (window.go?.main?.App?.PickMediaFiles) {
+    try {
+      const paths = await window.go.main.App.PickMediaFiles()
+      if (paths && paths.length) {
+        return paths.map(p => ({ file: null, path: p }))
+      }
+      return []
+    } catch (e) {
+      console.warn('Native file dialog failed, falling back to HTML input', e)
+    }
+  }
   return await chooseFiles('image/*,video/*,.gltf,.glb,.obj', true, false)
 }
 
 export async function openMediaFolder() {
-  // accept argument is ignored for directory selection in most browsers
+  // In Wails, use the native directory dialog which returns absolute paths.
+  if (window.go?.main?.App?.PickMediaFolder) {
+    try {
+      const paths = await window.go.main.App.PickMediaFolder()
+      if (paths && paths.length) {
+        return paths.map(p => ({ file: null, path: p }))
+      }
+      return []
+    } catch (e) {
+      console.warn('Native folder dialog failed, falling back to HTML input', e)
+    }
+  }
   return await chooseFiles(null, false, true)
 }

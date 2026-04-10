@@ -28,18 +28,8 @@ export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineIt
         const active = t >= start && t <= start + dur
         el.style.display = active ? 'flex' : 'none'
       })
-      // Sync video currentTime to timeline offset
-      videoRefs.current.forEach((ref, id) => {
-        const vid = ref.current
-        if (!vid) return
-        const m = allTimelineItems.find(mm => mm.id === id)
-        if (!m) return
-        const start = (m.start ?? m.start_at_seconds) || 0
-        const offset = Math.max(0, t - start)
-        try {
-          if (Math.abs((vid.currentTime || 0) - offset) > 0.03) vid.currentTime = offset
-        } catch { }
-      })
+      // Video playback in viewport removed — native renderer handles video.
+      // videoRefs kept for API compatibility but no longer synced.
     })
     return () => { try { unsub() } catch { } }
   }, [allTimelineItems, clipRefs, videoRefs, setTimeDisplay, lastTimeUiRef])

@@ -3,6 +3,31 @@
 #include <cstring>
 #include <string>
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+
+static const char* LOG_PATH = nullptr;
+
+static void initLogFile(const char* screenId) {
+    // Write logs to %TEMP%/constellation-renderer-<screenId>.log
+    char path[MAX_PATH];
+    DWORD tmpLen = GetTempPathA(MAX_PATH, path);
+    if (tmpLen == 0) return;
+    snprintf(path + tmpLen, MAX_PATH - tmpLen, "constellation-renderer-%s.log",
+        screenId && screenId[0] ? screenId : "default");
+
+    FILE* f = freopen(path, "w", stdout);
+    if (f) {
+        // Redirect stderr to same file
+        _dup2(_fileno(stdout), _fileno(stderr));
+        // Disable buffering for real-time log reads
+        setvbuf(stdout, nullptr, _IONBF, 0);
+        setvbuf(stderr, nullptr, _IONBF, 0);
+        static char savedPath[MAX_PATH];
+        strncpy(savedPath, path, MAX_PATH);
+        LOG_PATH = savedPath;
+    }
+}
 
 static void printUsage() {
     printf("Usage: constellation-renderer --port <port> --screen <screenId> --width <w> --height <h> [--host <host>]\n");
@@ -11,6 +36,7 @@ static void printUsage() {
 int main(int argc, char* argv[]) {
     AppConfig config;
     config.host = "localhost";
+    bool useLogFile = true;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -23,10 +49,18 @@ int main(int argc, char* argv[]) {
             config.height = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             config.host = argv[++i];
+        } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
+            config.verbose = true;
+        } else if (strcmp(argv[i], "--console") == 0) {
+            useLogFile = false;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printUsage();
             return 0;
         }
+    }
+
+    if (useLogFile) {
+        initLogFile(config.screenId.c_str());
     }
 
     if (config.port <= 0) {
@@ -36,6 +70,7 @@ int main(int argc, char* argv[]) {
     }
 
     printf("Constellation Renderer starting\n");
+    if (LOG_PATH) printf("  Log: %s\n", LOG_PATH);
     printf("  Host: %s\n", config.host.c_str());
     printf("  Port: %d\n", config.port);
     printf("  Screen: %s (%dx%d)\n", config.screenId.empty() ? "(none)" : config.screenId.c_str(), config.width, config.height);

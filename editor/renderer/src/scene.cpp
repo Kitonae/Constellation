@@ -26,6 +26,8 @@ void Scene::loadSnapshot(const json& data) {
         }
     }
 
+    printf("[Scene] Loaded %zu media clips\n", m_media.size());
+
     // Parse timeline tracks
     if (proj.contains("timeline") && proj["timeline"].contains("tracks")) {
         printf("[Scene] Loading %zu tracks\n", proj["timeline"]["tracks"].size());
@@ -92,6 +94,10 @@ TimelineClip Scene::parseTimelineClip(const json& j) {
 std::vector<ActiveClip> Scene::evaluate(double time) const {
     std::vector<ActiveClip> result;
 
+    static int evalCount = 0;
+    bool verbose = (evalCount++ % 300 == 0); // log every ~5s at 60fps
+    if (verbose) printf("[Scene] evaluate(t=%.3f) media=%zu tracks=%zu\n", time, m_media.size(), m_tracks.size());
+
     for (const auto& track : m_tracks) {
         const auto& mediaList = track.media;
 
@@ -112,13 +118,22 @@ std::vector<ActiveClip> Scene::evaluate(double time) const {
 
         // Active clip resolution
         for (const auto& m : mediaList) {
-            if (overlaps.count(m.id)) continue;
+            if (overlaps.count(m.id)) {
+                if (verbose) printf("[Scene]   clip %s: OVERLAPPING, skipped\n", m.id.c_str());
+                continue;
+            }
 
             double end = m.start + m.duration;
-            if (time < m.start || time > end) continue;
+            if (time < m.start || time > end) {
+                if (verbose) printf("[Scene]   clip %s: out of range (t=%.3f, start=%.3f, end=%.3f)\n", m.id.c_str(), time, m.start, end);
+                continue;
+            }
 
             auto it = m_media.find(m.clipId);
-            if (it == m_media.end()) continue;
+            if (it == m_media.end()) {
+                if (verbose) printf("[Scene]   clip %s: media %s NOT FOUND\n", m.id.c_str(), m.clipId.c_str());
+                continue;
+            }
 
             // Compute fade opacity
             double timeInClip = time - m.start;
@@ -131,10 +146,12 @@ std::vector<ActiveClip> Scene::evaluate(double time) const {
 
             double finalOpacity = m.opacity * fadeOpacity;
 
+            if (verbose) printf("[Scene]   clip %s: ACTIVE (opacity=%.2f, uri=%.60s)\n", m.id.c_str(), finalOpacity, it->second.uri.c_str());
             result.push_back(ActiveClip{&m, &it->second, finalOpacity});
         }
     }
 
+    if (verbose) printf("[Scene] evaluate -> %zu active clips\n", result.size());
     return result;
 }
 

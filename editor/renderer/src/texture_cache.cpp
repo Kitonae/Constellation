@@ -407,6 +407,177 @@ CachedTexture* TextureCache::loadFromMemory(const uint8_t* data, size_t size) {
     return &cached;
 }
 
+const CachedTexture* TextureCache::uploadPixels(const std::string& key, const uint8_t* pixels,
+                                                 uint32_t width, uint32_t height, DXGI_FORMAT format) {
+    if (!pixels || width == 0 || height == 0) return nullptr;
+
+    auto it = m_cache.find(key);
+    bool reuse = (it != m_cache.end() && it->second.ready &&
+                  it->second.width == width && it->second.height == height);
+
+    if (!reuse && m_nextSrvIndex >= MAX_TEXTURES) {
+        fprintf(stderr, "[TextureCache] Texture limit reached (%u)\n", MAX_TEXTURES);
+        return nullptr;
+    }
+
+    UINT rowPitch = width * 4;
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = width;
+    texDesc.Height = height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = format;
+    texDesc.SampleDesc.Count = 1;
+
+    UINT64 uploadSize = 0;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    m_device->GetCopyableFootprints(&texDesc, 0, 1, 0, &footprint, nullptr, nullptr, &uploadSize);
+
+    // Create or reuse GPU texture + SRV
+    ComPtr<ID3D12Resource> texture;
+    uint32_t srvIndex = 0;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+    if (reuse) {
+        texture = it->second.resource;
+        gpuHandle = it->second.srvGpu;
+        cpuHandle = it->second.srvCpu;
+        srvIndex = it->second.heapIndex;
+    } else {
+        D3D12_HEAP_PROPERTIES defaultHeap = {};
+        defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        HRESULT hr = m_device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
+            &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture));
+        if (FAILED(hr)) return nullptr;
+
+        srvIndex = m_nextSrvIndex++;
+        cpuHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+        cpuHandle.ptr += srvIndex * m_srvDescriptorSize;
+        gpuHandle = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+        gpuHandle.ptr += srvIndex * m_srvDescriptorSize;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        m_device->CreateShaderResourceView(texture.Get(), &srvDesc, cpuHandle);
+    }
+
+    // Get or create cache entry early so we can access double-buffered upload slots
+    auto& cached = m_cache[key];
+
+    // Pick which upload buffer to use (alternates 0/1 each frame)
+    int ubIdx = cached.uploadIdx;
+
+    // If reusing, wait for the specific upload buffer we're about to write to.
+    // With double-buffering, this fence value is from 2 frames ago, so it's
+    // almost certainly already done — effectively non-blocking.
+    if (reuse && cached.uploadFenceVal > 0) {
+        // The buffer we're about to write was last used 2 uploads ago.
+        // Only need to wait if the GPU hasn't finished that old upload.
+        // With double-buffering this should be a no-op in steady state.
+        if (m_uploadFence->GetCompletedValue() < cached.uploadFenceVal) {
+            m_uploadFence->SetEventOnCompletion(cached.uploadFenceVal, m_uploadEvent);
+            WaitForSingleObject(m_uploadEvent, 1); // 1ms max, should be instant
+        }
+    }
+
+    // Create upload buffer if needed
+    if (!cached.uploadBuffers[ubIdx]) {
+        D3D12_RESOURCE_DESC uploadDesc = {};
+        uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        uploadDesc.Width = uploadSize;
+        uploadDesc.Height = 1;
+        uploadDesc.DepthOrArraySize = 1;
+        uploadDesc.MipLevels = 1;
+        uploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uploadDesc.SampleDesc.Count = 1;
+        uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        D3D12_HEAP_PROPERTIES uploadHeap = {};
+        uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        m_device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE,
+            &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&cached.uploadBuffers[ubIdx]));
+    }
+
+    ComPtr<ID3D12Resource>& uploadBuffer = cached.uploadBuffers[ubIdx];
+
+    // Copy pixels to upload buffer
+    void* mapped = nullptr;
+    uploadBuffer->Map(0, nullptr, &mapped);
+    uint8_t* dst = (uint8_t*)mapped;
+    for (UINT y = 0; y < height; y++) {
+        memcpy(dst + y * footprint.Footprint.RowPitch, pixels + y * rowPitch, rowPitch);
+    }
+    uploadBuffer->Unmap(0, nullptr);
+
+    // Record and execute GPU copy
+    m_uploadAlloc->Reset();
+    m_uploadCmdList->Reset(m_uploadAlloc.Get(), nullptr);
+
+    if (reuse) {
+        D3D12_RESOURCE_BARRIER pre = {};
+        pre.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        pre.Transition.pResource = texture.Get();
+        pre.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        pre.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        pre.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_uploadCmdList->ResourceBarrier(1, &pre);
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = texture.Get();
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = uploadBuffer.Get();
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLoc.PlacedFootprint = footprint;
+
+    m_uploadCmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = texture.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_uploadCmdList->ResourceBarrier(1, &barrier);
+
+    m_uploadCmdList->Close();
+    ID3D12CommandList* lists[] = { m_uploadCmdList.Get() };
+    m_cmdQueue->ExecuteCommandLists(1, lists);
+
+    // Signal fence — don't wait. Next use of this upload buffer slot (2 frames later)
+    // will check this fence value before writing.
+    m_uploadFenceValue++;
+    m_cmdQueue->Signal(m_uploadFence.Get(), m_uploadFenceValue);
+    cached.uploadFenceVal = m_uploadFenceValue;
+    cached.uploadIdx = 1 - ubIdx; // flip to other buffer for next time
+
+    // For new textures, must wait since the texture hasn't been rendered yet
+    if (!reuse) {
+        if (m_uploadFence->GetCompletedValue() < m_uploadFenceValue) {
+            m_uploadFence->SetEventOnCompletion(m_uploadFenceValue, m_uploadEvent);
+            WaitForSingleObject(m_uploadEvent, INFINITE);
+        }
+    }
+
+    cached.resource = texture;
+    cached.srvGpu = gpuHandle;
+    cached.srvCpu = cpuHandle;
+    cached.width = width;
+    cached.height = height;
+    cached.heapIndex = srvIndex;
+    cached.ready = true;
+    return &cached;
+}
+
 bool TextureCache::isDataUri(const std::string& uri) const {
     return uri.size() > 5 && uri.substr(0, 5) == "data:";
 }

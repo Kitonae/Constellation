@@ -8,11 +8,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
@@ -207,4 +210,43 @@ func (a *App) PushTime(t float64) {
 // PushControl sends a transport command to all connected renderers.
 func (a *App) PushControl(command string) {
 	a.hub.BroadcastControl(command)
+}
+
+// PickMediaFiles opens a native file dialog and returns absolute paths.
+// This avoids blob: URIs which don't work cross-origin in display windows.
+func (a *App) PickMediaFiles() ([]string, error) {
+	paths, err := wailsRuntime.OpenMultipleFilesDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Import Media",
+		Filters: []wailsRuntime.FileFilter{
+			{DisplayName: "Media Files", Pattern: "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.mp4;*.mov;*.webm;*.mkv;*.avi;*.m4v;*.mpg;*.mpeg;*.gltf;*.glb;*.obj"},
+			{DisplayName: "All Files", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+// PickMediaFolder opens a native directory dialog and returns absolute paths of all files in it.
+func (a *App) PickMediaFolder() ([]string, error) {
+	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Import Folder",
+	})
+	if err != nil || dir == "" {
+		return nil, err
+	}
+	// Walk the directory and collect file paths
+	var paths []string
+	entries, err := fs.ReadDir(os.DirFS(dir), ".")
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, e.Name()))
+	}
+	return paths, nil
 }

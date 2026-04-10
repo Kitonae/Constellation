@@ -21,6 +21,8 @@ add_executable(constellation-renderer
     src/screen.cpp
     src/render_pipeline.cpp
     src/texture_cache.cpp
+    src/video_decoder.cpp
+    src/debug_text.cpp
 )
 
 target_link_libraries(constellation-renderer PRIVATE

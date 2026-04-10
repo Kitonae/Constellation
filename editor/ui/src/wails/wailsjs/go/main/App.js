@@ -26,6 +26,14 @@ export function OpenRendererScreen(arg1, arg2, arg3) {
   return window['go']['main']['App']['OpenRendererScreen'](arg1, arg2, arg3);
 }
 
+export function PickMediaFiles() {
+  return window['go']['main']['App']['PickMediaFiles']();
+}
+
+export function PickMediaFolder() {
+  return window['go']['main']['App']['PickMediaFolder']();
+}
+
 export function PushControl(arg1) {
   return window['go']['main']['App']['PushControl'](arg1);
 }

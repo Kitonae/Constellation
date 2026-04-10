@@ -61,7 +61,7 @@ export default function App() {
 
         const id = `clip-${Math.random().toString(36).slice(2, 8)}`
         let initialUri = null
-        
+
         // Check for path property (Electron/WebView2)
         const path = file.path
         const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path))
@@ -73,6 +73,7 @@ export default function App() {
              const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
              if (isVideo) {
                  initialUri = URL.createObjectURL(file)
+                 console.warn(`[Media] Video "${name}" imported as blob URI — native renderer requires file:/// URIs. Use Add New button instead of drag-drop.`)
              } else {
                  try {
                     initialUri = await fileToDataUrl(file)

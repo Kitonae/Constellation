@@ -4,38 +4,63 @@ import { broadcastToDisplays, hasOpenDisplays } from '../display/displayManager.
 
 export default function GlobalTicker() {
   const tick = useEditorStore((s) => s.tick)
-  const rafRef = useRef(0)
-  const lastRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now())
+  const lastRendererPush = useRef(0)
 
+  // Subscribe to PresentationClock for authoritative timing
   useEffect(() => {
+    const session = getMediaSession()
+    const clock = session.getClock()
+
+    const unsub = clock.subscribe({
+      onTick(time) {
+        // Push time to native renderers at ~60fps
+        const now = performance.now()
+        if (now - lastRendererPush.current > 16) {
+          try { window.go?.main?.App?.PushTime(time) } catch { }
+          lastRendererPush.current = now
+        }
+      },
+    })
+
+    return unsub
+  }, [])
+
+  // Fallback RAF loop for store.tick (drives time when session isn't playing,
+  // handles import watchdog, and display window broadcasts)
+  useEffect(() => {
+    let rafId = 0
+    let lastT = performance.now()
+    let lastEmit = 0
+
     const loop = () => {
-      const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
-      const dt = Math.max(0, (now - lastRef.current) / 1000)
-      lastRef.current = now
+      const now = performance.now()
+      const dt = Math.max(0, (now - lastT) / 1000)
+      lastT = now
       tick(dt)
-      // Throttle display updates: only when playing and at ~20fps
+
       try {
         const s = useEditorStore.getState()
-        // Import watchdog
         try { s.resetImportingIfStuck && s.resetImportingIfStuck() } catch { }
-        if (s.playing) {
-          if (hasOpenDisplays()) {
-            if (!loop._lastEmitAt || now - loop._lastEmitAt > 50) {
-              try { broadcastToDisplays('display:time', { time: s.time }) } catch { }
-              loop._lastEmitAt = now
-            }
-          }
-          // Push time to native renderers via Go SSE
-          if (!loop._lastRendererPush || now - loop._lastRendererPush > 16) {
-            try { window.go?.main?.App?.PushTime(s.time) } catch { }
-            loop._lastRendererPush = now
+
+        // Broadcast to web display windows
+        if (s.playing && hasOpenDisplays()) {
+          if (now - lastEmit > 50) {
+            try { broadcastToDisplays('display:time', { time: s.time }) } catch { }
+            lastEmit = now
           }
         }
+
+        // Always push time to native renderers (covers paused scrubbing)
+        if (now - lastRendererPush.current > 16) {
+          try { window.go?.main?.App?.PushTime(s.time) } catch { }
+          lastRendererPush.current = now
+        }
       } catch { }
-      rafRef.current = requestAnimationFrame(loop)
+
+      rafId = requestAnimationFrame(loop)
     }
-    rafRef.current = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(rafRef.current)
+    rafId = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(rafId)
   }, [tick])
 
   // When not playing, broadcast snapshots on seeks/time changes so displays stay in sync
@@ -48,7 +73,6 @@ export default function GlobalTicker() {
             const projToSend = st.project ? { ...st.project, media: undefined } : null
             broadcastToDisplays('display:snapshot', { project: projToSend, scene: st.scene, time })
           }
-          // Push seek time to native renderers
           try { window.go?.main?.App?.PushTime(time) } catch { }
         }
       } catch { }

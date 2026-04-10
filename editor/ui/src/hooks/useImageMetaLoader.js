@@ -1,11 +1,13 @@
 import { useEffect } from 'react'
 import { resolveImageSrc, inlineFromUri } from '../components/MediaThumb.jsx'
+import { getVideoMetadata, resolveFileUrl } from '../utils/videoUtils.js'
 
 const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg']
 
 /**
- * Preloads image natural sizes for clip placements.
- * Skips video files. Falls back to inline base64 if asset protocol blocks access.
+ * Preloads image/video natural sizes for clip placements.
+ * For videos, probes dimensions via a hidden <video> element.
+ * Falls back to inline base64 if asset protocol blocks access.
  *
  * @param {Array} placements - Array of { tm, clip } objects
  * @param {Object} imageMeta - Current image metadata state { [clipId]: { w, h, src } }
@@ -17,8 +19,23 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
     async function ensureMeta() {
       for (const { clip, tm } of placements) {
         if (!clip?.uri || imageMeta[tm.clip_id]) continue
-        const ext = String(clip.uri).split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-        if (VIDEO_EXTENSIONS.includes(ext)) continue
+        const uriStr = String(clip.uri)
+        const extFromUri = uriStr.startsWith('blob:') || uriStr.startsWith('data:') ? '' : uriStr.split('?')[0].split('#')[0].split('.').pop().toLowerCase()
+        const ext = extFromUri || String(clip.name || '').split('.').pop().toLowerCase()
+        if (VIDEO_EXTENSIONS.includes(ext)) {
+          // Probe video dimensions
+          try {
+            const meta = await getVideoMetadata(clip.uri)
+            if (cancelled) return
+            const videoSrc = resolveFileUrl(clip.uri)
+            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: meta.width || 1920, h: meta.height || 1080, src: videoSrc } }))
+          } catch {
+            if (cancelled) return
+            // Fallback to 1920x1080 so the clip isn't invisible
+            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: 1920, h: 1080, src: null } }))
+          }
+          continue
+        }
         const src = await resolveImageSrc(clip.uri)
         if (cancelled) return
         if (!src) continue

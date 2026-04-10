@@ -7,7 +7,8 @@
 #pragma comment(lib, "winhttp.lib")
 
 SSEClient::SSEClient(EventQueue& queue, const std::string& host, int port, const std::string& screenId)
-    : m_queue(queue), m_host(host), m_port(port), m_screenId(screenId) {}
+    : m_queue(queue), m_host(host), m_port(port), m_screenId(screenId),
+      m_lastStatLog(std::chrono::steady_clock::now()) {}
 
 SSEClient::~SSEClient() {
     stop();
@@ -92,11 +93,23 @@ void SSEClient::run() {
         printf("[SSE] Connected to %s:%d%s\n", m_host.c_str(), m_port, path.c_str());
         m_connected = true;
 
-        // Read streaming response
-        char buf[4096];
+        // Read streaming response — use WinHttpQueryDataAvailable to avoid
+        // blocking until the full buffer fills (SSE events are small and frequent).
+        char buf[16384];
         DWORD bytesRead = 0;
         while (m_running) {
-            if (!WinHttpReadData(hRequest, buf, sizeof(buf), &bytesRead)) {
+            DWORD bytesAvailable = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable)) {
+                fprintf(stderr, "[SSE] QueryDataAvailable error: %lu\n", GetLastError());
+                break;
+            }
+            if (bytesAvailable == 0) {
+                // No data ready yet — brief sleep to avoid busy-spinning
+                Sleep(1);
+                continue;
+            }
+            DWORD toRead = (bytesAvailable < sizeof(buf)) ? bytesAvailable : sizeof(buf);
+            if (!WinHttpReadData(hRequest, buf, toRead, &bytesRead)) {
                 fprintf(stderr, "[SSE] Read error: %lu\n", GetLastError());
                 break;
             }
@@ -104,7 +117,9 @@ void SSEClient::run() {
                 // Connection closed
                 break;
             }
+            m_statBytesRead.fetch_add((int)bytesRead);
             parseSSEStream(buf, bytesRead);
+            logStats();
         }
 
         m_connected = false;
@@ -157,6 +172,9 @@ void SSEClient::parseSSEStream(const char* data, size_t len) {
                     }
                 }
 
+                m_statEventsReceived.fetch_add(1);
+                if (event.type == "time") m_statTimeEvents.fetch_add(1);
+                else if (event.type == "snapshot") m_statSnapshots.fetch_add(1);
                 m_queue.push(std::move(event));
             }
             m_eventType.clear();
@@ -182,4 +200,20 @@ void SSEClient::parseSSEStream(const char* data, size_t len) {
     if (pos > 0) {
         m_buffer.erase(0, pos);
     }
+}
+
+void SSEClient::logStats() {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - m_lastStatLog).count();
+    if (elapsed < 5) return;
+
+    int bytes = m_statBytesRead.exchange(0);
+    int events = m_statEventsReceived.exchange(0);
+    int times = m_statTimeEvents.exchange(0);
+    int snaps = m_statSnapshots.exchange(0);
+
+    printf("[SSE stats] %ds: bytes=%d  events=%d  time=%d  snapshots=%d  buf=%zu\n",
+        (int)elapsed, bytes, events, times, snaps, m_buffer.size());
+
+    m_lastStatLog = now;
 }

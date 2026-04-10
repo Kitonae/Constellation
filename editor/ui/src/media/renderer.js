@@ -4,7 +4,7 @@
 // of RenderItems ready for DOM rendering. Consumed by both Viewport2D and
 // DisplayWindow, eliminating the ~150 lines of duplicated render logic.
 
-import { getActiveClips, getClipSourceTime, getClipOpacity, getClipFilterString } from './timeline.js'
+import { getActiveClips, getClipSourceTime, getClipOpacity, getClipFilterString, migrateTimeline } from './timeline.js'
 import { isVideo as isVideoAsset, extFromUri, getAssetDuration } from './asset.js'
 import { resolveUriSync } from './uri.js'
 
@@ -45,12 +45,15 @@ const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'm
 export function computeRenderList(timeline, assets, time, opts = {}) {
   if (!timeline || !assets) return []
 
+  // Auto-migrate legacy format (tracks[].media[]) → new format (tracks[].clips[])
+  const migrated = migrateTimeline(timeline)
+
   const assetMap = new Map()
   for (const a of assets) {
     assetMap.set(a.id, a)
   }
 
-  const activeClips = getActiveClips(timeline, time, {
+  const activeClips = getActiveClips(migrated, time, {
     skipOverlaps: opts.skipOverlaps ?? true,
     skipMuted: true,
   })

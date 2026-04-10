@@ -19,6 +19,7 @@ public:
 private:
     void run();
     void parseSSEStream(const char* data, size_t len);
+    void logStats();
 
     EventQueue& m_queue;
     std::string m_host;
@@ -32,4 +33,11 @@ private:
     std::string m_buffer;
     std::string m_eventType;
     std::string m_eventData;
+
+    // Stats
+    std::atomic<int> m_statBytesRead{0};
+    std::atomic<int> m_statEventsReceived{0};
+    std::atomic<int> m_statTimeEvents{0};
+    std::atomic<int> m_statSnapshots{0};
+    std::chrono::steady_clock::time_point m_lastStatLog;
 };

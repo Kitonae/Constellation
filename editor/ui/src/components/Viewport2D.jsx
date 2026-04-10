@@ -4,9 +4,9 @@ import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
+import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
-import { computeRenderList, computeStageItemLayout } from '../media/renderer.js'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
@@ -36,6 +36,9 @@ export default function Viewport2D() {
   const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
   const draggedRef = useRef(false)
   const [tool, setTool] = useState('select') // 'select' | 'hand'
+  const [shiftHeld, setShiftHeld] = useState(false)
+  const [dragScreen, setDragScreen] = useState(null) // { nodeId, origX, origY, startX, startY, currentX, currentY }
+  const dragScreenRef = useRef(null)
 
   // Global failsafe: if the pointer is released outside the element, end any active clip drag
   useEffect(() => {
@@ -59,6 +62,40 @@ export default function Viewport2D() {
       window.removeEventListener('pointercancel', endDrag, true)
       window.removeEventListener('mouseup', endDrag, true)
       window.removeEventListener('touchend', endDrag, true)
+    }
+  }, [])
+
+  // Track shift key to switch between clip and display interaction
+  useEffect(() => {
+    const down = (e) => { if (e.key === 'Shift') setShiftHeld(true) }
+    const up = (e) => { if (e.key === 'Shift') setShiftHeld(false) }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', () => setShiftHeld(false))
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  }, [])
+
+  // Global failsafe: commit screen drag on pointer release anywhere
+  useEffect(() => {
+    const endScreenDrag = (e) => {
+      const d = dragScreenRef.current
+      if (!d) return
+      if (d.currentX !== undefined) {
+        useEditorStore.getState().updateNodeTransform(d.nodeId, {
+          position: { x: d.currentX, y: d.currentY, z: 0 },
+        })
+      }
+      setDragScreen(null)
+      dragScreenRef.current = null
+    }
+    window.addEventListener('pointerup', endScreenDrag, true)
+    window.addEventListener('pointercancel', endScreenDrag, true)
+    return () => {
+      window.removeEventListener('pointerup', endScreenDrag, true)
+      window.removeEventListener('pointercancel', endScreenDrag, true)
     }
   }, [])
 
@@ -400,7 +437,7 @@ export default function Viewport2D() {
 
           {/* draw screens */}
           {nodes.map((n) => (
-            <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected} highlight={dnd.over && dnd.screenId === n.id} />
+            <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected} highlight={dnd.over && dnd.screenId === n.id} shiftHeld={shiftHeld} dragScreen={dragScreen} setDragScreen={setDragScreen} dragScreenRef={dragScreenRef} />
           ))}
 
           {/* Output overlay: represent each screen's pixel output area */}
@@ -543,7 +580,7 @@ export default function Viewport2D() {
                   justifyContent: 'center',
                   color: '#c7cfdb',
                   fontSize: 11,
-                  pointerEvents: 'auto',
+                  pointerEvents: shiftHeld ? 'none' : 'auto',
                   zIndex: 5,
                   userSelect: 'none',
                   WebkitUserSelect: 'none',
@@ -555,10 +592,11 @@ export default function Viewport2D() {
                 }}
               >
                 {(() => {
-                  const ext = String(clip?.uri || '').split('?')[0].split('#')[0].split('.').pop().toLowerCase()
-                  const isVideo = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
+                  const uri_ = String(clip?.uri || '')
+                  const ext = extFromUri(uri_) || extFromUri(clip?.name || '')
+                  const isVideo = mediaTypeFromExt(ext) === 'video'
                   if (isVideo) {
-                    return <VideoFrame clip={clip} refEl={getVideoRef(tm.id)} style={{ width: '100%', height: '100%' }} />
+                    return <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
                   }
                   if (imageMeta[tm.clip_id]?.src) {
                     return <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none', WebkitUserDrag: 'none' }} />
@@ -641,41 +679,42 @@ export default function Viewport2D() {
   )
 }
 
-function VideoFrame({ clip, refEl, style }) {
+function VideoFrame({ clip, style }) {
+  const [thumb, setThumb] = useState(null)
+  const uri = String(clip?.uri || '')
+
   useEffect(() => {
-    async function setSrc() {
+    let cancelled = false
+    async function loadThumb() {
       try {
-        const uri = String(clip?.uri || '')
-        if (!refEl?.current) return
-        // Handle data:, http(s):, blob:, and file:// in Tauri
-        if (/^data:/.test(uri) || /^https?:/.test(uri) || /^blob:/.test(uri)) {
-          refEl.current.src = uri
-          return
-        }
-        if (uri.startsWith('file://')) {
-          refEl.current.src = resolveFileUrl(uri)
-          return
-        }
+        const { generateVideoThumbnail } = await import('../utils/videoUtils.js')
+        const dataUrl = await generateVideoThumbnail(uri, 0)
+        if (!cancelled) setThumb(dataUrl)
       } catch { }
     }
-    setSrc()
-  }, [clip?.uri, refEl])
-  return (
-    <video ref={refEl} muted playsInline preload="auto" crossOrigin="anonymous" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
-  )
+    if (uri) loadThumb()
+    return () => { cancelled = true }
+  }, [uri])
+
+  if (thumb) {
+    return <img src={thumb} alt={clip?.name || ''} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
+  }
+  return <span style={{ padding: '0 4px', color: '#888', fontSize: 11, userSelect: 'none', ...style }}>{clip?.name || 'video'}</span>
 }
 
-function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
+function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHeld, dragScreen, setDragScreen, dragScreenRef }) {
   const t = node.transform
   const Z_NEUTRAL = 0.2
   const ratio = scale / 50 // since scale already includes zoom/Z_NEUTRAL, and BASE_SCALE is 50
-  const x = (t?.position?.x ?? 0) * (ratio) + center.x
-  const y = center.y - (t?.position?.y ?? 0) * (ratio)
+  const posX = (t?.position?.x ?? 0)
+  const posY = (t?.position?.y ?? 0)
+  const x = posX * ratio + center.x
+  const y = center.y - posY * ratio
   const s = t?.scale ?? { x: 1, y: 1, z: 1 }
   const isSelected = node.id === selectedId
 
   const children = (node.children ?? []).map((c) => (
-    <Node2D key={c.id} node={c} center={center} scale={scale} selectedId={selectedId} onSelect={onSelect} />
+    <Node2D key={c.id} node={c} center={center} scale={scale} selectedId={selectedId} onSelect={onSelect} shiftHeld={shiftHeld} dragScreen={dragScreen} setDragScreen={setDragScreen} dragScreenRef={dragScreenRef} />
   ))
 
   if (node.kind?.type === 'screen') {
@@ -685,12 +724,50 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight }) {
     const h = Math.max(2, py * (ratio))
     const isRenderer = (node.kind?.screenType || 'web') === 'renderer'
     const borderColor = isSelected || highlight ? '#ffcc00' : (isRenderer ? '#8b5cf6' : '#2a3148')
+
+    // Apply drag offset if this screen is being dragged
+    const isDragging = dragScreen?.nodeId === node.id
+    const drawX = isDragging && dragScreen.currentX !== undefined ? dragScreen.currentX * ratio + center.x : x
+    const drawY = isDragging && dragScreen.currentY !== undefined ? center.y - dragScreen.currentY * ratio : y
+
     return (
       <>
         <div
           onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
+          onPointerDown={(e) => {
+            if (!shiftHeld || e.button !== 0) return
+            e.stopPropagation()
+            e.preventDefault()
+            try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+            onSelect(node.id)
+            const d = { nodeId: node.id, origX: posX, origY: posY, startX: e.clientX, startY: e.clientY }
+            setDragScreen(d)
+            dragScreenRef.current = d
+          }}
+          onPointerMove={(e) => {
+            const d = dragScreenRef.current
+            if (!d || d.nodeId !== node.id) return
+            if ((e.buttons & 1) === 0) { setDragScreen(null); dragScreenRef.current = null; return }
+            const dx = e.clientX - d.startX
+            const dy = e.clientY - d.startY
+            const next = { ...d, currentX: d.origX + dx / ratio, currentY: d.origY - dy / ratio }
+            dragScreenRef.current = next
+            setDragScreen(next)
+          }}
+          onPointerUp={(e) => {
+            const d = dragScreenRef.current
+            if (!d || d.nodeId !== node.id) return
+            if (d.currentX !== undefined) {
+              useEditorStore.getState().updateNodeTransform(d.nodeId, {
+                position: { x: d.currentX, y: d.currentY, z: 0 },
+              })
+            }
+            setDragScreen(null)
+            dragScreenRef.current = null
+            try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
+          }}
           title={`${node.name || node.id} (${node.kind?.screenType || 'web'})`}
-          style={{ position: 'absolute', left: x - w / 2, top: y - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : (isRenderer ? '#1a1028' : '#101520'), border: `2px ${highlight ? 'dashed' : 'solid'} ${borderColor}`, borderRadius: 4, zIndex: 1 }}
+          style={{ position: 'absolute', left: drawX - w / 2, top: drawY - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : (isRenderer ? '#1a1028' : '#101520'), border: `2px ${highlight ? 'dashed' : 'solid'} ${borderColor}`, borderRadius: 4, zIndex: 1, cursor: shiftHeld ? 'move' : 'default' }}
         />
         {children}
       </>

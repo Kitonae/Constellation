@@ -2,6 +2,9 @@
 #include <cstdio>
 #include <chrono>
 #include <objbase.h>
+#include <mfapi.h>
+#include <algorithm>
+#include <cctype>
 
 bool App::init(const AppConfig& config) {
     m_config = config;
@@ -23,16 +26,16 @@ bool App::init(const AppConfig& config) {
     }
 
     // Select hardware adapter
-    ComPtr<IDXGIAdapter1> adapter;
-    for (UINT i = 0; m_factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+    for (UINT i = 0; m_factory->EnumAdapters1(i, &m_adapter) != DXGI_ERROR_NOT_FOUND; i++) {
         DXGI_ADAPTER_DESC1 desc;
-        adapter->GetDesc1(&desc);
+        m_adapter->GetDesc1(&desc);
         if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-        if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
+        if (SUCCEEDED(D3D12CreateDevice(m_adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
             break;
         }
-        adapter = nullptr;
+        m_adapter = nullptr;
     }
+    ComPtr<IDXGIAdapter1>& adapter = m_adapter;
 
     // Create device
     if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device)))) {
@@ -55,8 +58,32 @@ bool App::init(const AppConfig& config) {
     m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, tempAlloc.Get(), nullptr, IID_PPV_ARGS(&m_cmdList));
     m_cmdList->Close();
 
-    // Init COM for WIC
+    // Init COM for WIC and Media Foundation
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    MFStartup(MF_VERSION);
+
+    // Create shared D3D11 device for DXVA video decode
+    {
+        UINT d3d11Flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+        D3D_FEATURE_LEVEL fl;
+        HRESULT hr11 = D3D11CreateDevice(m_adapter.Get(),
+            m_adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+            nullptr, d3d11Flags, nullptr, 0, D3D11_SDK_VERSION,
+            &m_d3d11Device, &fl, nullptr);
+        if (SUCCEEDED(hr11)) {
+            ComPtr<ID3D10Multithread> mt;
+            if (SUCCEEDED(m_d3d11Device.As(&mt))) mt->SetMultithreadProtected(TRUE);
+
+            UINT token = 0;
+            hr11 = MFCreateDXGIDeviceManager(&token, &m_dxgiManager);
+            if (SUCCEEDED(hr11)) {
+                m_dxgiManager->ResetDevice(m_d3d11Device.Get(), token);
+                printf("[App] Shared D3D11 device created for DXVA\n");
+            }
+        } else {
+            printf("[App] D3D11 device creation failed (0x%08x), videos will use software decode\n", hr11);
+        }
+    }
 
     // Init render pipeline
     if (!m_pipeline.init(m_device.Get())) {
@@ -82,6 +109,7 @@ bool App::init(const AppConfig& config) {
         handleScreenOpen(m_config.screenId, m_config.width, m_config.height);
     }
 
+    m_lastStatTime = std::chrono::steady_clock::now();
     printf("[App] Initialized, connecting to %s:%d\n", m_config.host.c_str(), m_config.port);
     return true;
 }
@@ -96,6 +124,17 @@ int App::run() {
             if (msg.message == WM_QUIT) {
                 m_running = false;
                 break;
+            }
+            if (msg.message == WM_KEYDOWN) {
+                if (msg.wParam == 'V') {
+                    m_config.verbose = !m_config.verbose;
+                    for (auto& [uri, dec] : m_videoDecoders) dec->setVerbose(m_config.verbose);
+                    printf("[App] Verbose %s\n", m_config.verbose ? "ON" : "OFF");
+                }
+                if (msg.wParam == VK_F3) {
+                    m_showDebug = !m_showDebug;
+                    printf("[App] Debug overlay %s\n", m_showDebug ? "ON" : "OFF");
+                }
             }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -129,14 +168,16 @@ int App::run() {
 }
 
 void App::processEvents() {
-    while (auto event = m_eventQueue.tryPop()) {
-        if (event->type == "snapshot") {
-            m_scene.loadSnapshot(event->data);
+    auto events = m_eventQueue.drainAll();
+    m_eventsProcessed += (int)events.size();
+    for (auto& event : events) {
+        if (event.type == "snapshot") {
+            m_scene.loadSnapshot(event.data);
             printf("[App] Snapshot loaded\n");
-        } else if (event->type == "time") {
-            m_currentTime = event->timeValue;
-        } else if (event->type == "control") {
-            std::string cmd = event->data.is_string() ? event->data.get<std::string>() : "";
+        } else if (event.type == "time") {
+            m_currentTime = event.timeValue;
+        } else if (event.type == "control") {
+            std::string cmd = event.data.is_string() ? event.data.get<std::string>() : "";
             if (cmd == "play") {
                 m_playing = true;
             } else if (cmd == "pause") {
@@ -146,15 +187,15 @@ void App::processEvents() {
                 m_currentTime = 0;
             }
             printf("[App] Control: %s\n", cmd.c_str());
-        } else if (event->type == "screen-open") {
-            std::string sid = event->data.value("screenId", "");
-            int w = event->data.value("width", 1920);
-            int h = event->data.value("height", 1080);
+        } else if (event.type == "screen-open") {
+            std::string sid = event.data.value("screenId", "");
+            int w = event.data.value("width", 1920);
+            int h = event.data.value("height", 1080);
             if (!sid.empty()) {
                 handleScreenOpen(sid, w, h);
             }
-        } else if (event->type == "screen-close") {
-            std::string sid = event->data.value("screenId", "");
+        } else if (event.type == "screen-close") {
+            std::string sid = event.data.value("screenId", "");
             if (!sid.empty()) {
                 handleScreenClose(sid);
             }
@@ -186,22 +227,52 @@ void App::render() {
         for (const auto& ac : activeClips) {
             if (!ac.clip || ac.clip->uri.empty()) continue;
 
-            // Skip video files for now (Phase 4)
             const std::string& uri = ac.clip->uri;
-            {
-                size_t dot = uri.rfind('.');
-                if (dot != std::string::npos) {
-                    std::string ext = uri.substr(dot + 1);
-                    for (auto& c : ext) c = (char)tolower(c);
-                    if (ext == "mp4" || ext == "mov" || ext == "webm" || ext == "mkv" ||
-                        ext == "avi" || ext == "m4v" || ext == "mpg" || ext == "mpeg") {
-                        continue;
-                    }
-                }
+
+            // Skip blob: and http: URIs — native renderer can't access these
+            if (uri.substr(0, 5) == "blob:" || uri.substr(0, 5) == "http:" || uri.substr(0, 6) == "https:") {
+                static int blobWarn = 0;
+                if (blobWarn++ % 600 == 0)
+                    printf("[App] Skipping blob/http URI: %.80s (use Add New button for native renderer)\n", uri.c_str());
+                continue;
             }
 
-            const CachedTexture* tex = m_textureCache.get(uri);
-            if (!tex) continue;
+            const CachedTexture* tex = nullptr;
+
+            if (isVideoFile(uri)) {
+                // Decode video frame at current timeline position within this clip
+                VideoDecoder* decoder = getVideoDecoder(uri);
+                if (!decoder) {
+                    static int vMiss = 0;
+                    if (vMiss++ % 300 == 0) printf("[App] No decoder for %.60s\n", uri.c_str());
+                    continue;
+                }
+
+                double timeInClip = m_currentTime - ac.tm->start;
+                const VideoFrame* frame = decoder->getFrameAtTime(timeInClip);
+                if (!frame || frame->pixels.empty()) {
+                    static int fMiss = 0;
+                    if (fMiss++ % 300 == 0) printf("[App] No frame for %s at t=%.3f\n", ac.tm->id.c_str(), timeInClip);
+                    continue;
+                }
+
+                // Upload decoded frame as BGRA texture (MF native format, no CPU conversion)
+                std::string texKey = "__video_" + ac.tm->id;
+                tex = m_textureCache.uploadPixels(texKey, frame->pixels.data(), frame->width, frame->height,
+                                                   DXGI_FORMAT_B8G8R8A8_UNORM);
+                if (!tex) {
+                    static int uMiss = 0;
+                    if (uMiss++ % 300 == 0) printf("[App] uploadRGBA failed for %s (%ux%u)\n", texKey.c_str(), frame->width, frame->height);
+                }
+            } else {
+                tex = m_textureCache.get(uri);
+            }
+
+            if (!tex) {
+                static int missCount = 0;
+                if (missCount++ % 300 == 0) printf("[App] Texture miss for %.60s...\n", uri.c_str());
+                continue;
+            }
 
             // Compute quad dimensions (scale 0 = natural size)
             float w = (ac.tm->scale.x > 0) ? (float)ac.tm->scale.x : (float)tex->width;
@@ -241,6 +312,95 @@ void App::render() {
             m_pipeline.drawQuad(m_cmdList.Get(), transform, effects, tex->srvGpu);
         }
 
+        // Debug overlay
+        if (m_showDebug) {
+            // Update FPS counter
+            m_frameCount++;
+            auto now = std::chrono::steady_clock::now();
+            double statElapsed = std::chrono::duration<double>(now - m_lastStatTime).count();
+            if (statElapsed >= 1.0) {
+                m_fps = m_frameCount / statElapsed;
+                printf("[App stats] fps=%.1f  events_processed=%d\n", m_fps, m_eventsProcessed);
+                m_frameCount = 0;
+                m_eventsProcessed = 0;
+                m_lastStatTime = now;
+            }
+
+            if (m_debugText.width() != (uint32_t)sw || m_debugText.height() != (uint32_t)sh) {
+                m_debugText.init(sw, sh);
+            }
+            m_debugText.clear();
+
+            bool connected = m_sseClient && m_sseClient->isConnected();
+            m_debugText.drawFormat(8, 8,
+                connected ? (uint8_t)0 : (uint8_t)255,
+                connected ? (uint8_t)255 : (uint8_t)80,
+                (uint8_t)0,
+                "fps=%.0f  t=%.2fs  sse=%s  screen=%s (%dx%d)",
+                m_fps, m_currentTime,
+                connected ? "OK" : "DISCONNECTED",
+                id.c_str(), sw, sh);
+            m_debugText.drawFormat(8, 20, 0, 255, 0, "playing=%s  clips=%zu  decoders=%zu%s",
+                m_playing ? "yes" : "no", activeClips.size(), m_videoDecoders.size(),
+                m_config.verbose ? "  [V]ERBOSE" : "");
+
+            int ty = 34;
+            for (const auto& ac : activeClips) {
+                const char* name = ac.clip ? ac.clip->name.c_str() : "?";
+                const std::string& auri = ac.clip ? ac.clip->uri : "";
+                bool isBlob = auri.substr(0, 5) == "blob:" || auri.substr(0, 5) == "http:";
+                bool isVid = ac.clip && isVideoFile(auri);
+                const char* tag = isBlob ? "[blob!]" : (isVid ? "[vid]" : "[img]");
+                uint8_t cr = isBlob ? (uint8_t)255 : (uint8_t)200;
+                uint8_t cg = isBlob ? (uint8_t)80 : (uint8_t)200;
+                uint8_t cb = isBlob ? (uint8_t)80 : (uint8_t)200;
+                m_debugText.drawFormat(8, ty, cr, cg, cb,
+                    " %s %s  op=%.0f%%  [%.1f-%.1f]",
+                    tag, name,
+                    ac.finalOpacity * 100.0, ac.tm->start, ac.tm->start + ac.tm->duration);
+                ty += 12;
+
+                // Video decoder stats
+                if (isVid && !isBlob) {
+                    auto dit = m_videoDecoders.find(auri);
+                    if (dit != m_videoDecoders.end() && dit->second->isOpen()) {
+                        auto* dec = dit->second.get();
+                        int shown = dec->displayedFrames();
+                        int drops = dec->playbackDrops();
+                        int decoded = dec->decodedFrames();
+                        int buf = dec->readableCount();
+                        int seeks = dec->seekCount();
+                        uint8_t dr = drops > 0 ? (uint8_t)255 : (uint8_t)120;
+                        uint8_t dg = drops > 0 ? (uint8_t)180 : (uint8_t)200;
+                        m_debugText.drawFormat(18, ty, dr, dg, 120,
+                            "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %s]",
+                            shown, drops, decoded, buf, seeks, dec->fps(),
+                            dec->isHardwareAccelerated() ? "DXVA" : "SW");
+                        ty += 12;
+                    }
+                }
+            }
+
+            std::string dbgKey = "__debug_" + id;
+            const CachedTexture* dbgTex = m_textureCache.uploadRGBA(
+                dbgKey, m_debugText.pixels(), m_debugText.width(), m_debugText.height());
+            if (dbgTex) {
+                TransformCB dt = {};
+                dt.scale[0] = (float)sw;
+                dt.scale[1] = (float)sh;
+                dt.screenSize[0] = (float)sw;
+                dt.screenSize[1] = (float)sh;
+
+                EffectsCB de = {};
+                de.opacity = 1.0f;
+                de.brightness = 1.0f;
+                de.contrast = 1.0f;
+                de.saturate_amount = 1.0f;
+
+                m_pipeline.drawQuad(m_cmdList.Get(), dt, de, dbgTex->srvGpu);
+            }
+        }
+
         screen->endFrame(m_cmdList.Get(), m_cmdQueue.Get());
     }
 }
@@ -274,7 +434,62 @@ void App::shutdown() {
         m_sseClient->stop();
     }
     m_screens.clear();
+    m_videoDecoders.clear(); // must be before D3D11 device release
     m_textureCache.shutdown();
+    m_dxgiManager.Reset();
+    m_d3d11Device.Reset();
+    MFShutdown();
     CoUninitialize();
     printf("[App] Shutdown complete\n");
+}
+
+bool App::isVideoFile(const std::string& uri) {
+    size_t dot = uri.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = uri.substr(dot + 1);
+    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    return ext == "mp4" || ext == "mov" || ext == "webm" || ext == "mkv" ||
+           ext == "avi" || ext == "m4v" || ext == "mpg" || ext == "mpeg";
+}
+
+VideoDecoder* App::getVideoDecoder(const std::string& uri) {
+    auto it = m_videoDecoders.find(uri);
+    if (it != m_videoDecoders.end()) {
+        return it->second->isOpen() ? it->second.get() : nullptr;
+    }
+
+    // Resolve file path from URI
+    std::string path;
+    if (uri.substr(0, 8) == "file:///") {
+        path = uri.substr(8);
+        std::string decoded;
+        for (size_t i = 0; i < path.size(); i++) {
+            if (path[i] == '%' && i + 2 < path.size()) {
+                char hex[3] = { path[i + 1], path[i + 2], 0 };
+                decoded += (char)strtol(hex, nullptr, 16);
+                i += 2;
+            } else if (path[i] == '/') {
+                decoded += '\\';
+            } else {
+                decoded += path[i];
+            }
+        }
+        path = decoded;
+    } else if (uri.size() > 2 && uri[1] == ':') {
+        path = uri;
+    } else {
+        return nullptr;
+    }
+
+    auto decoder = std::make_unique<VideoDecoder>();
+    decoder->setVerbose(m_config.verbose);
+    if (!decoder->open(path, m_d3d11Device.Get(), m_dxgiManager.Get())) {
+        fprintf(stderr, "[App] Failed to open video: %s\n", path.c_str());
+        m_videoDecoders[uri] = std::move(decoder); // cache failure to avoid retries
+        return nullptr;
+    }
+
+    VideoDecoder* ptr = decoder.get();
+    m_videoDecoders[uri] = std::move(decoder);
+    return ptr;
 }

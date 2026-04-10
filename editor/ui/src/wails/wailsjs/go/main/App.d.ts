@@ -14,6 +14,10 @@ export function LaunchRenderer(arg1:string,arg2:number,arg3:number):Promise<void
 
 export function OpenRendererScreen(arg1:string,arg2:number,arg3:number):Promise<void>;
 
+export function PickMediaFiles():Promise<Array<string>>;
+
+export function PickMediaFolder():Promise<Array<string>>;
+
 export function PushControl(arg1:string):Promise<void>;
 
 export function PushSnapshot(arg1:string):Promise<void>;
