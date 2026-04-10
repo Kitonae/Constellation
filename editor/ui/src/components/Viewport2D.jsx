@@ -3,6 +3,7 @@ import { useEditorStore } from '../store.js'
 import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
+import { computeRenderList, computeStageItemLayout } from '../media/renderer.js'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)

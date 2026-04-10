@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { parseProject } from './utils/parseProject.js'
 import { setFileServerBaseUrl } from './utils/videoUtils.js'
+import { setFileServerBase, toFileUri as mfToFileUri } from './media/uri.js'
+import { createMediaSession } from './media/session.js'
 
 // Initialize file server base URL if in Wails environment
 if (window.go?.main?.App?.GetFileServerPort) {
@@ -8,6 +10,8 @@ if (window.go?.main?.App?.GetFileServerPort) {
     if (port > 0) {
       console.log('Using sidecar file server at port', port)
       setFileServerBaseUrl(`http://localhost:${port}`)
+      // Also set the Media Foundation URI resolver's base
+      setFileServerBase(`http://localhost:${port}`)
     }
   }).catch(err => console.warn('Failed to get file server port', err))
 }
@@ -382,16 +386,23 @@ export const useEditorStore = create((set, get) => ({
   play: () => {
     queueLog('info', 'Local: play')
     set({ playing: true })
+    // Sync to Media Session if available
+    try { getMediaSession().play() } catch {}
   },
   pause: () => {
     queueLog('info', 'Local: pause')
     set({ playing: false })
+    try { getMediaSession().pause() } catch {}
   },
   stop: () => {
     queueLog('info', 'Local: stop')
     set({ playing: false, time: 0 })
+    try { getMediaSession().stop() } catch {}
   },
-  seek: (t) => set({ time: t }),
+  seek: (t) => {
+    set({ time: t })
+    try { getMediaSession().seek(t) } catch {}
+  },
   setSelected: (id) => set({ selectedId: id }),
   setSelectedClip: (clipId) => set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] }),
   setSelectedClips: (clipIds) => set({ selectedClipIds: Array.isArray(clipIds) ? clipIds : [], selectedClipId: (clipIds && clipIds.length ? clipIds[0] : null) }),
@@ -537,17 +548,42 @@ function findNode(nodes, id) {
   return null
 }
 
+// Delegate to Media Foundation URI resolver
 function toFileUri(p) {
-  // Normalize separators
-  let norm = p.replace(/\\/g, '/')
-  // Windows drive letter path
-  if (/^[A-Za-z]:\//.test(norm)) {
-    return `file:///${norm}`
+  return mfToFileUri(p)
+}
+
+// --- Media Session singleton ---
+// The session is created lazily (after the store exists) and wired to sync
+// transport state back into zustand so all existing components keep working.
+
+let _mediaSession = null
+
+/**
+ * Get (or create) the global MediaSession instance.
+ * @returns {object} MediaSession
+ */
+export function getMediaSession() {
+  if (!_mediaSession) {
+    _mediaSession = createMediaSession({
+      getStore: () => useEditorStore.getState(),
+      uiUpdateInterval: 100,
+    })
+
+    // Sync session time updates back into zustand
+    _mediaSession.subscribe({
+      onTimeUpdate(time) {
+        // Only update store if session is authoritative (playing)
+        const s = useEditorStore.getState()
+        if (s.playing) {
+          useEditorStore.setState({ time })
+        }
+      },
+      onStateChange(newState) {
+        const playing = newState === 'playing'
+        useEditorStore.setState({ playing })
+      },
+    })
   }
-  // Already starts with '/' (POSIX)
-  if (norm.startsWith('/')) {
-    return `file://${norm}`
-  }
-  // Fallback
-  return `file://${norm}`
+  return _mediaSession
 }

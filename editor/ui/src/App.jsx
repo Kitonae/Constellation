@@ -14,6 +14,7 @@ import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './di
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
 import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
+import { toFileUri, setFileServerBase, isMediaFile } from './media/index.js'
 
 export default function App() {
   const fileRef = useRef(null)
@@ -55,7 +56,7 @@ export default function App() {
       for (const file of files) {
         const name = file.name
         // Filter for media types
-        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) continue
+        if (!isMediaFile(name)) continue
 
         const id = `clip-${Math.random().toString(36).slice(2, 8)}`
         let initialUri = null
@@ -110,6 +111,7 @@ export default function App() {
         if (port > 0) {
           console.log('Using sidecar file server at port', port)
           setFileServerBaseUrl(`http://localhost:${port}`)
+          setFileServerBase(`http://localhost:${port}`)
           useEditorStore.getState().addLog({ level: 'info', message: `Video sidecar active on port ${port}` })
         }
       }).catch(err => {
@@ -391,20 +393,7 @@ async function onAddImage() {
   return
 }
 
-function toFileUri(p) {
-  let norm = p.replace(/\\/g, '/')
-  // Encode path parts to handle spaces and special characters
-  const parts = norm.split('/')
-  const encodedParts = parts.map(part => encodeURIComponent(part))
-  norm = encodedParts.join('/')
-  
-  // Restore drive letter colon if it was encoded
-  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
-
-  if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
-  if (norm.startsWith('/')) return `file://${norm}`
-  return `file://${norm}`
-}
+// toFileUri is now imported from media/index.js
 
 async function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
