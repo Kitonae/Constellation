@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { resolveImageSrc } from './MediaThumb.jsx'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
+import { computeRenderList, computeItemLayout } from '../media/renderer.js'
 
 export default function DisplayWindow() {
   const params = new URLSearchParams(window.location.search)

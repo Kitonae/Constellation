@@ -6,6 +6,7 @@ import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
+import { computeRenderList, computeStageItemLayout } from '../media/renderer.js'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useEditorStore } from '../store.js'
+import { useEditorStore, getMediaSession } from '../store.js'
 import { broadcastToDisplays, hasOpenDisplays } from '../display/displayManager.js'
 
 export default function GlobalTicker() {

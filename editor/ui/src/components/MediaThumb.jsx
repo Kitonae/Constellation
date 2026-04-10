@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import Spinner from './Spinner.jsx'
 import { generateVideoThumbnail } from '../utils/videoUtils.js'
+import { resolveUri } from '../media/uri.js'
+import { extFromUri } from '../media/asset.js'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -9,7 +11,6 @@ const MIME_BY_EXT = {
   gif: 'image/gif',
   webp: 'image/webp',
   bmp: 'image/bmp',
-  // Basic video types for hinting when needed
   mp4: 'video/mp4',
   mov: 'video/quicktime',
   webm: 'video/webm',
@@ -18,20 +19,6 @@ const MIME_BY_EXT = {
   m4v: 'video/x-m4v',
   mpg: 'video/mpeg',
   mpeg: 'video/mpeg',
-}
-
-function extFromUri(uri) {
-  try {
-    const u = String(uri)
-    // Handle blob URLs or data URLs by skipping them if they don't look like paths,
-    // but here we just want to extract extension from the end of the string.
-    // If uri is a filename like "video.mp4", it works too.
-    const q = u.split('?')[0]
-    const p = q.split('#')[0]
-    const s = p.split('.')
-    if (s.length < 2) return ''
-    return (s[s.length - 1] || '').toLowerCase()
-  } catch { return '' }
 }
 
 function u8ToBase64(u8) {
@@ -52,37 +39,14 @@ function base64ToU8(b64) {
   return u8
 }
 
+// Delegate to Media Foundation URI resolver
 export async function resolveImageSrc(uri, mimeHint = 'image/*') {
-  if (!uri) return null
-  const u = String(uri)
-  if (u.startsWith('data:')) return u
-  if (u.startsWith('file://')) {
-    // Build a filesystem path portable across platforms
-    try {
-      const url = new URL(u)
-      let p = decodeURI(url.pathname)
-      // On Windows, pathname like "/C:/..." -> strip leading slash
-      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
-      // Wails environment: use Go backend to fetch & inline as base64
-      if (typeof window !== 'undefined' && window.go?.main?.App?.ReadFileBase64) {
-        try {
-          const dataUrl = await window.go.main.App.ReadFileBase64(p)
-          if (dataUrl) return dataUrl
-        } catch { }
-      }
-      // Fallback for non-Tauri web: browsers generally block file://; return null
-      // so callers can show a placeholder.
-      return null
-    } catch {
-      return null
-    }
-  }
-  return u
+  return resolveUri(uri)
 }
 
 export async function inlineFromUri(uri, mimeHint = 'image/*') {
-  // (Tauri inline fallback removed)
-  return null
+  // Delegate to Media Foundation URI resolver as fallback
+  return resolveUri(uri)
 }
 
 function isVideoExt(ext) {

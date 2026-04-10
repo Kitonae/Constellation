@@ -16,6 +16,7 @@ import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
+import { setFileServerBase, isMediaFile } from './media/index.js'
 
 export default function App() {
   const fileRef = useRef(null)
@@ -56,7 +57,7 @@ export default function App() {
       for (const file of files) {
         const name = file.name
         // Filter for media types
-        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg|gltf|glb|obj)$/i.test(name)) continue
+        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) continue
 
         const id = `clip-${Math.random().toString(36).slice(2, 8)}`
         let initialUri = null
@@ -112,6 +113,7 @@ export default function App() {
           console.log('Using sidecar file server at port', port)
           setFileServerBaseUrl(`http://localhost:${port}`)
           useEditorStore.setState({ _fileServerPort: port })
+          setFileServerBase(`http://localhost:${port}`)
           useEditorStore.getState().addLog({ level: 'info', message: `Video sidecar active on port ${port}` })
         }
       }).catch(err => {

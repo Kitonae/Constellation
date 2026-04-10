@@ -4,6 +4,7 @@ import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
 import { getVideoMetadata } from '../utils/videoUtils.js'
 import { toFileUri, fileToDataUrl } from '../utils/mediaUtils.js'
 import MediaThumb from './MediaThumb.jsx'
+import { isMediaFile } from '../media/index.js'
 
 function AddClipButton({ clipId }) {
   const time = useEditorStore((s) => s.time)
@@ -46,7 +47,7 @@ export default React.memo(function MediaBin() {
         await new Promise(r => setTimeout(r, 0))
 
         // Filter out non-media files if folder import picked up junk
-        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg|gltf|glb|obj)$/i.test(name)) {
+        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) {
           i++
           continue
         }
@@ -181,7 +182,6 @@ export default React.memo(function MediaBin() {
     </div>
   )
 })
-
 
 
 function isModelClip(clipId, media) {
