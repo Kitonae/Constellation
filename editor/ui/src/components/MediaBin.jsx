@@ -3,6 +3,7 @@ import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
 import { getVideoMetadata } from '../utils/videoUtils.js'
 import MediaThumb from './MediaThumb.jsx'
+import { toFileUri, isMediaFile } from '../media/index.js'
 
 function AddClipButton({ clipId }) {
   const time = useEditorStore((s) => s.time)
@@ -44,7 +45,7 @@ export default React.memo(function MediaBin() {
         await new Promise(r => setTimeout(r, 0))
 
         // Filter out non-media files if folder import picked up junk
-        if (!/\.(png|jpg|jpeg|gif|bmp|webp|mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
+        if (!isMediaFile(name)) {
           i++
           continue
         }
@@ -173,22 +174,7 @@ export default React.memo(function MediaBin() {
   )
 })
 
-function toFileUri(p) {
-  let norm = p.replace(/\\/g, '/')
-  // Encode path parts to handle spaces and special characters
-  // We split by '/' to avoid encoding the separators
-  const parts = norm.split('/')
-  const encodedParts = parts.map(part => encodeURIComponent(part))
-  norm = encodedParts.join('/')
-  
-  // Restore drive letter colon if it was encoded
-  // e.g. "C%3A" -> "C:"
-  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
-
-  if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
-  if (norm.startsWith('/')) return `file://${norm}`
-  return `file://${norm}`
-}
+// toFileUri is now imported from media/index.js
 
 async function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {

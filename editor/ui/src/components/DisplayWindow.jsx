@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 // Listen for Wails runtime events
 import { resolveImageSrc } from './MediaThumb.jsx'
+import { computeRenderList, computeItemLayout } from '../media/renderer.js'
 
 export default function DisplayWindow() {
   const params = new URLSearchParams(window.location.search)

@@ -1,24 +1,12 @@
-let fileServerBase = ''
+import { setFileServerBase, resolveUriSync } from '../media/uri.js'
 
+// Re-export for backward compatibility. New code should import from media/uri.js directly.
 export function setFileServerBaseUrl(url) {
-  fileServerBase = url
+  setFileServerBase(url)
 }
 
 export function resolveFileUrl(uri) {
-  if (!uri) return ''
-  if (uri instanceof File) return URL.createObjectURL(uri)
-  const u = String(uri)
-  if (u.startsWith('file://')) {
-    const path = u.slice(7)
-    if (fileServerBase) {
-      const safePath = path.startsWith('/') ? path : '/' + path
-      return `${fileServerBase}/fs${safePath}`
-    }
-    console.warn('resolveFileUrl: fileServerBase not set, returning relative path')
-    const safePath = path.startsWith('/') ? path : '/' + path
-    return '/fs' + safePath
-  }
-  return u
+  return resolveUriSync(uri)
 }
 
 export function getVideoMetadata(src) {
