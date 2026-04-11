@@ -8,6 +8,7 @@
 #include "render_pipeline.h"
 #include "texture_cache.h"
 #include "video_decoder.h"
+#include "ndi_sender.h"
 #include "debug_text.h"
 
 #include <d3d12.h>
@@ -81,6 +82,10 @@ private:
     // Video decoders: keyed by media URI
     std::unordered_map<std::string, std::unique_ptr<VideoDecoder>> m_videoDecoders;
 
+    // NDI output
+    NDISender m_ndiSender;
+    bool m_ndiEnabled = true;
+
     // Debug overlay
     DebugText m_debugText;
     bool m_showDebug = true;
@@ -90,6 +95,13 @@ private:
     int m_eventsProcessed = 0;
     double m_fps = 0;
     std::chrono::steady_clock::time_point m_lastStatTime;
+
+    // Performance graph history (ring buffers, CPU-side only)
+    static constexpr int PERF_HISTORY = 120;  // ~2 seconds at 60fps
+    float m_cpuFrameTimes[PERF_HISTORY] = {};
+    float m_renderTimes[PERF_HISTORY] = {};     // CPU time spent in render()
+    float m_videoDecodeTimes[PERF_HISTORY] = {};
+    int m_perfHead = 0;
 
     // Communication
     EventQueue m_eventQueue;

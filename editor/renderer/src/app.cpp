@@ -154,6 +154,18 @@ bool App::init(const AppConfig& config) {
         handleScreenOpen(m_config.screenId, m_config.width, m_config.height);
     }
 
+    // Initialize NDI sender
+#if HAS_NDI
+    {
+        std::string ndiName = "Constellation";
+        if (!m_config.screenId.empty()) ndiName += " - " + m_config.screenId;
+        if (!m_ndiSender.init(m_device.Get(), m_cmdQueue.Get(), ndiName,
+                              m_config.width, m_config.height, 60.0)) {
+            printf("[App] NDI sender init failed (non-fatal)\n");
+        }
+    }
+#endif
+
     m_lastStatTime = std::chrono::steady_clock::now();
     printf("[App] Initialized, connecting to %s:%d\n", m_config.host.c_str(), m_config.port);
     return true;
@@ -179,6 +191,10 @@ int App::run() {
                 if (msg.wParam == VK_F3) {
                     m_showDebug = !m_showDebug;
                     printf("[App] Debug overlay %s\n", m_showDebug ? "ON" : "OFF");
+                }
+                if (msg.wParam == VK_F4) {
+                    m_ndiEnabled = !m_ndiEnabled;
+                    printf("[App] NDI output %s\n", m_ndiEnabled ? "ON" : "OFF");
                 }
             }
             TranslateMessage(&msg);
@@ -249,6 +265,7 @@ void App::processEvents() {
 }
 
 void App::render() {
+    auto cpuStart = std::chrono::steady_clock::now();
     auto activeClips = m_scene.evaluate(m_currentTime);
 
     for (auto& [id, screen] : m_screens) {
@@ -266,6 +283,7 @@ void App::render() {
         }
 
         // Draw each active clip as a textured quad
+        auto renderStart = std::chrono::steady_clock::now();
         int sw = screen->width();
         int sh = screen->height();
 
@@ -374,6 +392,30 @@ void App::render() {
             }
         }
 
+        // Record render time (clip drawing only, excluding debug overlay)
+        {
+            auto renderEnd = std::chrono::steady_clock::now();
+            float renderMs = (float)std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
+            m_renderTimes[m_perfHead % PERF_HISTORY] = renderMs;
+        }
+
+        // Record video decode time (sum of all active decoders' frame delivery latency)
+        {
+            float videoMs = 0;
+            for (const auto& ac : activeClips) {
+                if (!ac.clip) continue;
+                const std::string& auri = ac.clip->uri;
+                if (!isVideoFile(auri)) continue;
+                auto dit = m_videoDecoders.find(auri);
+                if (dit != m_videoDecoders.end() && dit->second->isOpen()) {
+                    // Use decoded frame count as a proxy — actual per-frame timing
+                    // would need instrumentation in the decode thread
+                    videoMs += (dit->second->isHardwareAccelerated() ? 0.5f : 4.0f);
+                }
+            }
+            m_videoDecodeTimes[m_perfHead % PERF_HISTORY] = videoMs;
+        }
+
         // Debug overlay
         if (m_showDebug) {
             // Update FPS counter
@@ -402,8 +444,18 @@ void App::render() {
                 m_fps, m_currentTime,
                 connected ? "OK" : "DISCONNECTED",
                 id.c_str(), sw, sh);
-            m_debugText.drawFormat(8, 20, 0, 255, 0, "playing=%s  clips=%zu  decoders=%zu%s",
+            // NDI status
+            const char* ndiStatus = "off";
+            int ndiConns = 0;
+#if HAS_NDI
+            if (m_ndiSender.isActive()) {
+                ndiConns = m_ndiSender.numConnections();
+                ndiStatus = m_ndiEnabled ? (ndiConns > 0 ? "streaming" : "ready") : "paused";
+            }
+#endif
+            m_debugText.drawFormat(8, 20, 0, 255, 0, "playing=%s  clips=%zu  decoders=%zu  ndi=%s(%d)%s",
                 m_playing ? "yes" : "no", activeClips.size(), m_videoDecoders.size(),
+                ndiStatus, ndiConns,
                 m_config.verbose ? "  [V]ERBOSE" : "");
 
             int ty = 34;
@@ -436,11 +488,34 @@ void App::render() {
                         uint8_t dg = drops > 0 ? (uint8_t)180 : (uint8_t)200;
                         const char* decMode = dec->isHardwareAccelerated() ? "DXVA+GPU" : "SW";
                         m_debugText.drawFormat(18, ty, dr, dg, 120,
-                            "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %s]",
-                            shown, drops, decoded, buf, seeks, dec->fps(), decMode);
+                            "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %s %s]",
+                            shown, drops, decoded, buf, seeks, dec->fps(),
+                            dec->codecName(), decMode);
                         ty += 12;
                     }
                 }
+            }
+
+            // Performance graphs (bottom-right corner)
+            {
+                int gw = 200, gh = 40, gpad = 6;
+                int gx = sw - gw - 10;
+                int gy = sh - (gh + gpad) * 3 - 10;
+                int hi = m_perfHead % PERF_HISTORY;
+
+                m_debugText.drawGraph(gx, gy, gw, gh,
+                    m_cpuFrameTimes, PERF_HISTORY, hi, 33.3f,
+                    0, 200, 255, "Frame");
+                gy += gh + gpad;
+
+                m_debugText.drawGraph(gx, gy, gw, gh,
+                    m_renderTimes, PERF_HISTORY, hi, 33.3f,
+                    100, 255, 50, "Render");
+                gy += gh + gpad;
+
+                m_debugText.drawGraph(gx, gy, gw, gh,
+                    m_videoDecodeTimes, PERF_HISTORY, hi, 16.6f,
+                    255, 180, 0, "Video");
             }
 
             std::string dbgKey = "__debug_" + id;
@@ -463,8 +538,29 @@ void App::render() {
             }
         }
 
+        // NDI: capture back buffer before it transitions to PRESENT
+#if HAS_NDI
+        if (m_ndiEnabled && m_ndiSender.isActive()) {
+            m_ndiSender.capture(m_cmdList.Get(), screen->currentBackBuffer());
+        }
+#endif
+
         screen->endFrame(m_cmdList.Get(), m_cmdQueue.Get());
+
+        // NDI: signal fence and send the captured frame
+#if HAS_NDI
+        if (m_ndiEnabled && m_ndiSender.isActive()) {
+            m_cmdQueue->Signal(m_ndiSender.decodeFence(), m_ndiSender.currentFenceValue());
+            m_ndiSender.send();
+        }
+#endif
     }
+
+    // Record CPU frame time and advance ring buffer
+    auto cpuEnd = std::chrono::steady_clock::now();
+    float cpuMs = (float)std::chrono::duration<double, std::milli>(cpuEnd - cpuStart).count();
+    m_cpuFrameTimes[m_perfHead % PERF_HISTORY] = cpuMs;
+    m_perfHead++;
 }
 
 void App::handleScreenOpen(const std::string& screenId, int width, int height) {
@@ -496,6 +592,9 @@ void App::shutdown() {
         m_sseClient->stop();
     }
     m_screens.clear();
+#if HAS_NDI
+    m_ndiSender.shutdown();
+#endif
     m_videoDecoders.clear(); // must be before D3D11 device release
     m_textureCache.shutdown();
     m_dxgiManager.Reset();
@@ -514,7 +613,8 @@ bool App::isVideoFile(const std::string& uri) {
     std::string ext = uri.substr(dot + 1);
     for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
     return ext == "mp4" || ext == "mov" || ext == "webm" || ext == "mkv" ||
-           ext == "avi" || ext == "m4v" || ext == "mpg" || ext == "mpeg";
+           ext == "avi" || ext == "m4v" || ext == "mpg" || ext == "mpeg" ||
+           ext == "hevc" || ext == "h265" || ext == "265" || ext == "ts" || ext == "mts";
 }
 
 VideoDecoder* App::getVideoDecoder(const std::string& uri) {

@@ -244,8 +244,8 @@ bool VideoDecoder::open(const std::string& filePath,
     const char* mode = m_nv12Mode   ? "DXVA+NV12_ZEROCOPY" :
                        m_gpuSharing ? "DXVA+GPU_SHARED" :
                        m_dxvaActive ? "DXVA+CPU_READBACK" : "SOFTWARE";
-    printf("[VideoDecoder] Opened %s (%ux%u, %.1f fps, %.1fs, %s)\n",
-        filePath.c_str(), m_width, m_height, m_fps, m_duration, mode);
+    printf("[VideoDecoder] Opened %s (%ux%u, %.1f fps, %.1fs, %s %s)\n",
+        filePath.c_str(), m_width, m_height, m_fps, m_duration, m_codecName, mode);
     return true;
 }
 
@@ -312,6 +312,22 @@ bool VideoDecoder::configureDecoder() {
         if (den > 0) m_fps = (double)num / den;
     }
 
+    // Detect codec from native subtype
+    GUID subtype = {};
+    if (SUCCEEDED(nativeType->GetGUID(MF_MT_SUBTYPE, &subtype))) {
+        if (subtype == MFVideoFormat_H264 || subtype == MFVideoFormat_H264_ES) {
+            m_codecName = "H.264";
+        } else if (subtype == MFVideoFormat_HEVC || subtype == MFVideoFormat_HEVC_ES) {
+            m_codecName = "HEVC";
+        } else if (subtype == MFVideoFormat_VP90) {
+            m_codecName = "VP9";
+        } else if (subtype == MFVideoFormat_AV1) {
+            m_codecName = "AV1";
+        } else {
+            m_codecName = "other";
+        }
+    }
+
     PROPVARIANT var; PropVariantInit(&var);
     if (SUCCEEDED(m_reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &var))) {
         LONGLONG d = 0; PropVariantToInt64(var, &d);
@@ -324,10 +340,8 @@ bool VideoDecoder::configureDecoder() {
     MFCreateMediaType(&outputType);
     outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     if (m_nv12Mode) {
-        // NV12: GPU keeps native decode format, YUV→RGB done in pixel shader
         outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
     } else {
-        // RGB32 (BGRA): MF handles color conversion on GPU
         outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
     }
     outputType->SetUINT64(MF_MT_FRAME_SIZE, ((UINT64)m_width << 32) | m_height);
@@ -610,31 +624,41 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
 
         // NV12 zero-copy path: unwrap the D3D11On12 texture to get D3D12 resource directly
         if (m_nv12Mode && m_d3d11On12) {
+            // Check actual source format — VP9/AV1 may output P010 (10-bit) instead of NV12
+            D3D11_TEXTURE2D_DESC srcDesc;
+            tex->GetDesc(&srcDesc);
+            DXGI_FORMAT nv12Fmt = srcDesc.Format;
+
+            // Only NV12 and P010 are supported as planar YUV for our shader
+            if (nv12Fmt != DXGI_FORMAT_NV12 && nv12Fmt != DXGI_FORMAT_P010) {
+                printf("[VideoDecoder] NV12 path: unsupported source format %u, falling back to BGRA\n", nv12Fmt);
+                m_nv12Mode = false;
+                goto bgra_fallback;
+            }
+
             // Return previously unwrapped texture if any
             if (dest.d3d11Source) {
-                // Return with no fences — we're on the decode thread, not render thread
                 m_d3d11On12->ReturnUnderlyingResource(dest.d3d11Source.Get(), 0, nullptr, nullptr);
                 dest.d3d11Source.Reset();
                 dest.d3d12Texture.Reset();
             }
 
-            // MF returns a texture array; copy the subresource to a standalone texture
-            // so we have a clean D3D12 resource to create SRVs on.
-            // First, create a standalone NV12 texture if we don't have one.
+            // Create a standalone texture matching the source format (NV12 or P010)
             if (!dest.d3d11Shared) {
                 D3D11_TEXTURE2D_DESC copyDesc = {};
                 copyDesc.Width = m_width;
                 copyDesc.Height = m_height;
                 copyDesc.MipLevels = 1;
                 copyDesc.ArraySize = 1;
-                copyDesc.Format = DXGI_FORMAT_NV12;
+                copyDesc.Format = nv12Fmt;
                 copyDesc.SampleDesc.Count = 1;
                 copyDesc.Usage = D3D11_USAGE_DEFAULT;
                 copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 hr = m_d3d11Device->CreateTexture2D(&copyDesc, nullptr, &dest.d3d11Shared);
                 if (FAILED(hr)) {
-                    printf("[VideoDecoder] NV12 copy texture creation failed: 0x%08x\n", hr);
-                    m_nv12Mode = false;  // fall through to BGRA paths below
+                    printf("[VideoDecoder] NV12 copy texture creation failed (fmt=%u): 0x%08x\n", nv12Fmt, hr);
+                    m_nv12Mode = false;
+                    dest.d3d11Shared.Reset();
                     goto bgra_fallback;
                 }
             }
@@ -651,18 +675,20 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
                 dest.d3d11Shared.Get(), m_d3d12Queue, IID_PPV_ARGS(&d3d12Res));
             if (SUCCEEDED(hr)) {
                 dest.d3d12Texture = d3d12Res;
-                dest.d3d11Source = dest.d3d11Shared;  // track for ReturnUnderlyingResource
+                dest.d3d11Source = dest.d3d11Shared;
                 dest.nv12 = true;
                 return true;
             } else {
                 printf("[VideoDecoder] UnwrapUnderlyingResource failed: 0x%08x\n", hr);
-                m_nv12Mode = false;  // fall through
+                m_nv12Mode = false;
+                dest.d3d11Shared.Reset();
+                goto bgra_fallback;
             }
         }
 
         bgra_fallback:
         // GPU shared path (Phase 1): copy decoded texture to shared BGRA DXGI texture
-        if (m_gpuSharing && dest.d3d11Shared && !m_nv12Mode) {
+        if (m_gpuSharing && dest.d3d11Shared && !dest.nv12) {
             m_d3d11Ctx->CopySubresourceRegion(
                 dest.d3d11Shared.Get(), 0, 0, 0, 0,  // dest: shared texture
                 tex.Get(), subIdx, nullptr);           // src: MF's decoded texture

@@ -164,3 +164,86 @@ void DebugText::drawFormat(int x, int y, uint8_t r, uint8_t g, uint8_t b, const 
     va_end(args);
     drawString(x, y, buf, r, g, b);
 }
+
+void DebugText::drawRect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    for (int py = y; py < y + h; py++) {
+        if (py < 0 || py >= (int)m_height) continue;
+        for (int px = x; px < x + w; px++) {
+            if (px < 0 || px >= (int)m_width) continue;
+            uint32_t off = (py * m_width + px) * 4;
+            if (a == 255) {
+                m_pixels[off + 0] = r;
+                m_pixels[off + 1] = g;
+                m_pixels[off + 2] = b;
+                m_pixels[off + 3] = a;
+            } else {
+                // Alpha blend
+                uint8_t dr = m_pixels[off + 0], dg = m_pixels[off + 1], db = m_pixels[off + 2];
+                m_pixels[off + 0] = (uint8_t)((r * a + dr * (255 - a)) / 255);
+                m_pixels[off + 1] = (uint8_t)((g * a + dg * (255 - a)) / 255);
+                m_pixels[off + 2] = (uint8_t)((b * a + db * (255 - a)) / 255);
+                m_pixels[off + 3] = std::max(m_pixels[off + 3], a);
+            }
+        }
+    }
+    m_dirty = true;
+}
+
+void DebugText::drawHLine(int x, int y, int w, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    drawRect(x, y, w, 1, r, g, b, a);
+}
+
+void DebugText::drawGraph(int graphX, int graphY, int graphW, int graphH,
+                           const float* values, int count, int head,
+                           float maxVal,
+                           uint8_t r, uint8_t g, uint8_t b,
+                           const char* label) {
+    if (!values || count <= 0 || graphW <= 0 || graphH <= 0) return;
+    if (maxVal <= 0) maxVal = 1.0f;
+
+    // Background
+    drawRect(graphX, graphY, graphW, graphH, 0, 0, 0, 160);
+
+    // Border (top and bottom lines)
+    drawHLine(graphX, graphY, graphW, 60, 60, 60);
+    drawHLine(graphX, graphY + graphH - 1, graphW, 60, 60, 60);
+
+    // 50% guide line
+    int midY = graphY + graphH / 2;
+    for (int px = graphX; px < graphX + graphW; px += 2) {
+        if (px >= 0 && px < (int)m_width && midY >= 0 && midY < (int)m_height) {
+            uint32_t off = (midY * m_width + px) * 4;
+            m_pixels[off + 0] = 40; m_pixels[off + 1] = 40; m_pixels[off + 2] = 40; m_pixels[off + 3] = 128;
+        }
+    }
+
+    // Draw bars (one bar per sample, newest on the right)
+    int barW = std::max(1, graphW / count);
+    for (int i = 0; i < count && i * barW < graphW; i++) {
+        int idx = (head - count + 1 + i + count * 2) % count;
+        float val = values[idx];
+        float norm = std::min(1.0f, std::max(0.0f, val / maxVal));
+        int barH = (int)(norm * (graphH - 2));
+        if (barH < 1) continue;
+
+        int bx = graphX + i * barW;
+        int by = graphY + graphH - 1 - barH;
+
+        // Color intensity based on value (dimmer when low, brighter when high)
+        uint8_t cr = (uint8_t)std::min(255, (int)(r * (0.4f + 0.6f * norm)));
+        uint8_t cg = (uint8_t)std::min(255, (int)(g * (0.4f + 0.6f * norm)));
+        uint8_t cb = (uint8_t)std::min(255, (int)(b * (0.4f + 0.6f * norm)));
+        drawRect(bx, by, std::max(1, barW - (barW > 2 ? 1 : 0)), barH, cr, cg, cb, 200);
+    }
+
+    // Label
+    if (label) {
+        // Compute current value for display
+        float curVal = values[head % count];
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s: %.1fms", label, curVal);
+        drawString(graphX + 2, graphY + 2, buf, r, g, b);
+    }
+
+    m_dirty = true;
+}

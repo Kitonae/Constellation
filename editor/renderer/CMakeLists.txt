@@ -22,6 +22,7 @@ add_executable(constellation-renderer
     src/render_pipeline.cpp
     src/texture_cache.cpp
     src/video_decoder.cpp
+    src/ndi_sender.cpp
     src/debug_text.cpp
 )
 
@@ -44,6 +45,27 @@ target_link_libraries(constellation-renderer PRIVATE
     # JSON
     nlohmann_json::nlohmann_json
 )
+
+# NDI SDK
+set(NDI_SDK_DIR "$ENV{NDI_SDK_DIR}")
+if(NDI_SDK_DIR)
+    target_include_directories(constellation-renderer PRIVATE "${NDI_SDK_DIR}/Include")
+    target_link_libraries(constellation-renderer PRIVATE "${NDI_SDK_DIR}/Lib/x64/Processing.NDI.Lib.x64.lib")
+    target_compile_definitions(constellation-renderer PRIVATE HAS_NDI=1)
+    # Copy NDI runtime DLL next to the exe
+    set(NDI_RUNTIME_DIR "$ENV{NDI_RUNTIME_DIR_V6}")
+    if(NDI_RUNTIME_DIR)
+        add_custom_command(TARGET constellation-renderer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${NDI_RUNTIME_DIR}/Processing.NDI.Lib.x64.dll"
+                "$<TARGET_FILE_DIR:constellation-renderer>/Processing.NDI.Lib.x64.dll"
+            COMMENT "Copying NDI runtime DLL")
+    endif()
+    message(STATUS "NDI SDK found at ${NDI_SDK_DIR}")
+else()
+    message(WARNING "NDI SDK not found (NDI_SDK_DIR env var not set) -- NDI output disabled")
+    target_compile_definitions(constellation-renderer PRIVATE HAS_NDI=0)
+endif()
 
 target_include_directories(constellation-renderer PRIVATE src)
 

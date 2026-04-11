@@ -14,7 +14,7 @@ import { extFromUri, isVideo as isVideoAsset } from './asset.js'
 import { resolveUriSync } from './uri.js'
 import { effectsToTransforms, chainToCSS } from './transform.js'
 
-const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'])
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg', 'hevc', 'h265', '265', 'ts', 'mts'])
 
 // --- Node types ---
 

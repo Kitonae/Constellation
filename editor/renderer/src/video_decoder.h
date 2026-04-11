@@ -74,6 +74,7 @@ public:
     double duration() const { return m_duration; }
     double fps() const { return m_fps; }
     bool isHardwareAccelerated() const { return m_dxvaActive; }
+    const char* codecName() const { return m_codecName; }
 
     // Stats
     int displayedFrames() const { return m_displayedFrames.load(); }
@@ -95,6 +96,7 @@ private:
     double m_duration = 0;
     double m_fps = 30.0;
     double m_frameDuration = 1.0 / 30.0;
+    const char* m_codecName = "unknown";
 
     // D3D12 device for shared texture creation (not owned, borrowed from App)
     ID3D12Device* m_d3d12Device = nullptr;
