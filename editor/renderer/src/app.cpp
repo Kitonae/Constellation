@@ -62,15 +62,55 @@ bool App::init(const AppConfig& config) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
 
-    // Create shared D3D11 device for DXVA video decode
+    // Create shared D3D11 device for DXVA video decode.
+    // Try D3D11On12 first (wraps DX12 device, enables zero-copy NV12 video decode).
+    // Falls back to standalone D3D11 (shared DXGI textures, BGRA output).
     {
-        UINT d3d11Flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-        D3D_FEATURE_LEVEL fl;
-        HRESULT hr11 = D3D11CreateDevice(m_adapter.Get(),
-            m_adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
-            nullptr, d3d11Flags, nullptr, 0, D3D11_SDK_VERSION,
-            &m_d3d11Device, &fl, nullptr);
-        if (SUCCEEDED(hr11)) {
+        HRESULT hr11 = E_FAIL;
+        bool d3d11on12 = false;
+
+        // Try D3D11On12: wraps our DX12 device so decoded textures are D3D12 resources
+        {
+            IUnknown* queues[] = { m_cmdQueue.Get() };
+            hr11 = D3D11On12CreateDevice(
+                m_device.Get(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                nullptr, 0,         // use D3D12 device's feature level
+                queues, 1,          // must be DIRECT queue
+                0,                  // node mask
+                &m_d3d11Device, &m_d3d11Context, nullptr);
+            if (SUCCEEDED(hr11)) {
+                // Get ID3D11On12Device2 for UnwrapUnderlyingResource (Win10 2004+)
+                hr11 = m_d3d11Device.As(&m_d3d11On12Device);
+                if (SUCCEEDED(hr11)) {
+                    d3d11on12 = true;
+                    printf("[App] D3D11On12 device created (NV12 zero-copy enabled)\n");
+                } else {
+                    printf("[App] ID3D11On12Device2 QI failed (0x%08x), need Win10 2004+\n", hr11);
+                    m_d3d11Device.Reset();
+                    m_d3d11Context.Reset();
+                }
+            } else {
+                printf("[App] D3D11On12CreateDevice failed (0x%08x), trying standalone D3D11\n", hr11);
+            }
+        }
+
+        // Fallback: standalone D3D11 device (Phase 1 shared DXGI textures path)
+        if (!d3d11on12) {
+            UINT d3d11Flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+            D3D_FEATURE_LEVEL fl;
+            hr11 = D3D11CreateDevice(m_adapter.Get(),
+                m_adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+                nullptr, d3d11Flags, nullptr, 0, D3D11_SDK_VERSION,
+                &m_d3d11Device, &fl, nullptr);
+            if (SUCCEEDED(hr11)) {
+                printf("[App] Standalone D3D11 device created for DXVA\n");
+            } else {
+                printf("[App] D3D11 device creation failed (0x%08x), videos will use software decode\n", hr11);
+            }
+        }
+
+        if (m_d3d11Device) {
             ComPtr<ID3D10Multithread> mt;
             if (SUCCEEDED(m_d3d11Device.As(&mt))) mt->SetMultithreadProtected(TRUE);
 
@@ -78,10 +118,9 @@ bool App::init(const AppConfig& config) {
             hr11 = MFCreateDXGIDeviceManager(&token, &m_dxgiManager);
             if (SUCCEEDED(hr11)) {
                 m_dxgiManager->ResetDevice(m_d3d11Device.Get(), token);
-                printf("[App] Shared D3D11 device created for DXVA\n");
             }
-        } else {
-            printf("[App] D3D11 device creation failed (0x%08x), videos will use software decode\n", hr11);
+
+            m_nv12Active = d3d11on12;  // refined after pipeline init
         }
     }
 
@@ -89,6 +128,12 @@ bool App::init(const AppConfig& config) {
     if (!m_pipeline.init(m_device.Get())) {
         fprintf(stderr, "[App] Failed to init render pipeline\n");
         return false;
+    }
+
+    // NV12 path requires both D3D11On12 and the NV12 video PSO
+    if (m_nv12Active && !m_pipeline.hasVideoPipeline()) {
+        printf("[App] NV12 PSO not available, falling back to BGRA shared textures\n");
+        m_nv12Active = false;
     }
 
     // Init texture cache
@@ -250,19 +295,31 @@ void App::render() {
 
                 double timeInClip = m_currentTime - ac.tm->start;
                 const VideoFrame* frame = decoder->getFrameAtTime(timeInClip);
-                if (!frame || frame->pixels.empty()) {
+                if (!frame) {
                     static int fMiss = 0;
                     if (fMiss++ % 300 == 0) printf("[App] No frame for %s at t=%.3f\n", ac.tm->id.c_str(), timeInClip);
                     continue;
                 }
 
-                // Upload decoded frame as BGRA texture (MF native format, no CPU conversion)
                 std::string texKey = "__video_" + ac.tm->id;
-                tex = m_textureCache.uploadPixels(texKey, frame->pixels.data(), frame->width, frame->height,
-                                                   DXGI_FORMAT_B8G8R8A8_UNORM);
+
+                if (frame->nv12 && frame->hasGpuTexture()) {
+                    // NV12 zero-copy path: register NV12 texture with 2 SRVs (Y + UV)
+                    tex = m_textureCache.registerNV12(texKey, frame->d3d12Texture.Get(),
+                        frame->width, frame->height);
+                } else if (frame->hasGpuTexture()) {
+                    // Phase 1 GPU shared path: register BGRA texture directly
+                    tex = m_textureCache.registerExternal(texKey, frame->d3d12Texture.Get(),
+                        frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM);
+                } else if (!frame->pixels.empty()) {
+                    // CPU fallback path: upload pixel data
+                    tex = m_textureCache.uploadPixels(texKey, frame->pixels.data(),
+                        frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM);
+                }
+
                 if (!tex) {
                     static int uMiss = 0;
-                    if (uMiss++ % 300 == 0) printf("[App] uploadRGBA failed for %s (%ux%u)\n", texKey.c_str(), frame->width, frame->height);
+                    if (uMiss++ % 300 == 0) printf("[App] texture failed for %s (%ux%u)\n", texKey.c_str(), frame->width, frame->height);
                 }
             } else {
                 tex = m_textureCache.get(uri);
@@ -309,7 +366,12 @@ void App::render() {
                 effects.blur_radius = (float)ac.tm->blur;
             }
 
-            m_pipeline.drawQuad(m_cmdList.Get(), transform, effects, tex->srvGpu);
+            if (tex->isNV12) {
+                m_pipeline.drawVideoQuad(m_cmdList.Get(), transform, effects,
+                    tex->srvGpu, tex->srvGpuUV);
+            } else {
+                m_pipeline.drawQuad(m_cmdList.Get(), transform, effects, tex->srvGpu);
+            }
         }
 
         // Debug overlay
@@ -372,10 +434,10 @@ void App::render() {
                         int seeks = dec->seekCount();
                         uint8_t dr = drops > 0 ? (uint8_t)255 : (uint8_t)120;
                         uint8_t dg = drops > 0 ? (uint8_t)180 : (uint8_t)200;
+                        const char* decMode = dec->isHardwareAccelerated() ? "DXVA+GPU" : "SW";
                         m_debugText.drawFormat(18, ty, dr, dg, 120,
                             "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %s]",
-                            shown, drops, decoded, buf, seeks, dec->fps(),
-                            dec->isHardwareAccelerated() ? "DXVA" : "SW");
+                            shown, drops, decoded, buf, seeks, dec->fps(), decMode);
                         ty += 12;
                     }
                 }
@@ -437,7 +499,10 @@ void App::shutdown() {
     m_videoDecoders.clear(); // must be before D3D11 device release
     m_textureCache.shutdown();
     m_dxgiManager.Reset();
+    m_d3d11On12Device.Reset();
+    m_d3d11Context.Reset();
     m_d3d11Device.Reset();
+    m_nv12Active = false;
     MFShutdown();
     CoUninitialize();
     printf("[App] Shutdown complete\n");
@@ -483,7 +548,8 @@ VideoDecoder* App::getVideoDecoder(const std::string& uri) {
 
     auto decoder = std::make_unique<VideoDecoder>();
     decoder->setVerbose(m_config.verbose);
-    if (!decoder->open(path, m_d3d11Device.Get(), m_dxgiManager.Get())) {
+    if (!decoder->open(path, m_device.Get(), m_d3d11Device.Get(), m_dxgiManager.Get(),
+                       m_d3d11On12Device.Get(), m_cmdQueue.Get(), m_nv12Active)) {
         fprintf(stderr, "[App] Failed to open video: %s\n", path.c_str());
         m_videoDecoders[uri] = std::move(decoder); // cache failure to avoid retries
         return nullptr;

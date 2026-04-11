@@ -12,6 +12,7 @@
 
 #include <d3d12.h>
 #include <d3d11.h>
+#include <d3d11on12.h>
 #include <dxgi1_6.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -58,8 +59,12 @@ private:
     ComPtr<ID3D12GraphicsCommandList> m_cmdList;
 
     // Shared D3D11 device for DXVA video decode (all decoders share this)
+    // When D3D11On12 is active, this wraps the DX12 device for zero-copy video decode.
     ComPtr<ID3D11Device> m_d3d11Device;
+    ComPtr<ID3D11DeviceContext> m_d3d11Context;
+    ComPtr<ID3D11On12Device2> m_d3d11On12Device;  // non-null when D3D11On12 is active
     ComPtr<IMFDXGIDeviceManager> m_dxgiManager;
+    bool m_nv12Active = false;  // true when D3D11On12 + NV12 path is available
 
     // Screens
     std::unordered_map<std::string, std::unique_ptr<Screen>> m_screens;

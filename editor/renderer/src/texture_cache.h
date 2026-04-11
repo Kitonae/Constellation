@@ -16,12 +16,15 @@ struct CachedTexture {
     ComPtr<ID3D12Resource> uploadBuffers[2];  // double-buffered for async upload
     int uploadIdx = 0;                        // which upload buffer to write next
     UINT64 uploadFenceVal = 0;                // fence value of last upload for this texture
-    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu;       // primary SRV (BGRA or Y plane)
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpu;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuUV;     // UV plane SRV (NV12 only)
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuUV;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t heapIndex = 0;
     bool ready = false;
+    bool isNV12 = false;
 };
 
 // TextureCache loads images from disk via WIC and uploads them to DX12 textures.
@@ -48,6 +51,18 @@ public:
                                      uint32_t width, uint32_t height) {
         return uploadPixels(key, pixels, width, height, DXGI_FORMAT_R8G8B8A8_UNORM);
     }
+
+    // Register an external D3D12 resource as a texture (no upload needed).
+    // Used for shared DXGI textures from the video decoder.
+    // The resource must already be in a GPU-readable state (COMMON or PIXEL_SHADER_RESOURCE).
+    const CachedTexture* registerExternal(const std::string& key, ID3D12Resource* resource,
+                                           uint32_t width, uint32_t height,
+                                           DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM);
+
+    // Register an NV12 D3D12 resource with 2 SRVs (Y plane + UV plane).
+    // Used for zero-copy video decode via D3D11On12.
+    const CachedTexture* registerNV12(const std::string& key, ID3D12Resource* resource,
+                                       uint32_t width, uint32_t height);
 
     ID3D12DescriptorHeap* srvHeap() const { return m_srvHeap.Get(); }
 

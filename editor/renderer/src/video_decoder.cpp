@@ -53,12 +53,84 @@ bool VideoDecoder::initDXVA(IDXGIAdapter1* adapter) {
     return true;
 }
 
+// --- Shared DXGI texture creation ---
+
+bool VideoDecoder::createSharedTexture(VideoFrame& frame) {
+    if (!m_d3d12Device || !m_d3d11Device) return false;
+
+    // D3D12 side: create BGRA texture with SHARED heap flag
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = m_width;
+    td.Height = m_height;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    td.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+
+    HRESULT hr = m_d3d12Device->CreateCommittedResource(
+        &hp, D3D12_HEAP_FLAG_SHARED,
+        &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
+        IID_PPV_ARGS(&frame.d3d12Texture));
+    if (FAILED(hr)) {
+        printf("[VideoDecoder] CreateCommittedResource (shared) failed: 0x%08x\n", hr);
+        return false;
+    }
+
+    // Get NT shared handle
+    hr = m_d3d12Device->CreateSharedHandle(
+        frame.d3d12Texture.Get(), nullptr, GENERIC_ALL, nullptr, &frame.sharedHandle);
+    if (FAILED(hr)) {
+        printf("[VideoDecoder] CreateSharedHandle failed: 0x%08x\n", hr);
+        frame.d3d12Texture.Reset();
+        return false;
+    }
+
+    // Open on D3D11 side
+    ComPtr<ID3D11Device1> dev1;
+    hr = m_d3d11Device.As(&dev1);
+    if (FAILED(hr)) {
+        printf("[VideoDecoder] ID3D11Device1 QI failed: 0x%08x\n", hr);
+        CloseHandle(frame.sharedHandle);
+        frame.sharedHandle = nullptr;
+        frame.d3d12Texture.Reset();
+        return false;
+    }
+
+    hr = dev1->OpenSharedResource1(frame.sharedHandle, IID_PPV_ARGS(&frame.d3d11Shared));
+    if (FAILED(hr)) {
+        printf("[VideoDecoder] OpenSharedResource1 failed: 0x%08x\n", hr);
+        CloseHandle(frame.sharedHandle);
+        frame.sharedHandle = nullptr;
+        frame.d3d12Texture.Reset();
+        return false;
+    }
+
+    frame.width = m_width;
+    frame.height = m_height;
+    return true;
+}
+
 // --- Open / Close ---
 
 bool VideoDecoder::open(const std::string& filePath,
+                        ID3D12Device* d3d12Device,
                         ID3D11Device* sharedDevice,
-                        IMFDXGIDeviceManager* sharedManager) {
+                        IMFDXGIDeviceManager* sharedManager,
+                        ID3D11On12Device2* d3d11On12Device,
+                        ID3D12CommandQueue* d3d12Queue,
+                        bool nv12Mode) {
     close();
+
+    m_d3d12Device = d3d12Device;
+    m_d3d12Queue = d3d12Queue;
+    m_d3d11On12 = d3d11On12Device;
+    m_nv12Mode = nv12Mode && d3d11On12Device && d3d12Queue;
 
     int wlen = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0);
     std::vector<wchar_t> wpath(wlen);
@@ -124,20 +196,56 @@ bool VideoDecoder::open(const std::string& filePath,
 
     m_frameDuration = (m_fps > 0) ? (1.0 / m_fps) : (1.0 / 30.0);
 
-    size_t sz = (size_t)m_width * m_height * 4;
-    for (int i = 0; i < POOL_SIZE; i++) {
-        VideoFrame f;
-        f.pixels.resize(sz);
-        m_writeable.push_back(std::move(f));
+    // Allocate frame pool based on active decode path
+    m_gpuSharing = false;
+    if (m_nv12Mode) {
+        // NV12 zero-copy: frames get their D3D11 textures created on first decode
+        for (int i = 0; i < POOL_SIZE; i++) {
+            VideoFrame f;
+            f.width = m_width;
+            f.height = m_height;
+            m_writeable.push_back(std::move(f));
+        }
+        printf("[VideoDecoder] NV12 zero-copy frame pool created (%d pool)\n", POOL_SIZE);
+    } else if (m_dxvaActive && m_d3d12Device) {
+        // Phase 1: shared DXGI textures (BGRA)
+        bool allOk = true;
+        for (int i = 0; i < POOL_SIZE; i++) {
+            VideoFrame f;
+            if (!createSharedTexture(f)) { allOk = false; break; }
+            m_writeable.push_back(std::move(f));
+        }
+        if (allOk) {
+            m_gpuSharing = true;
+            printf("[VideoDecoder] GPU shared textures created (%d pool)\n", POOL_SIZE);
+        } else {
+            for (auto& f : m_writeable) {
+                if (f.sharedHandle) { CloseHandle(f.sharedHandle); f.sharedHandle = nullptr; }
+            }
+            m_writeable.clear();
+            printf("[VideoDecoder] Shared texture creation failed, falling back to CPU readback\n");
+        }
+    }
+
+    // Fallback: allocate CPU pixel buffers
+    if (!m_nv12Mode && !m_gpuSharing) {
+        size_t sz = (size_t)m_width * m_height * 4;
+        for (int i = 0; i < POOL_SIZE; i++) {
+            VideoFrame f;
+            f.pixels.resize(sz);
+            m_writeable.push_back(std::move(f));
+        }
     }
 
     m_running = true;
     m_targetTime = 0.0;
     m_thread = std::thread(&VideoDecoder::decodeThread, this);
 
+    const char* mode = m_nv12Mode   ? "DXVA+NV12_ZEROCOPY" :
+                       m_gpuSharing ? "DXVA+GPU_SHARED" :
+                       m_dxvaActive ? "DXVA+CPU_READBACK" : "SOFTWARE";
     printf("[VideoDecoder] Opened %s (%ux%u, %.1f fps, %.1fs, %s)\n",
-        filePath.c_str(), m_width, m_height, m_fps, m_duration,
-        m_dxvaActive ? "DXVA" : "SOFTWARE");
+        filePath.c_str(), m_width, m_height, m_fps, m_duration, mode);
     return true;
 }
 
@@ -149,6 +257,19 @@ void VideoDecoder::close() {
     }
     m_reader.Reset();
     m_staging.Reset();
+
+    // Return unwrapped NV12 resources and close shared handles
+    auto cleanupFrame = [this](VideoFrame& f) {
+        if (f.d3d11Source && m_d3d11On12) {
+            m_d3d11On12->ReturnUnderlyingResource(f.d3d11Source.Get(), 0, nullptr, nullptr);
+            f.d3d11Source.Reset();
+        }
+        if (f.sharedHandle) { CloseHandle(f.sharedHandle); f.sharedHandle = nullptr; }
+    };
+    for (auto& f : m_writeable) cleanupFrame(f);
+    for (auto& f : m_readable) cleanupFrame(f);
+    cleanupFrame(m_display);
+
     if (m_ownsD3D11) {
         m_dxgiManager.Reset();
         m_d3d11Ctx.Reset();
@@ -160,6 +281,11 @@ void VideoDecoder::close() {
     }
     m_ownsD3D11 = false;
     m_dxvaActive = false;
+    m_gpuSharing = false;
+    m_nv12Mode = false;
+    m_d3d12Device = nullptr;
+    m_d3d12Queue = nullptr;
+    m_d3d11On12 = nullptr;
     m_writeable.clear();
     m_readable.clear();
     m_display = {};
@@ -193,11 +319,17 @@ bool VideoDecoder::configureDecoder() {
     }
     PropVariantClear(&var);
 
-    // Set output format — RGB32 (BGRA) so MF handles color conversion
+    // Set output format
     ComPtr<IMFMediaType> outputType;
     MFCreateMediaType(&outputType);
     outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    if (m_nv12Mode) {
+        // NV12: GPU keeps native decode format, YUV→RGB done in pixel shader
+        outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+    } else {
+        // RGB32 (BGRA): MF handles color conversion on GPU
+        outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    }
     outputType->SetUINT64(MF_MT_FRAME_SIZE, ((UINT64)m_width << 32) | m_height);
 
     hr = m_reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, outputType.Get());
@@ -339,7 +471,13 @@ void VideoDecoder::decodeThread() {
                 }
 
                 VideoFrame temp;
-                temp.pixels.resize((size_t)m_width * m_height * 4);
+                if (m_nv12Mode) {
+                    temp.width = m_width; temp.height = m_height;
+                } else if (m_gpuSharing) {
+                    createSharedTexture(temp);
+                } else {
+                    temp.pixels.resize((size_t)m_width * m_height * 4);
+                }
                 for (int i = 0; i < 300 && m_running; i++) {
                     if (!readOneFrame(temp)) { eof = true; break; }
                     if (temp.timestamp >= seekT - m_frameDuration * 0.5) {
@@ -409,7 +547,13 @@ void VideoDecoder::decodeThread() {
             m_seekCount.fetch_add(1);
 
             VideoFrame temp;
-            temp.pixels.resize((size_t)m_width * m_height * 4);
+            if (m_nv12Mode) {
+                temp.width = m_width; temp.height = m_height;
+            } else if (m_gpuSharing) {
+                createSharedTexture(temp);
+            } else {
+                temp.pixels.resize((size_t)m_width * m_height * 4);
+            }
             for (int i = 0; i < 300 && m_running; i++) {
                 if (!readOneFrame(temp)) { eof = true; break; }
                 if (temp.timestamp >= target - m_frameDuration * 0.5) {
@@ -459,10 +603,77 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
         if (FAILED(hr)) return false;
         dxgiBuf->GetSubresourceIndex(&subIdx);
 
+        dest.width = m_width;
+        dest.height = m_height;
+        dest.timestamp = (double)timestamp / 10000000.0;
+        m_decodedFrames.fetch_add(1);
+
+        // NV12 zero-copy path: unwrap the D3D11On12 texture to get D3D12 resource directly
+        if (m_nv12Mode && m_d3d11On12) {
+            // Return previously unwrapped texture if any
+            if (dest.d3d11Source) {
+                // Return with no fences — we're on the decode thread, not render thread
+                m_d3d11On12->ReturnUnderlyingResource(dest.d3d11Source.Get(), 0, nullptr, nullptr);
+                dest.d3d11Source.Reset();
+                dest.d3d12Texture.Reset();
+            }
+
+            // MF returns a texture array; copy the subresource to a standalone texture
+            // so we have a clean D3D12 resource to create SRVs on.
+            // First, create a standalone NV12 texture if we don't have one.
+            if (!dest.d3d11Shared) {
+                D3D11_TEXTURE2D_DESC copyDesc = {};
+                copyDesc.Width = m_width;
+                copyDesc.Height = m_height;
+                copyDesc.MipLevels = 1;
+                copyDesc.ArraySize = 1;
+                copyDesc.Format = DXGI_FORMAT_NV12;
+                copyDesc.SampleDesc.Count = 1;
+                copyDesc.Usage = D3D11_USAGE_DEFAULT;
+                copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                hr = m_d3d11Device->CreateTexture2D(&copyDesc, nullptr, &dest.d3d11Shared);
+                if (FAILED(hr)) {
+                    printf("[VideoDecoder] NV12 copy texture creation failed: 0x%08x\n", hr);
+                    m_nv12Mode = false;  // fall through to BGRA paths below
+                    goto bgra_fallback;
+                }
+            }
+
+            // GPU-to-GPU copy from texture array slice to standalone texture
+            m_d3d11Ctx->CopySubresourceRegion(
+                dest.d3d11Shared.Get(), 0, 0, 0, 0,
+                tex.Get(), subIdx, nullptr);
+            m_d3d11Ctx->Flush();
+
+            // Unwrap the standalone texture to get D3D12 resource
+            ComPtr<ID3D12Resource> d3d12Res;
+            hr = m_d3d11On12->UnwrapUnderlyingResource(
+                dest.d3d11Shared.Get(), m_d3d12Queue, IID_PPV_ARGS(&d3d12Res));
+            if (SUCCEEDED(hr)) {
+                dest.d3d12Texture = d3d12Res;
+                dest.d3d11Source = dest.d3d11Shared;  // track for ReturnUnderlyingResource
+                dest.nv12 = true;
+                return true;
+            } else {
+                printf("[VideoDecoder] UnwrapUnderlyingResource failed: 0x%08x\n", hr);
+                m_nv12Mode = false;  // fall through
+            }
+        }
+
+        bgra_fallback:
+        // GPU shared path (Phase 1): copy decoded texture to shared BGRA DXGI texture
+        if (m_gpuSharing && dest.d3d11Shared && !m_nv12Mode) {
+            m_d3d11Ctx->CopySubresourceRegion(
+                dest.d3d11Shared.Get(), 0, 0, 0, 0,  // dest: shared texture
+                tex.Get(), subIdx, nullptr);           // src: MF's decoded texture
+            m_d3d11Ctx->Flush();  // ensure copy is submitted to GPU
+            return true;
+        }
+
+        // CPU readback fallback (no D3D12 device available)
         D3D11_TEXTURE2D_DESC desc;
         tex->GetDesc(&desc);
 
-        // Create or reuse staging texture for CPU readback
         if (!m_staging) {
             D3D11_TEXTURE2D_DESC stagingDesc = desc;
             stagingDesc.Usage = D3D11_USAGE_STAGING;
@@ -474,7 +685,6 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
             if (FAILED(hr)) return false;
         }
 
-        // Copy from GPU texture to staging
         m_d3d11Ctx->CopySubresourceRegion(m_staging.Get(), 0, 0, 0, 0, tex.Get(), subIdx, nullptr);
 
         D3D11_MAPPED_SUBRESOURCE mapped;
@@ -482,14 +692,9 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
         if (FAILED(hr)) return false;
 
         uint32_t rowBytes = m_width * 4;
-        dest.width = m_width;
-        dest.height = m_height;
-        dest.timestamp = (double)timestamp / 10000000.0;
         if (dest.pixels.size() != (size_t)rowBytes * m_height)
             dest.pixels.resize((size_t)rowBytes * m_height);
-        m_decodedFrames.fetch_add(1);
 
-        // Copy rows (staging may have different pitch)
         for (uint32_t y = 0; y < m_height; y++) {
             memcpy(dest.pixels.data() + y * rowBytes,
                    (const uint8_t*)mapped.pData + y * mapped.RowPitch,

@@ -6,6 +6,7 @@
 #ifndef SHADERS_COMPILE_AT_RUNTIME
 #include "quad_vs.h"
 #include "effects_ps.h"
+#include "nv12_effects_ps.h"
 #endif
 
 bool RenderPipeline::init(ID3D12Device* device) {
@@ -130,6 +131,76 @@ bool RenderPipeline::init(ID3D12Device* device) {
         return false;
     }
 
+    // --- NV12 Video Root Signature (2 SRVs: Y plane t0, UV plane t1) ---
+    {
+        D3D12_ROOT_PARAMETER videoParams[4] = {};
+
+        // Transform constants (b0)
+        videoParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        videoParams[0].Constants.ShaderRegister = 0;
+        videoParams[0].Constants.Num32BitValues = sizeof(TransformCB) / 4;
+        videoParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+        // Effects constants (b1)
+        videoParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        videoParams[1].Constants.ShaderRegister = 1;
+        videoParams[1].Constants.Num32BitValues = sizeof(EffectsCB) / 4;
+        videoParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        // Y plane SRV table (t0)
+        D3D12_DESCRIPTOR_RANGE yRange = {};
+        yRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        yRange.NumDescriptors = 1;
+        yRange.BaseShaderRegister = 0;
+        videoParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        videoParams[2].DescriptorTable.NumDescriptorRanges = 1;
+        videoParams[2].DescriptorTable.pDescriptorRanges = &yRange;
+        videoParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        // UV plane SRV table (t1)
+        D3D12_DESCRIPTOR_RANGE uvRange = {};
+        uvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        uvRange.NumDescriptors = 1;
+        uvRange.BaseShaderRegister = 1;
+        videoParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        videoParams[3].DescriptorTable.NumDescriptorRanges = 1;
+        videoParams[3].DescriptorTable.pDescriptorRanges = &uvRange;
+        videoParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_ROOT_SIGNATURE_DESC videoRsDesc = {};
+        videoRsDesc.NumParameters = 4;
+        videoRsDesc.pParameters = videoParams;
+        videoRsDesc.NumStaticSamplers = 1;
+        videoRsDesc.pStaticSamplers = &sampler;  // reuse same linear/clamp sampler
+        videoRsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+        ComPtr<ID3DBlob> videoSigBlob, videoErrBlob;
+        hr = D3D12SerializeRootSignature(&videoRsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+            &videoSigBlob, &videoErrBlob);
+        if (FAILED(hr)) {
+            if (videoErrBlob) fprintf(stderr, "[Pipeline] Video root sig error: %s\n", (char*)videoErrBlob->GetBufferPointer());
+            // Non-fatal: video PSO is optional, BGRA fallback still works
+        } else {
+            hr = device->CreateRootSignature(0, videoSigBlob->GetBufferPointer(),
+                videoSigBlob->GetBufferSize(), IID_PPV_ARGS(&m_videoRootSignature));
+            if (SUCCEEDED(hr)) {
+#ifndef SHADERS_COMPILE_AT_RUNTIME
+                D3D12_GRAPHICS_PIPELINE_STATE_DESC videoPsoDesc = psoDesc;
+                videoPsoDesc.pRootSignature = m_videoRootSignature.Get();
+                videoPsoDesc.PS = { g_nv12EffectsPS, sizeof(g_nv12EffectsPS) };
+
+                hr = device->CreateGraphicsPipelineState(&videoPsoDesc, IID_PPV_ARGS(&m_videoPso));
+                if (SUCCEEDED(hr)) {
+                    printf("[Pipeline] NV12 video PSO created\n");
+                } else {
+                    fprintf(stderr, "[Pipeline] NV12 PSO creation failed: 0x%08x (BGRA fallback active)\n", hr);
+                    m_videoRootSignature.Reset();
+                }
+#endif
+            }
+        }
+    }
+
     m_initialized = true;
     printf("[Pipeline] Initialized with textured quad PSO\n");
     return true;
@@ -153,6 +224,7 @@ void RenderPipeline::clearScreen(ID3D12GraphicsCommandList* cmdList,
 
 void RenderPipeline::bindHeap(ID3D12GraphicsCommandList* cmdList, ID3D12DescriptorHeap* srvHeap) {
     if (!m_initialized) return;
+    m_boundHeap = srvHeap;
     cmdList->SetPipelineState(m_pso.Get());
     cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
     ID3D12DescriptorHeap* heaps[] = { srvHeap };
@@ -169,4 +241,36 @@ void RenderPipeline::drawQuad(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRoot32BitConstants(1, sizeof(EffectsCB) / 4, &effects, 0);
     cmdList->SetGraphicsRootDescriptorTable(2, textureSrv);
     cmdList->DrawInstanced(4, 1, 0, 0); // 4 vertices for triangle strip quad
+}
+
+void RenderPipeline::drawVideoQuad(ID3D12GraphicsCommandList* cmdList,
+                                    const TransformCB& transform,
+                                    const EffectsCB& effects,
+                                    D3D12_GPU_DESCRIPTOR_HANDLE ySrv,
+                                    D3D12_GPU_DESCRIPTOR_HANDLE uvSrv) {
+    if (!m_videoPso) return;
+
+    // Switch to NV12 pipeline
+    cmdList->SetPipelineState(m_videoPso.Get());
+    cmdList->SetGraphicsRootSignature(m_videoRootSignature.Get());
+    if (m_boundHeap) {
+        ID3D12DescriptorHeap* heaps[] = { m_boundHeap };
+        cmdList->SetDescriptorHeaps(1, heaps);
+    }
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+    cmdList->SetGraphicsRoot32BitConstants(0, sizeof(TransformCB) / 4, &transform, 0);
+    cmdList->SetGraphicsRoot32BitConstants(1, sizeof(EffectsCB) / 4, &effects, 0);
+    cmdList->SetGraphicsRootDescriptorTable(2, ySrv);
+    cmdList->SetGraphicsRootDescriptorTable(3, uvSrv);
+    cmdList->DrawInstanced(4, 1, 0, 0);
+
+    // Restore BGRA pipeline for subsequent draws
+    cmdList->SetPipelineState(m_pso.Get());
+    cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
+    if (m_boundHeap) {
+        ID3D12DescriptorHeap* heaps[] = { m_boundHeap };
+        cmdList->SetDescriptorHeaps(1, heaps);
+    }
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 }

@@ -578,6 +578,139 @@ const CachedTexture* TextureCache::uploadPixels(const std::string& key, const ui
     return &cached;
 }
 
+const CachedTexture* TextureCache::registerExternal(const std::string& key,
+                                                      ID3D12Resource* resource,
+                                                      uint32_t width, uint32_t height,
+                                                      DXGI_FORMAT format) {
+    if (!resource || width == 0 || height == 0) return nullptr;
+
+    auto it = m_cache.find(key);
+    bool reuse = (it != m_cache.end() && it->second.ready &&
+                  it->second.width == width && it->second.height == height);
+
+    if (reuse) {
+        // Update the resource pointer (may be a different frame in the pool)
+        // and recreate the SRV pointing at the new resource
+        auto& cached = it->second;
+        cached.resource = resource;
+        m_device->CreateShaderResourceView(resource, nullptr, cached.srvCpu);
+        return &cached;
+    }
+
+    if (m_nextSrvIndex >= MAX_TEXTURES) {
+        fprintf(stderr, "[TextureCache] Texture limit reached (%u)\n", MAX_TEXTURES);
+        return nullptr;
+    }
+
+    uint32_t srvIndex = m_nextSrvIndex++;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+    cpuHandle.ptr += srvIndex * m_srvDescriptorSize;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+    gpuHandle.ptr += srvIndex * m_srvDescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels = 1;
+    m_device->CreateShaderResourceView(resource, &srvDesc, cpuHandle);
+
+    auto& cached = m_cache[key];
+    cached.resource = resource;
+    cached.srvGpu = gpuHandle;
+    cached.srvCpu = cpuHandle;
+    cached.width = width;
+    cached.height = height;
+    cached.heapIndex = srvIndex;
+    cached.ready = true;
+    return &cached;
+}
+
+const CachedTexture* TextureCache::registerNV12(const std::string& key,
+                                                  ID3D12Resource* resource,
+                                                  uint32_t width, uint32_t height) {
+    if (!resource || width == 0 || height == 0) return nullptr;
+
+    auto it = m_cache.find(key);
+    bool reuse = (it != m_cache.end() && it->second.ready && it->second.isNV12 &&
+                  it->second.width == width && it->second.height == height);
+
+    if (reuse) {
+        auto& cached = it->second;
+        cached.resource = resource;
+
+        // Recreate SRVs pointing at the new resource
+        // Y plane: R8_UNORM, PlaneSlice=0
+        D3D12_SHADER_RESOURCE_VIEW_DESC ySrv = {};
+        ySrv.Format = DXGI_FORMAT_R8_UNORM;
+        ySrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        ySrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        ySrv.Texture2D.MipLevels = 1;
+        ySrv.Texture2D.PlaneSlice = 0;
+        m_device->CreateShaderResourceView(resource, &ySrv, cached.srvCpu);
+
+        // UV plane: R8G8_UNORM, PlaneSlice=1
+        D3D12_SHADER_RESOURCE_VIEW_DESC uvSrv = {};
+        uvSrv.Format = DXGI_FORMAT_R8G8_UNORM;
+        uvSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        uvSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        uvSrv.Texture2D.MipLevels = 1;
+        uvSrv.Texture2D.PlaneSlice = 1;
+        m_device->CreateShaderResourceView(resource, &uvSrv, cached.srvCpuUV);
+
+        return &cached;
+    }
+
+    // Need 2 consecutive SRV slots
+    if (m_nextSrvIndex + 1 >= MAX_TEXTURES) {
+        fprintf(stderr, "[TextureCache] Texture limit reached (%u)\n", MAX_TEXTURES);
+        return nullptr;
+    }
+
+    // Y plane SRV
+    uint32_t yIndex = m_nextSrvIndex++;
+    D3D12_CPU_DESCRIPTOR_HANDLE yCpu = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+    yCpu.ptr += yIndex * m_srvDescriptorSize;
+    D3D12_GPU_DESCRIPTOR_HANDLE yGpu = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+    yGpu.ptr += yIndex * m_srvDescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC ySrvDesc = {};
+    ySrvDesc.Format = DXGI_FORMAT_R8_UNORM;
+    ySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    ySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    ySrvDesc.Texture2D.MipLevels = 1;
+    ySrvDesc.Texture2D.PlaneSlice = 0;
+    m_device->CreateShaderResourceView(resource, &ySrvDesc, yCpu);
+
+    // UV plane SRV
+    uint32_t uvIndex = m_nextSrvIndex++;
+    D3D12_CPU_DESCRIPTOR_HANDLE uvCpu = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+    uvCpu.ptr += uvIndex * m_srvDescriptorSize;
+    D3D12_GPU_DESCRIPTOR_HANDLE uvGpu = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+    uvGpu.ptr += uvIndex * m_srvDescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC uvSrvDesc = {};
+    uvSrvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+    uvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    uvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    uvSrvDesc.Texture2D.MipLevels = 1;
+    uvSrvDesc.Texture2D.PlaneSlice = 1;
+    m_device->CreateShaderResourceView(resource, &uvSrvDesc, uvCpu);
+
+    auto& cached = m_cache[key];
+    cached.resource = resource;
+    cached.srvGpu = yGpu;
+    cached.srvCpu = yCpu;
+    cached.srvGpuUV = uvGpu;
+    cached.srvCpuUV = uvCpu;
+    cached.width = width;
+    cached.height = height;
+    cached.heapIndex = yIndex;
+    cached.isNV12 = true;
+    cached.ready = true;
+    return &cached;
+}
+
 bool TextureCache::isDataUri(const std::string& uri) const {
     return uri.size() > 5 && uri.substr(0, 5) == "data:";
 }

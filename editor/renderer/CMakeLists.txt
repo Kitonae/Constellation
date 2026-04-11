@@ -62,7 +62,7 @@ if(DXC)
         COMMENT "Compiling quad_vs.hlsl"
     )
 
-    # Pixel shader
+    # Pixel shader (BGRA)
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT_DIR}/effects_ps.h
         COMMAND ${DXC} -T ps_6_0 -E PSMain -Fh ${SHADER_OUTPUT_DIR}/effects_ps.h -Vn g_effectsPS
@@ -71,9 +71,19 @@ if(DXC)
         COMMENT "Compiling effects_ps.hlsl"
     )
 
+    # NV12 pixel shader (YUV→RGB + effects)
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT_DIR}/nv12_effects_ps.h
+        COMMAND ${DXC} -T ps_6_0 -E PSMain -Fh ${SHADER_OUTPUT_DIR}/nv12_effects_ps.h -Vn g_nv12EffectsPS
+            ${CMAKE_SOURCE_DIR}/shaders/nv12_effects_ps.hlsl
+        DEPENDS ${CMAKE_SOURCE_DIR}/shaders/nv12_effects_ps.hlsl
+        COMMENT "Compiling nv12_effects_ps.hlsl"
+    )
+
     target_sources(constellation-renderer PRIVATE
         ${SHADER_OUTPUT_DIR}/quad_vs.h
         ${SHADER_OUTPUT_DIR}/effects_ps.h
+        ${SHADER_OUTPUT_DIR}/nv12_effects_ps.h
     )
     target_include_directories(constellation-renderer PRIVATE ${SHADER_OUTPUT_DIR})
 else()
