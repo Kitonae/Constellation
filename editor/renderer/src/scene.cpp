@@ -7,9 +7,37 @@ using json = nlohmann::json;
 void Scene::loadSnapshot(const json& data) {
     m_media.clear();
     m_tracks.clear();
+    m_screens.clear();
 
-    // Parse project wrapper: { project: { media: [...], timeline: { tracks: [...] } } }
+    // Parse project wrapper: { project: { media: [...], timeline: { tracks: [...] }, scene: { roots: [...] } } }
     const json& proj = data.contains("project") ? data["project"] : data;
+
+    // Parse screen nodes from scene.roots[]
+    if (proj.contains("scene") && proj["scene"].contains("roots") && proj["scene"]["roots"].is_array()) {
+        for (const auto& root : proj["scene"]["roots"]) {
+            if (!root.contains("kind")) continue;
+            const auto& kind = root["kind"];
+            if (kind.value("type", "") != "screen") continue;
+
+            ScreenNode sn;
+            sn.id = root.value("id", "");
+            if (sn.id.empty()) continue;
+
+            if (root.contains("transform") && root["transform"].contains("position")) {
+                const auto& pos = root["transform"]["position"];
+                sn.position.x = pos.value("x", 0.0);
+                sn.position.y = pos.value("y", 0.0);
+            }
+
+            if (kind.contains("pixels") && kind["pixels"].is_array() && kind["pixels"].size() >= 2) {
+                sn.pixels.x = kind["pixels"][0].get<double>();
+                sn.pixels.y = kind["pixels"][1].get<double>();
+            }
+
+            sn.enabled = kind.value("enabled", true);
+            m_screens[sn.id] = sn;
+        }
+    }
 
     // Parse media
     if (proj.contains("media") && proj["media"].is_array()) {
@@ -158,4 +186,9 @@ std::vector<ActiveClip> Scene::evaluate(double time) const {
 const MediaClip* Scene::getMedia(const std::string& id) const {
     auto it = m_media.find(id);
     return it != m_media.end() ? &it->second : nullptr;
+}
+
+const ScreenNode* Scene::getScreen(const std::string& id) const {
+    auto it = m_screens.find(id);
+    return it != m_screens.end() ? &it->second : nullptr;
 }

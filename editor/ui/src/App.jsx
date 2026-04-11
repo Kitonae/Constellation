@@ -68,20 +68,9 @@ export default function App() {
 
         if (isAbsolute) {
             initialUri = toFileUri(path)
-        } else {
-             // Fallback for web: use data URL for images, object URL for videos
-             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
-             if (isVideo) {
-                 initialUri = URL.createObjectURL(file)
-                 console.warn(`[Media] Video "${name}" imported as blob URI — native renderer requires file:/// URIs. Use Add New button instead of drag-drop.`)
-             } else {
-                 try {
-                    initialUri = await fileToDataUrl(file)
-                 } catch (err) {
-                    console.warn('data URL conversion failed', err)
-                    initialUri = URL.createObjectURL(file)
-                 }
-             }
+        } else if (file) {
+             // Fallback for web: use object URL (lightweight reference, not a full copy)
+             initialUri = URL.createObjectURL(file)
         }
         
         let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
@@ -156,14 +145,18 @@ export default function App() {
   }, [toggleConsole])
 
   // Open/close display windows based on enabled screens
+  const prevScreensRef = useRef(new Map()) // id → { screenType }
   useEffect(() => {
     const roots = scene?.roots || []
+    const currentScreens = new Map()
+
     for (const n of roots) {
       if (n.kind?.type === 'screen') {
         const enabled = (n.kind?.enabled ?? true)
         const screenType = n.kind?.screenType || 'web'
         const px = n.kind?.pixels?.[0] || 0
         const py = n.kind?.pixels?.[1] || 0
+        currentScreens.set(n.id, { screenType })
         if (enabled && px > 0 && py > 0) {
           if (screenType === 'web') {
             openDisplayWindow(n.id, px, py)
@@ -180,6 +173,18 @@ export default function App() {
         }
       }
     }
+
+    // Close screens that were removed from the scene
+    for (const [id, prev] of prevScreensRef.current) {
+      if (!currentScreens.has(id)) {
+        if (prev.screenType === 'web') {
+          closeDisplayWindow(id)
+        } else if (prev.screenType === 'renderer') {
+          window.go?.main?.App?.CloseRendererScreen(id)?.catch(e => console.warn('CloseRendererScreen:', e))
+        }
+      }
+    }
+    prevScreensRef.current = currentScreens
     // Emit a snapshot once on scene change to update paused display windows
     try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
     // Update Go-side cached snapshot so newly connecting renderers get current state

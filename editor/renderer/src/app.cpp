@@ -282,6 +282,14 @@ void App::render() {
             m_pipeline.bindHeap(m_cmdList.Get(), m_textureCache.srvHeap());
         }
 
+        // Get screen node position offset (from scene tree)
+        float screenOffX = 0, screenOffY = 0;
+        const ScreenNode* screenNode = m_scene.getScreen(id);
+        if (screenNode) {
+            screenOffX = (float)screenNode->position.x;
+            screenOffY = (float)screenNode->position.y;
+        }
+
         // Draw each active clip as a textured quad
         auto renderStart = std::chrono::steady_clock::now();
         int sw = screen->width();
@@ -354,8 +362,8 @@ void App::render() {
             float h = (ac.tm->scale.y > 0) ? (float)ac.tm->scale.y : (float)tex->height;
 
             TransformCB transform = {};
-            transform.position[0] = (float)ac.tm->position.x;
-            transform.position[1] = (float)ac.tm->position.y;
+            transform.position[0] = (float)ac.tm->position.x - screenOffX;
+            transform.position[1] = (float)ac.tm->position.y - screenOffY;
             transform.scale[0] = w;
             transform.scale[1] = h;
             transform.screenSize[0] = (float)sw;

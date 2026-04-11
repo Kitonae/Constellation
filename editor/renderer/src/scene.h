@@ -46,6 +46,14 @@ struct ActiveClip {
     double finalOpacity;    // pre-computed: base opacity * fade
 };
 
+// Screen node state parsed from scene.roots[]
+struct ScreenNode {
+    std::string id;
+    Vec2 position;       // viewport position
+    Vec2 pixels;         // resolution (width, height)
+    bool enabled = true;
+};
+
 // Scene manages the project state and evaluates the timeline.
 class Scene {
 public:
@@ -54,9 +62,14 @@ public:
 
     const MediaClip* getMedia(const std::string& id) const;
 
+    // Screen nodes from the scene tree
+    const ScreenNode* getScreen(const std::string& id) const;
+    const std::unordered_map<std::string, ScreenNode>& screens() const { return m_screens; }
+
 private:
     std::unordered_map<std::string, MediaClip> m_media;
     std::vector<TimelineTrack> m_tracks;
+    std::unordered_map<std::string, ScreenNode> m_screens;
 
     static TimelineClip parseTimelineClip(const nlohmann::json& j);
 };

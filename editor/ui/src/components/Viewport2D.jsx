@@ -37,6 +37,8 @@ export default function Viewport2D() {
   const draggedRef = useRef(false)
   const [tool, setTool] = useState('select') // 'select' | 'hand'
   const [shiftHeld, setShiftHeld] = useState(false)
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  const spaceHeldRef = useRef(false)
   const [dragScreen, setDragScreen] = useState(null) // { nodeId, origX, origY, startX, startY, currentX, currentY }
   const dragScreenRef = useRef(null)
 
@@ -65,13 +67,42 @@ export default function Viewport2D() {
     }
   }, [])
 
-  // Track shift key to switch between clip and display interaction
+  // Track shift key and handle Delete key for removing selected screen/clip
   useEffect(() => {
-    const down = (e) => { if (e.key === 'Shift') setShiftHeld(true) }
-    const up = (e) => { if (e.key === 'Shift') setShiftHeld(false) }
+    const down = (e) => {
+      if (e.key === 'Shift') setShiftHeld(true)
+      if (e.key === ' ') { setSpaceHeld(true); spaceHeldRef.current = true; e.preventDefault() }
+      if (e.key === 'f' || e.key === 'F') {
+        // Trigger frame all via a synthetic click on the button
+        document.querySelector('[title="Frame All (F)"]')?.click()
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const st = useEditorStore.getState()
+        const sel = st.selectedId
+        if (sel) {
+          const nodes = st.scene?.roots || []
+          const stack = [...nodes]
+          while (stack.length) {
+            const n = stack.pop()
+            if (!n) continue
+            if (n.id === sel) {
+              if (n.kind?.type === 'screen') st.removeScreenNode(sel)
+              break
+            }
+            if (n.children?.length) stack.push(...n.children)
+          }
+        } else if (st.selectedClipId) {
+          st.removeClip(st.selectedClipId)
+        }
+      }
+    }
+    const up = (e) => {
+      if (e.key === 'Shift') setShiftHeld(false)
+      if (e.key === ' ') { setSpaceHeld(false); spaceHeldRef.current = false }
+    }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
-    window.addEventListener('blur', () => setShiftHeld(false))
+    window.addEventListener('blur', () => { setShiftHeld(false); setSpaceHeld(false); spaceHeldRef.current = false })
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
@@ -170,7 +201,7 @@ export default function Viewport2D() {
   }, [])
 
   const onPointerDown = useCallback((e) => {
-    const isHand = tool === 'hand' || (e.ctrlKey && e.altKey) || e.button === 1
+    const isHand = tool === 'hand' || spaceHeldRef.current || (e.ctrlKey && e.altKey) || e.button === 1
     if (!isHand) return
     const sc = scrollRef.current
     if (!sc) return
@@ -342,7 +373,7 @@ export default function Viewport2D() {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto', background: '#0b0d12', cursor: pan ? 'grabbing' : (tool === 'hand' ? 'grab' : 'default'), overscrollBehavior: 'contain' }}
+        style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto', background: '#0b0d12', cursor: pan ? 'grabbing' : ((tool === 'hand' || spaceHeld) ? 'grab' : 'default'), overscrollBehavior: 'contain', outline: shiftHeld ? '2px solid #00e5ff' : 'none', outlineOffset: '-2px' }}
       >
         <div
           ref={stageRef}
@@ -351,7 +382,7 @@ export default function Viewport2D() {
           onPointerDown={(e) => {
             // Start marquee selection only on empty space (not when Ctrl+Alt panning or clicking a clip)
             if (e.button !== 0) return
-            if (tool === 'hand' || (e.ctrlKey && e.altKey)) return
+            if (tool === 'hand' || spaceHeldRef.current || (e.ctrlKey && e.altKey)) return
             if (e.target !== stageRef.current) return
             const sc = scrollRef.current
             if (!sc) return
@@ -587,8 +618,8 @@ export default function Viewport2D() {
                   MozUserSelect: 'none',
                   WebkitUserDrag: 'none',
                   touchAction: 'none',
-                  opacity: finalOpacity,
-                  filter: buildFilterString(tm)
+                  opacity: shiftHeld ? 0.4 : finalOpacity,
+                  filter: shiftHeld ? 'grayscale(1)' : buildFilterString(tm)
                 }}
               >
                 {(() => {
@@ -639,6 +670,66 @@ export default function Viewport2D() {
           </div>
           <div style={{ padding: '2px 6px', fontSize: 12, color: '#b9c3d6', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
             {Math.round(zoom * 100)}%
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'row', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+            <IconButton onClick={() => {
+              // Compute bounding box of all screens and clips in world-space
+              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+              let hasContent = false
+
+              for (const n of nodes) {
+                if (n.kind?.type !== 'screen') continue
+                const px = n.kind?.pixels?.[0] || 0
+                const py = n.kind?.pixels?.[1] || 0
+                if (px <= 0 || py <= 0) continue
+                const sx = n.transform?.position?.x || 0
+                const sy = n.transform?.position?.y || 0
+                minX = Math.min(minX, sx - px / 2)
+                maxX = Math.max(maxX, sx + px / 2)
+                minY = Math.min(minY, sy - py / 2)
+                maxY = Math.max(maxY, sy + py / 2)
+                hasContent = true
+              }
+
+              for (const { tm } of placements) {
+                const mx = tm.position?.x || 0
+                const my = tm.position?.y || 0
+                const meta = imageMeta[tm.clip_id]
+                const tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
+                const th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
+                minX = Math.min(minX, mx - tw / 2)
+                maxX = Math.max(maxX, mx + tw / 2)
+                minY = Math.min(minY, my - th / 2)
+                maxY = Math.max(maxY, my + th / 2)
+                hasContent = true
+              }
+
+              if (!hasContent) return
+
+              const padding = 100
+              const worldW = (maxX - minX) + padding * 2
+              const worldH = (maxY - minY) + padding * 2
+              const sc = scrollRef.current
+              if (!sc) return
+              const viewW = sc.clientWidth
+              const viewH = sc.clientHeight
+
+              const fitZoom = Math.min(viewW / worldW, viewH / worldH) * Z_NEUTRAL / BASE_SCALE
+              const clampedZoom = clamp(fitZoom, 0.01, 20)
+              setZoom(clampedZoom)
+
+              const newRatio = (clampedZoom / Z_NEUTRAL)
+              const centerWorldX = (minX + maxX) / 2
+              const centerWorldY = (minY + maxY) / 2
+              requestAnimationFrame(() => {
+                const s = scrollRef.current
+                if (!s) return
+                s.scrollLeft = STAGE_W / 2 + centerWorldX * newRatio - s.clientWidth / 2
+                s.scrollTop = STAGE_H / 2 - centerWorldY * newRatio - s.clientHeight / 2
+              })
+            }} title="Frame All (F)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /><path d="M15 3v18" /><path d="M3 9h18" /><path d="M3 15h18" /></svg>
+            </IconButton>
           </div>
         </div>
       </div>
@@ -723,12 +814,14 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHel
     const w = Math.max(2, px * (ratio))
     const h = Math.max(2, py * (ratio))
     const isRenderer = (node.kind?.screenType || 'web') === 'renderer'
-    const borderColor = isSelected || highlight ? '#ffcc00' : (isRenderer ? '#8b5cf6' : '#2a3148')
+    const borderColor = isSelected || highlight ? '#ffcc00' : '#3a4e85'
 
     // Apply drag offset if this screen is being dragged
     const isDragging = dragScreen?.nodeId === node.id
     const drawX = isDragging && dragScreen.currentX !== undefined ? dragScreen.currentX * ratio + center.x : x
     const drawY = isDragging && dragScreen.currentY !== undefined ? center.y - dragScreen.currentY * ratio : y
+    const screenLabel = `${node.name || node.id} (${px}x${py})`
+    const typeTag = isRenderer ? 'NDI' : 'Web'
 
     return (
       <>
@@ -766,9 +859,20 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHel
             dragScreenRef.current = null
             try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
           }}
-          title={`${node.name || node.id} (${node.kind?.screenType || 'web'})`}
-          style={{ position: 'absolute', left: drawX - w / 2, top: drawY - h / 2, width: w, height: h, background: isSelected ? '#1c274a' : (isRenderer ? '#1a1028' : '#101520'), border: `2px ${highlight ? 'dashed' : 'solid'} ${borderColor}`, borderRadius: 4, zIndex: 1, cursor: shiftHeld ? 'move' : 'default' }}
-        />
+          title={screenLabel}
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
+          style={{ position: 'absolute', left: drawX - w / 2, top: drawY - h / 2, width: w, height: h, background: isSelected ? 'rgba(30,40,80,0.5)' : 'rgba(16,21,32,0.5)', border: `1px dashed ${borderColor}`, borderRadius: 2, zIndex: 1, cursor: shiftHeld ? 'move' : (isSelected ? 'not-allowed' : 'default') }}
+        >
+          {shiftHeld && <>
+            <span style={{ position: 'absolute', top: 3, left: 5, fontSize: 10, color: '#8898b8', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: w - 10, pointerEvents: 'none', userSelect: 'none' }}>
+              {screenLabel}
+            </span>
+            <span style={{ position: 'absolute', top: 3, right: 5, fontSize: 9, color: isRenderer ? '#a78bfa' : '#6aa0ff', fontWeight: 600, pointerEvents: 'none', userSelect: 'none', background: 'rgba(0,0,0,0.4)', padding: '1px 4px', borderRadius: 2 }}>
+              {typeTag}
+            </span>
+          </>}
+        </div>
         {children}
       </>
     )
@@ -821,24 +925,67 @@ function MenuItem({ label, onClick }) {
   )
 }
 
+// Cache for the grid tile canvas data URL
+const _gridCache = { key: '', url: '' }
+
 function dotGridBg(center, zoom) {
-  // Grid spacing scales with zoom relative to neutral 20%
   const Z_NEUTRAL = 0.2
-  const factor = (zoom || Z_NEUTRAL) / Z_NEUTRAL
-  const minorStep = Math.max(1, Math.round(200 * factor))
-  const majorStep = Math.max(1, Math.round(2000 * factor))
+  const BASE_SCALE = 50
+  const pxPerUnit = BASE_SCALE * (zoom / Z_NEUTRAL)
+
+  // Adaptive: pick smallest world-space interval that gives >= 16px on screen
+  const levels = [10, 50, 100, 500, 1000, 5000]
+  let minorWorld = 100
+  for (const lv of levels) {
+    if (lv * pxPerUnit >= 16) { minorWorld = lv; break }
+  }
+  const majorMult = 10
+  const minorPx = Math.round(minorWorld * pxPerUnit)
+  const tilePx = minorPx * majorMult // tile = one major cell = 10 minor cells
+
+  if (minorPx < 4) return { background: '#0b0d12' }
+
+  // Build a single canvas tile with both minor and major dots baked in
+  const cacheKey = `${tilePx}_${minorPx}`
+  if (_gridCache.key !== cacheKey) {
+    const c = document.createElement('canvas')
+    c.width = tilePx
+    c.height = tilePx
+    const ctx = c.getContext('2d')
+
+    // Minor dots
+    ctx.fillStyle = '#2a375b'
+    for (let gy = 0; gy < majorMult; gy++) {
+      for (let gx = 0; gx < majorMult; gx++) {
+        if (gx === 0 && gy === 0) continue // skip origin — major dot goes there
+        const x = gx * minorPx
+        const y = gy * minorPx
+        ctx.beginPath()
+        ctx.arc(x, y, 1, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
+    // Major dot at tile origin (0,0) — larger and brighter
+    ctx.fillStyle = '#6a8fd8'
+    ctx.beginPath()
+    ctx.arc(0, 0, 2.5, 0, Math.PI * 2)
+    ctx.fill()
+
+    _gridCache.key = cacheKey
+    _gridCache.url = c.toDataURL()
+  }
+
+  // Offset so tile origin aligns with world origin (center of stage)
   const mod = (v, m) => ((v % m) + m) % m
-  // radial-gradient dot sits at the center of each tile -> subtract half step
-  const offXMinor = mod(center.x - minorStep / 2, minorStep)
-  const offYMinor = mod(center.y - minorStep / 2, minorStep)
-  const offXMajor = mod(center.x - majorStep / 2, majorStep)
-  const offYMajor = mod(center.y - majorStep / 2, majorStep)
-  const minor = 'radial-gradient(#2a375b 1px, transparent 1px)'
-  const major = 'radial-gradient(#4a63a8 2px, transparent 2px)'
+  const offX = mod(center.x, tilePx)
+  const offY = mod(center.y, tilePx)
+
   return {
-    backgroundImage: `${minor}, ${major}`,
-    backgroundSize: `${minorStep}px ${minorStep}px, ${majorStep}px ${majorStep}px`,
-    backgroundPosition: `${offXMinor}px ${offYMinor}px, ${offXMajor}px ${offYMajor}px`,
+    backgroundImage: `url(${_gridCache.url})`,
+    backgroundSize: `${tilePx}px ${tilePx}px`,
+    backgroundPosition: `${offX}px ${offY}px`,
+    backgroundRepeat: 'repeat',
   }
 }
 

@@ -56,26 +56,12 @@ export async function resolveImageSrc(uri, mimeHint = 'image/*') {
   if (!uri) return null
   const u = String(uri)
   if (u.startsWith('data:')) return u
+  if (u.startsWith('blob:')) return u
   if (u.startsWith('file://')) {
-    // Build a filesystem path portable across platforms
-    try {
-      const url = new URL(u)
-      let p = decodeURI(url.pathname)
-      // On Windows, pathname like "/C:/..." -> strip leading slash
-      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
-      // Wails environment: use Go backend to fetch & inline as base64
-      if (typeof window !== 'undefined' && window.go?.main?.App?.ReadFileBase64) {
-        try {
-          const dataUrl = await window.go.main.App.ReadFileBase64(p)
-          if (dataUrl) return dataUrl
-        } catch { }
-      }
-      // Fallback for non-Tauri web: browsers generally block file://; return null
-      // so callers can show a placeholder.
-      return null
-    } catch {
-      return null
-    }
+    // Use the sidecar file server to serve the image via HTTP (no base64 copy)
+    const { resolveUriSync } = await import('../media/uri.js')
+    const resolved = resolveUriSync(u)
+    return resolved || null
   }
   return u
 }

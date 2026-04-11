@@ -62,18 +62,8 @@ export default React.memo(function MediaBin() {
         if (isAbsolute) {
             initialUri = toFileUri(path)
         } else if (file) {
-             // Fallback for web: use data URL for images, object URL for videos (not persistent)
-             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
-             if (isVideo) {
-                 initialUri = URL.createObjectURL(file)
-             } else {
-                 try {
-                    initialUri = await fileToDataUrl(file)
-                 } catch (err) {
-                    console.warn('data URL conversion failed', err)
-                    initialUri = URL.createObjectURL(file)
-                 }
-             }
+             // Fallback for web: use object URL (lightweight reference, not a full copy)
+             initialUri = URL.createObjectURL(file)
         }
         
         if (!initialUri) {
