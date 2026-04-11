@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
+import React, { useMemo, useRef, useEffect, useState, useCallback, Suspense } from 'react'
 import { useEditorStore } from '../store.js'
 import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
@@ -7,6 +7,7 @@ import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils
 import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
+import { generateModelThumbnail } from '../utils/modelThumbnail.js'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
@@ -878,10 +879,74 @@ function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHel
     )
   }
 
+  // Model nodes: render thumbnail preview
+  if (node.kind?.type === 'model') {
+    return <ModelNode2D node={node} x={x} y={y} ratio={ratio} isSelected={isSelected} onSelect={onSelect}>{children}</ModelNode2D>
+  }
+
   // default: draw a small dot for other nodes
   return (
     <>
       <div onClick={(e) => { e.stopPropagation(); onSelect(node.id) }} style={{ position: 'absolute', left: x - 2, top: y - 2, width: 4, height: 4, background: '#5a78ff', borderRadius: 2 }} title={node.name || node.id} />
+      {children}
+    </>
+  )
+}
+
+function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
+  const [thumb, setThumb] = useState(null)
+  const uri = node.kind?.uri
+
+  useEffect(() => {
+    if (!uri) return
+    let cancelled = false
+    generateModelThumbnail(uri).then(url => {
+      if (!cancelled) setThumb(url)
+    })
+    return () => { cancelled = true }
+  }, [uri])
+
+  const sz = Math.max(40, 80 * ratio)
+  const borderColor = isSelected ? '#ffcc00' : '#a78bfa'
+
+  return (
+    <>
+      <div
+        onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
+        title={node.name || node.id}
+        style={{
+          position: 'absolute',
+          left: x - sz / 2,
+          top: y - sz / 2,
+          width: sz,
+          height: sz,
+          border: `1px dashed ${borderColor}`,
+          borderRadius: 4,
+          background: '#0b0d12',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          zIndex: 2,
+          overflow: 'hidden',
+        }}
+      >
+        {thumb ? (
+          <img src={thumb} alt={node.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
+        ) : (
+          <span className="ms" style={{ fontSize: Math.max(16, sz * 0.4), color: '#a78bfa', opacity: 0.8 }}>view_in_ar</span>
+        )}
+        <span style={{
+          position: 'absolute', bottom: 2, left: 0, right: 0,
+          fontSize: Math.max(8, Math.min(10, sz * 0.11)),
+          color: '#c7cfdb', textAlign: 'center',
+          background: 'rgba(0,0,0,0.6)', padding: '1px 4px',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {node.name || 'Model'}
+        </span>
+      </div>
       {children}
     </>
   )

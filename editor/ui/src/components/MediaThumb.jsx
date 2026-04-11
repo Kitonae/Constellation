@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useEditorStore } from '../store.js'
 import Spinner from './Spinner.jsx'
 import { generateVideoThumbnail } from '../utils/videoUtils.js'
+import { generateModelThumbnail } from '../utils/modelThumbnail.js'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -101,8 +102,16 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
 
     async function load() {
       if (isModel) {
-        setSrc(null)
-        setLoaded(true)
+        try {
+          const thumb = await generateModelThumbnail(uri)
+          if (cancelled) return
+          setSrc(thumb)
+          setLoaded(true)
+        } catch (e) {
+          console.warn('Failed to generate model thumbnail', e)
+          setSrc(null)
+          setLoaded(true)
+        }
         return
       }
       if (isVideo) {
@@ -139,7 +148,11 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
       flex: '0 0 auto',
     }}>
       {isModel ? (
-        <span style={{ fontSize: 11, color: '#a78bfa', opacity: 0.9, fontWeight: 600 }}>3D</span>
+        src ? (
+          <img src={src} alt={alt} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+        ) : (
+          <span style={{ fontSize: 11, color: '#a78bfa', opacity: 0.9, fontWeight: 600 }}>3D</span>
+        )
       ) : isVideo ? (
         src ? (
           <img

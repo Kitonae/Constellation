@@ -5,6 +5,7 @@
 #include <mfapi.h>
 #include <algorithm>
 #include <cctype>
+#include <unordered_set>
 
 bool App::init(const AppConfig& config) {
     m_config = config;
@@ -267,6 +268,49 @@ void App::processEvents() {
 void App::render() {
     auto cpuStart = std::chrono::steady_clock::now();
     auto activeClips = m_scene.evaluate(m_currentTime);
+
+    // Audio sync: play/pause/seek audio players for active video clips
+    {
+        // Track which URIs are active this frame
+        std::unordered_set<std::string> activeAudioUris;
+
+        for (const auto& ac : activeClips) {
+            if (!ac.clip || ac.clip->uri.empty()) continue;
+            const std::string& uri = ac.clip->uri;
+            if (!isVideoFile(uri)) continue;
+            if (uri.substr(0, 5) == "blob:" || uri.substr(0, 5) == "http:") continue;
+
+            activeAudioUris.insert(uri);
+            AudioPlayer* audio = getAudioPlayer(uri);
+            if (!audio) continue;
+
+            double timeInClip = m_currentTime - ac.tm->start;
+
+            if (m_playing) {
+                // Sync: if audio drifts >200ms from expected position, seek
+                double drift = std::abs(audio->currentTime() - timeInClip);
+                if (drift > 0.2) {
+                    audio->seek(timeInClip);
+                }
+                if (!audio->isPlaying()) audio->play();
+            } else {
+                if (audio->isPlaying()) audio->pause();
+                // Scrub: seek to current position when paused
+                if (!m_wasPlaying) {
+                    audio->seek(timeInClip);
+                }
+            }
+        }
+
+        // Pause audio for clips no longer active
+        for (auto& [uri, player] : m_audioPlayers) {
+            if (player->isPlaying() && activeAudioUris.find(uri) == activeAudioUris.end()) {
+                player->pause();
+            }
+        }
+
+        m_wasPlaying = m_playing;
+    }
 
     for (auto& [id, screen] : m_screens) {
         if (!screen->isValid()) continue;
@@ -603,6 +647,7 @@ void App::shutdown() {
 #if HAS_NDI
     m_ndiSender.shutdown();
 #endif
+    m_audioPlayers.clear();
     m_videoDecoders.clear(); // must be before D3D11 device release
     m_textureCache.shutdown();
     m_dxgiManager.Reset();
@@ -665,5 +710,45 @@ VideoDecoder* App::getVideoDecoder(const std::string& uri) {
 
     VideoDecoder* ptr = decoder.get();
     m_videoDecoders[uri] = std::move(decoder);
+    return ptr;
+}
+
+AudioPlayer* App::getAudioPlayer(const std::string& uri) {
+    auto it = m_audioPlayers.find(uri);
+    if (it != m_audioPlayers.end()) {
+        return it->second->isOpen() ? it->second.get() : nullptr;
+    }
+
+    // Resolve file path from URI (same logic as getVideoDecoder)
+    std::string path;
+    if (uri.substr(0, 8) == "file:///") {
+        path = uri.substr(8);
+        std::string decoded;
+        for (size_t i = 0; i < path.size(); i++) {
+            if (path[i] == '%' && i + 2 < path.size()) {
+                char hex[3] = { path[i + 1], path[i + 2], 0 };
+                decoded += (char)strtol(hex, nullptr, 16);
+                i += 2;
+            } else if (path[i] == '/') {
+                decoded += '\\';
+            } else {
+                decoded += path[i];
+            }
+        }
+        path = decoded;
+    } else if (uri.size() > 2 && uri[1] == ':') {
+        path = uri;
+    } else {
+        return nullptr;
+    }
+
+    auto player = std::make_unique<AudioPlayer>();
+    if (!player->open(path)) {
+        m_audioPlayers[uri] = std::move(player); // cache failure
+        return nullptr;
+    }
+
+    AudioPlayer* ptr = player.get();
+    m_audioPlayers[uri] = std::move(player);
     return ptr;
 }

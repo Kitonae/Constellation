@@ -8,6 +8,7 @@
 #include "render_pipeline.h"
 #include "texture_cache.h"
 #include "video_decoder.h"
+#include "audio_player.h"
 #include "ndi_sender.h"
 #include "debug_text.h"
 
@@ -81,6 +82,11 @@ private:
 
     // Video decoders: keyed by media URI
     std::unordered_map<std::string, std::unique_ptr<VideoDecoder>> m_videoDecoders;
+
+    // Audio players: keyed by media URI (for videos with audio)
+    std::unordered_map<std::string, std::unique_ptr<AudioPlayer>> m_audioPlayers;
+    AudioPlayer* getAudioPlayer(const std::string& uri);
+    bool m_wasPlaying = false;  // track play state for audio sync
 
     // NDI output
     NDISender m_ndiSender;
