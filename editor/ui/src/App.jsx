@@ -117,6 +117,15 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e) => {
+      // Undo/Redo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        useEditorStore.getState().undo()
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        useEditorStore.getState().redo()
+      }
       // Toggle console on backquote/tilde key
       if (e.code === 'Backquote') {
         const t = e.target

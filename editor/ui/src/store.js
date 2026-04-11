@@ -4,6 +4,7 @@ import { setFileServerBaseUrl } from './utils/videoUtils.js'
 import { toFileUri } from './utils/mediaUtils.js'
 import { setFileServerBase, toFileUri as mfToFileUri } from './media/uri.js'
 import { createMediaSession } from './media/session.js'
+import { createUndoStore, withUndo } from './undo.js'
 
 // Initialize file server base URL if in Wails environment
 if (window.go?.main?.App?.GetFileServerPort) {
@@ -19,7 +20,8 @@ if (window.go?.main?.App?.GetFileServerPort) {
   }).catch(err => console.warn('Failed to get file server port', err))
 }
 
-export const useEditorStore = create((set, get) => ({
+export const useEditorStore = create(withUndo((set, get, api) => ({
+  ...createUndoStore(set, get, api),
   _fileServerPort: 0,
   project: null,
   scene: null,
@@ -102,9 +104,8 @@ export const useEditorStore = create((set, get) => ({
       kind: { type: 'screen', screenType: screenType || 'web', pixels: [px[0] | 0, px[1] | 0], enabled: true },
     }
     const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
-    // Ensure a project exists so Apply can work
     const proj = s.project || defaultProject(nextScene)
-    return { scene: nextScene, project: proj, selectedId: id }
+    return { scene: nextScene, project: proj, selectedId: id, _undoLabel: 'Add Screen' }
   }),
   loadProject: (json) => {
     const proj = parseProject(json)
@@ -120,12 +121,12 @@ export const useEditorStore = create((set, get) => ({
         return t
       })
     }
-    set({ project: proj, scene: proj.scene, selectedId: null, time: 0 })
+    set({ project: proj, scene: proj.scene, selectedId: null, time: 0, _undoLabel: 'Load Project' })
   },
   newProject: () => {
     const scene = { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
     const proj = defaultProject(scene)
-    set({ project: proj, scene: proj.scene, selectedId: null, time: 0 })
+    set({ project: proj, scene: proj.scene, selectedId: null, time: 0, _undoLabel: 'New Project' })
   },
   // Add a generic media clip to the project's media bin
   addMediaClip: ({ id, name, uri, duration_seconds }) => set((s) => {
@@ -139,13 +140,15 @@ export const useEditorStore = create((set, get) => ({
     const nextProj = { ...baseProj, media: [...(baseProj.media ?? []), clip] }
     queueLog('info', `Imported media: ${clip.name}`)
     // If we had to create a default project, also ensure scene is set in store
-    return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
+    return s.project
+      ? { project: nextProj, _undoLabel: 'Import Media' }
+      : { project: nextProj, scene: baseProj.scene, _undoLabel: 'Import Media' }
   }),
   addTrack: () => set((s) => {
     const tl = s.project?.timeline
     if (!tl) return {}
     const tracks = [...(tl.tracks || []), { media: [] }]
-    return { project: { ...s.project, timeline: { ...tl, tracks } } }
+    return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Add Track' }
   }),
   // Insert an existing clip onto the timeline
   addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale, trackIndex }) => set((s) => {
@@ -222,7 +225,7 @@ export const useEditorStore = create((set, get) => ({
 
     const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? dur))
     queueLog('info', `Inserted clip '${clip.name}' at ${tm.start_at_seconds.toFixed(2)}s`)
-    return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } } }
+    return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } }, _undoLabel: `Add ${clip.name} to Timeline` }
   }),
   // Add an image media clip and a timeline track targeting a screen
   // Accepts either a raw filePath (OS path) or a fully-resolved file URI.
@@ -258,7 +261,9 @@ export const useEditorStore = create((set, get) => ({
       media: [...(baseProj.media ?? []), clip],
       timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds },
     }
-    return s.project ? { project: nextProj } : { project: nextProj, scene: baseProj.scene }
+    return s.project
+      ? { project: nextProj, _undoLabel: `Add Image ${clip.name}` }
+      : { project: nextProj, scene: baseProj.scene, _undoLabel: `Add Image ${clip.name}` }
   }),
   // Update a timeline clip's 2D transform parameters
   updateClipTransform: ({ clipId, timelineId, position, scale, opacity, blur, fade_in, fade_out }) => set((s) => {
@@ -290,7 +295,7 @@ export const useEditorStore = create((set, get) => ({
       })
       return { ...t, media: nextMediaList }
     })
-    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
+    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } }, _undoLabel: position ? 'Move Clip' : scale ? 'Resize Clip' : opacity !== undefined ? 'Change Opacity' : 'Edit Clip' }
   }),
   // Update a specific effect for a clip
   updateClipEffect: ({ timelineId, effect, value, enabled }) => set((s) => {
@@ -309,7 +314,7 @@ export const useEditorStore = create((set, get) => ({
       })
       return { ...t, media: nextMediaList }
     })
-    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } } }
+    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } }, _undoLabel: `Change ${effect}` }
   }),
   // Update timing for a clip (e.g., when dragging on timeline)
   updateClipStart: ({ clipId, timelineId, startAt }) => set((s) => {
@@ -326,7 +331,7 @@ export const useEditorStore = create((set, get) => ({
       })
       return { ...t, media: nextMediaList }
     })
-    return { project: { ...s.project, timeline: { ...tl, tracks } } }
+    return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Move Clip on Timeline' }
   }),
   // Update explicit duration for a clip (and legacy out_seconds)
   updateClipDuration: ({ clipId, timelineId, duration }) => set((s) => {
@@ -352,7 +357,7 @@ export const useEditorStore = create((set, get) => ({
         return Math.max(acc2, st + dur)
       }, acc)
     }, tl.duration_seconds || 0)
-    return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds } } }
+    return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds } }, _undoLabel: 'Resize Clip Duration' }
   }),
   reorderClip: (clipId, newIndex) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
@@ -383,7 +388,7 @@ export const useEditorStore = create((set, get) => ({
     const targetMedia = Array.isArray(targetTrack.media) ? targetTrack.media : (targetTrack.media ? [targetTrack.media] : [])
     nextTracks[targetIndex] = { ...targetTrack, media: [...targetMedia, movedClip] }
 
-    return { project: { ...s.project, timeline: { ...tl, tracks: nextTracks } } }
+    return { project: { ...s.project, timeline: { ...tl, tracks: nextTracks } }, _undoLabel: 'Reorder Clip' }
   }),
   tick: (dt) => {
     if (!get().playing) return
@@ -425,7 +430,8 @@ export const useEditorStore = create((set, get) => ({
           scale: next.scale ?? node.transform.scale,
         }
       })))
-    }
+    },
+    _undoLabel: 'Move Screen',
   })),
   // Remove a clip instance from the timeline by timeline item id
   removeClip: (clipId) => set((s) => {
@@ -435,7 +441,7 @@ export const useEditorStore = create((set, get) => ({
       return { ...t, media: mediaList.filter((m) => m.id !== clipId) }
     })
     const nextTl = { ...(s.project.timeline || {}), tracks }
-    return { project: { ...s.project, timeline: nextTl }, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId }
+    return { project: { ...s.project, timeline: nextTl }, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId, _undoLabel: 'Remove Clip from Timeline' }
   }),
   // Remove a media clip from the bin and any timeline references
   removeMediaClip: (clipId) => set((s) => {
@@ -453,7 +459,7 @@ export const useEditorStore = create((set, get) => ({
     }
     const nextProject = { ...s.project, media: nextMedia, ...(nextTl ? { timeline: nextTl } : {}) }
     const selectedClipId = s.selectedClipId === clipId ? null : s.selectedClipId
-    return { project: nextProject, selectedClipId }
+    return { project: nextProject, selectedClipId, _undoLabel: 'Remove Media' }
   }),
   updateScreenPixels: (id, pixels) => set((s) => ({
     scene: {
@@ -464,7 +470,8 @@ export const useEditorStore = create((set, get) => ({
         }
         return node
       }))
-    }
+    },
+    _undoLabel: `Resize Screen to ${pixels[0]}x${pixels[1]}`,
   })),
   updateScreenType: (id, screenType) => set((s) => ({
     scene: {
@@ -475,7 +482,8 @@ export const useEditorStore = create((set, get) => ({
         }
         return node
       }))
-    }
+    },
+    _undoLabel: `Change Screen Type to ${screenType}`,
   })),
   updateScreenEnabled: (id, enabled) => set((s) => ({
     scene: {
@@ -486,7 +494,8 @@ export const useEditorStore = create((set, get) => ({
         }
         return node
       }))
-    }
+    },
+    _undoLabel: enabled ? 'Enable Screen' : 'Disable Screen',
   })),
   addModelNode: ({ name, uri, position, scale }) => set((s) => {
     const scene = s.scene || { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
@@ -505,7 +514,7 @@ export const useEditorStore = create((set, get) => ({
     const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
     const proj = s.project || defaultProject(nextScene)
     queueLog('info', `Added 3D model '${node.name}' to scene`)
-    return { scene: nextScene, project: proj, selectedId: id }
+    return { scene: nextScene, project: proj, selectedId: id, _undoLabel: `Add Model ${name || 'Model'}` }
   }),
   removeScreenNode: (id) => set((s) => {
     if (!s.scene?.roots) return {}
@@ -519,9 +528,9 @@ export const useEditorStore = create((set, get) => ({
     const roots = (s.scene.roots || [])
       .map((n) => removeNodeRec(n, id))
       .filter(Boolean)
-    return { scene: { ...s.scene, roots }, selectedId: s.selectedId === id ? null : s.selectedId }
+    return { scene: { ...s.scene, roots }, selectedId: s.selectedId === id ? null : s.selectedId, _undoLabel: 'Remove Screen' }
   }),
-}))
+})))
 window.useEditorStore = useEditorStore
 
 // Helper to enqueue a log entry without needing a store setter in scope

@@ -83,6 +83,7 @@ function PropertyRow({ label, children, style }) {
 }
 
 export default function Inspector() {
+  const [tab, setTab] = useState('properties') // 'properties' | 'history'
   const scene = useEditorStore((s) => s.scene)
   const selectedId = useEditorStore((s) => s.selectedId)
   const selectedClipId = useEditorStore((s) => s.selectedClipId)
@@ -151,12 +152,49 @@ export default function Inspector() {
     return () => { cancelled = true }
   }, [selectedClip?.uri])
 
+  const TabBar = (
+    <div style={{ display: 'flex', borderBottom: '1px solid #232636', background: '#13151a' }}>
+      {[
+        { id: 'properties', icon: 'tune', label: 'Properties' },
+        { id: 'history', icon: 'history', label: 'History' },
+      ].map(t => (
+        <button key={t.id} onClick={() => setTab(t.id)} style={{
+          flex: 1, padding: '7px 0', fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
+          letterSpacing: 0.5, border: 'none', cursor: 'pointer',
+          background: tab === t.id ? '#1b1e26' : 'transparent',
+          color: tab === t.id ? '#e1e4e8' : '#6b7280',
+          borderBottom: tab === t.id ? '2px solid #6aa0ff' : '2px solid transparent',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        }}>
+          <span className="ms" style={{ fontSize: 16 }}>{t.icon}</span>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+
+  if (tab === 'history') {
+    return (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#13151a', color: '#c7cfdb' }}>
+        {TabBar}
+        <HistoryPanel />
+      </div>
+    )
+  }
+
   if (!selectedNode && !selectedMedia) {
-    return <div style={{ padding: 16, opacity: 0.5, textAlign: 'center', fontSize: 13, color: '#c7cfdb' }}>No selection</div>
+    return (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#13151a', color: '#c7cfdb' }}>
+        {TabBar}
+        <div style={{ padding: 16, opacity: 0.5, textAlign: 'center', fontSize: 13 }}>No selection</div>
+      </div>
+    )
   }
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', background: '#13151a', color: '#c7cfdb' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#13151a', color: '#c7cfdb' }}>
+      {TabBar}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
       {selectedNode?.kind?.type === 'screen' && (
         <Category title="Screen Settings">
           <PropertyRow label="Type">
@@ -337,6 +375,135 @@ export default function Inspector() {
             </PropertyRow>
           </Category>
         </>
+      )}
+      </div>
+    </div>
+  )
+}
+
+const HISTORY_ICONS = {
+  'Add Screen': 'desktop_windows',
+  'Remove Screen': 'delete',
+  'Move Screen': 'open_with',
+  'Resize Screen': 'aspect_ratio',
+  'Enable Screen': 'visibility',
+  'Disable Screen': 'visibility_off',
+  'Import Media': 'upload_file',
+  'Add Track': 'playlist_add',
+  'Move Clip': 'drag_indicator',
+  'Resize Clip': 'photo_size_select_large',
+  'Change Opacity': 'opacity',
+  'Move Clip on Timeline': 'swap_horiz',
+  'Resize Clip Duration': 'timelapse',
+  'Reorder Clip': 'reorder',
+  'Remove Clip from Timeline': 'playlist_remove',
+  'Remove Media': 'delete_sweep',
+  'Load Project': 'folder_open',
+  'New Project': 'note_add',
+  'Initial State': 'flag',
+  'Edit Clip': 'edit',
+}
+
+function historyIcon(label) {
+  // Exact match first
+  if (HISTORY_ICONS[label]) return HISTORY_ICONS[label]
+  // Prefix match
+  for (const [key, icon] of Object.entries(HISTORY_ICONS)) {
+    if (label.startsWith(key)) return icon
+  }
+  // Keyword match
+  if (label.includes('Add') || label.includes('Import')) return 'add_circle'
+  if (label.includes('Remove') || label.includes('Delete')) return 'delete'
+  if (label.includes('Move')) return 'open_with'
+  if (label.includes('Resize')) return 'aspect_ratio'
+  if (label.includes('Change')) return 'tune'
+  if (label.includes('Screen')) return 'desktop_windows'
+  if (label.includes('Model')) return 'view_in_ar'
+  if (label.includes('Image')) return 'image'
+  return 'edit'
+}
+
+function HistoryPanel() {
+  const undoStack = useEditorStore((s) => s._undoStack)
+  const redoStack = useEditorStore((s) => s._redoStack)
+  const currentLabel = useEditorStore((s) => s._currentLabel) || 'Initial State'
+  const undo = useEditorStore((s) => s.undo)
+  const redo = useEditorStore((s) => s.redo)
+  const undoTo = useEditorStore((s) => s.undoTo)
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', fontSize: 12 }}>
+      {/* Redo stack (future states, grayed out, click to redo to) */}
+      {redoStack.slice().reverse().map((entry, i) => {
+        const realIdx = redoStack.length - 1 - i
+        return (
+          <div
+            key={`redo-${realIdx}`}
+            onClick={() => {
+              for (let j = 0; j <= realIdx; j++) redo()
+            }}
+            style={{
+              padding: '5px 12px',
+              cursor: 'pointer',
+              opacity: 0.35,
+              borderLeft: '3px solid transparent',
+              background: 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = '#1b1e26'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            <span className="ms" style={{ fontSize: 16, color: '#6b7280' }}>{historyIcon(entry.label)}</span>
+            <span style={{ color: '#6b7280' }}>{entry.label}</span>
+          </div>
+        )
+      })}
+
+      {/* Current state marker */}
+      <div style={{
+        padding: '5px 12px',
+        borderLeft: '3px solid #6aa0ff',
+        background: '#1b1e26',
+        fontWeight: 600,
+        color: '#e1e4e8',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}>
+        <span className="ms" style={{ fontSize: 16, color: '#6aa0ff' }}>{historyIcon(currentLabel)}</span>
+        {currentLabel}
+      </div>
+
+      {/* Undo stack (past states, newest first) */}
+      {undoStack.slice().reverse().map((entry, i) => {
+        const realIdx = undoStack.length - 1 - i
+        return (
+          <div
+            key={`undo-${realIdx}`}
+            onClick={() => undoTo(realIdx)}
+            style={{
+              padding: '5px 12px',
+              cursor: 'pointer',
+              opacity: 0.7,
+              borderLeft: '3px solid transparent',
+              background: 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = '#1b1e26'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            <span className="ms" style={{ fontSize: 16, color: '#8898b8' }}>{historyIcon(entry.label)}</span>
+            <span>{entry.label}</span>
+          </div>
+        )
+      })}
+
+      {undoStack.length === 0 && redoStack.length === 0 && (
+        <div style={{ padding: 16, opacity: 0.5, textAlign: 'center' }}>No history yet</div>
       )}
     </div>
   )
