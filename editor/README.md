@@ -23,3 +23,4 @@ Notes:
 - `editor/wails/frontend/dist/.keep` is a tracked placeholder so clean checkouts compile before a real frontend build is copied in.
 - The renderer binary is not built by `wails build`; build it from `editor/renderer` when needed.
 - This directory is organized around the current React + Wails + DX12 workflow.
+- The refactor roadmap and handoff notes live in `REFACTOR_PLAN.md`.
