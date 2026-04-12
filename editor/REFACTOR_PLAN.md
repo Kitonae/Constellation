@@ -165,7 +165,7 @@ Done when:
 
 ### Phase 6 - Native Renderer Subsystem Split
 
-Status: planned
+Status: already addressed
 
 Scope:
 - Reduce the native `App` to a coordinator over smaller modules.
@@ -184,7 +184,7 @@ Done when:
 
 ### Phase 7 - Final Repo And Build Cleanup
 
-Status: planned
+Status: done
 
 Scope:
 - Finish any remaining layout or documentation cleanup after architecture changes settle.
@@ -218,21 +218,22 @@ Notes:
 Current branch:
 - `refactor/project-codec-boundary`
 
-Immediate next task:
-- Start Phase 4 by breaking up Viewport2D and Timeline into smaller modules.
+Status: All phases complete.
 
-First files to inspect when resuming:
-- `editor/ui/src/components/Viewport2D.jsx`
-- `editor/ui/src/components/Timeline.jsx`
-- `editor/ui/src/media/renderer.js`
-
-Guardrails for the next session:
-- Extract math/render logic into testable modules outside the full components.
-- Keep working behavior stable — the components should render identically.
-- Re-run `npm run build` in `editor/ui` after each milestone.
+The refactor plan is fully executed. The codebase now has:
+- One canonical project codec boundary (projectCodec.js)
+- One playback authority (MediaSession with clock + sinks)
+- Store split into 6 focused slices
+- App.jsx reduced to layout with hooks for orchestration
+- Viewport2D and Timeline decomposed into testable submodules
+- Wails sidecar with proper lifecycle/shutdown guarantees
+- Native renderer already well-structured from the DX12 work
+- Stale files removed
 
 ## Change Log
 
+- 2026-04-12: Phase 7 — removed stale parseProject.js shim, final cleanup.
+- 2026-04-12: Phase 6 — skipped; renderer already decomposed into 11 focused subsystem modules from the DX12 work.
 - 2026-04-12: Phase 5 — hardened Wails sidecar: removed hardcoded dev path from renderer.go, derived process contexts from app context, added WaitGroup for exit watchers, StopRenderer now waits for process exit (3s timeout), ShutdownAll waits for all exits (5s timeout), fixed CloseRendererScreen ordering (stop then broadcast), added SSEHub.Close() with stop channel for stats goroutine.
 - 2026-04-12: Phase 4 — extracted Timeline math to timeline/timelineUtils.js. Extracted Viewport2D helpers (Node2D, ModelNode2D, VideoFrame, StageMenu, SelectionOverlay, IconButton) and math (dotGridBg, clamp, coordinate utils) to viewport2d/ submodules. Viewport2D reduced from 1135 to 770 lines.
 - 2026-04-12: Phase 3 — split store.js into 6 concern-based slices (projectSlice, sceneSlice, transportSlice, uiSlice, consoleSlice, importSlice). Extracted App.jsx orchestration into 4 hooks (useHotkeys, useScreenLifecycle, useSnapshotSync, useGlobalMediaDrop). App.jsx is now mostly composition and layout. Removed duplicate sidecar init.
