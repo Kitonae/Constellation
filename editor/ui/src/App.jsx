@@ -15,6 +15,7 @@ import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './di
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import { createProjectDocument } from './project/projectCodec.js'
 import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
 import { setFileServerBase, isMediaFile } from './media/index.js'
 
@@ -83,7 +84,7 @@ export default function App() {
           }
         }
 
-        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
+        addMediaClip({ id, name, uri: initialUri, durationSeconds: duration })
       }
     }
 
@@ -197,7 +198,7 @@ export default function App() {
     // Emit a snapshot once on scene change to update paused display windows
     try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
     // Update Go-side cached snapshot so newly connecting renderers get current state
-    try { if (project) window.go?.main?.App?.PushSnapshot(JSON.stringify(buildProjectWrapper(project, scene))) } catch { }
+    try { if (project) window.go?.main?.App?.PushSnapshot(JSON.stringify(createProjectDocument(project, scene))) } catch { }
   }, [scene])
 
   // Emit snapshot once when project changes
@@ -216,7 +217,7 @@ export default function App() {
     // Push full snapshot to native renderers via Go SSE
     try {
       if (project) {
-        const wrapper = buildProjectWrapper(project, scene)
+        const wrapper = createProjectDocument(project, scene)
         window.go?.main?.App?.PushSnapshot(JSON.stringify(wrapper))
       }
     } catch { }
@@ -349,7 +350,7 @@ export default function App() {
         defaultName={project?.name || 'show'}
         onSave={(name) => {
           try {
-            const wrapper = buildProjectWrapper(project, scene)
+            const wrapper = createProjectDocument(project, scene)
             // Update project name in wrapper if needed, or just use filename
             if (wrapper.project) wrapper.project.name = name
 
@@ -370,20 +371,6 @@ export default function App() {
       />
     </div>
   )
-}
-
-function buildProjectWrapper(project, scene) {
-  if (!project || !scene) { throw new Error('No project loaded') }
-  // Reconstruct a JSON payload similar to examples/scene.example.json
-  return {
-    project: {
-      id: project.id,
-      name: project.name,
-      scene: scene,
-      media: project.media ?? [],
-      timeline: project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: 60 }
-    }
-  }
 }
 
 async function onAddImage() {

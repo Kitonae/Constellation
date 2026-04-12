@@ -2,6 +2,15 @@ import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { useEditorStore } from '../store.js'
 import { broadcastToDisplays } from '../display/displayManager.js'
 import { computeOverlaps } from '../utils/mediaUtils.js'
+import {
+  getTrackItems,
+  getTimelineDurationSeconds,
+  getTimelineItemAssetId,
+  getTimelineItemDuration,
+  getTimelineItemFadeInSeconds,
+  getTimelineItemFadeOutSeconds,
+  getTimelineItemStart,
+} from '../project/projectCodec.js'
 
 export default function Timeline() {
   const project = useEditorStore((s) => s.project)
@@ -20,9 +29,9 @@ export default function Timeline() {
   const maxClipEnd = useMemo(() => {
     let max = 0
     for (const t of tracks) {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const mediaList = getTrackItems(t)
       for (const m of mediaList) {
-        const end = (m.start ?? m.start_at_seconds ?? 0) + (m.duration ?? ((m.out_seconds - m.in_seconds) || 0))
+        const end = getTimelineItemStart(m) + getTimelineItemDuration(m)
         if (end > max) max = end
       }
     }
@@ -30,7 +39,7 @@ export default function Timeline() {
   }, [tracks])
 
   // Infinite timeline: at least 60s, or max clip + 5 mins buffer
-  const duration = Math.max((project?.timeline?.duration_seconds ?? 60), maxClipEnd + 300)
+  const duration = Math.max(getTimelineDurationSeconds(project?.timeline), maxClipEnd + 300)
 
   const tracksViewportRef = useRef(null) // scroll container for tracks
   const tracksInnerRef = useRef(null) // inner width element
@@ -194,8 +203,7 @@ export default function Timeline() {
   useEffect(() => {
     const unsub = useEditorStore.subscribe((state) => {
       const t = state.time || 0
-      const dur = project?.timeline?.duration_seconds ?? duration
-      const width = timelineWidth
+      const dur = getTimelineDurationSeconds(project?.timeline) || duration
       const clamped = Math.max(0, Math.min(dur, t))
       const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
@@ -209,8 +217,7 @@ export default function Timeline() {
     // Initial position
     try {
       const t = useEditorStore.getState().time
-      const dur = project?.timeline?.duration_seconds ?? duration
-      const width = timelineWidth
+      const dur = getTimelineDurationSeconds(project?.timeline) || duration
       const clamped = Math.max(0, Math.min(dur, t))
       const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
@@ -354,21 +361,21 @@ export default function Timeline() {
         >
           <div ref={tracksInnerRef} style={{ position: 'relative', width: timelineWidth, padding: '8px 0' }}>
             {tracks.map((t, i) => {
-              const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+              const mediaList = getTrackItems(t)
 
               const overlaps = computeOverlaps(mediaList)
 
               return (
                 <div key={i} style={{ position: 'relative', height: 28, margin: 0, zIndex: 1, background: selectedTrackIndex === i ? 'rgba(53, 64, 102, 0.2)' : 'transparent', borderRadius: '0 4px 4px 0' }}>
                   {mediaList.map((m) => {
-                    const startVal = (m.start ?? m.start_at_seconds) || 0
-                    const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
+                    const startVal = getTimelineItemStart(m)
+                    const durVal = getTimelineItemDuration(m)
                     const isDragging = drag?.timelineId === m.id && drag.currentStart !== undefined
                     const effectiveStart = isDragging ? drag.currentStart : startVal
                     const left = effectiveStart * pxPerSecond
                     const width = Math.max(0, durVal) * pxPerSecond
-                    const clip = mediaById[m.clip_id]
-                    const label = clip?.name || clip?.id || m.clip_id
+                    const clip = mediaById[getTimelineItemAssetId(m)]
+                    const label = clip?.name || clip?.id || getTimelineItemAssetId(m)
                     const isSelected = selectedClipId === m.id
                     const isOverlapping = overlaps.has(m.id)
 
@@ -377,8 +384,8 @@ export default function Timeline() {
                     const verticalOffset = (drag?.timelineId === m.id && drag.currentY !== undefined) ? drag.currentY : 0
                     const zIndex = (drag?.timelineId === m.id) ? 100 : 1
 
-                    const fadeIn = m.fade_in || 0
-                    const fadeOut = m.fade_out || 0
+                    const fadeIn = getTimelineItemFadeInSeconds(m)
+                    const fadeOut = getTimelineItemFadeOutSeconds(m)
                     const fadeInWidth = fadeIn * pxPerSecond
                     const fadeOutWidth = fadeOut * pxPerSecond
 
@@ -391,7 +398,7 @@ export default function Timeline() {
                           e.stopPropagation()
                           try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
                           const tAt = timeFromClientX(e.clientX)
-                          const offset = tAt - (m.start ?? m.start_at_seconds ?? 0)
+                          const offset = tAt - getTimelineItemStart(m)
                           const d = { timelineId: m.id, startAtOffset: offset, startY: e.clientY, currentY: 0, originalIndex: i }
                           setDrag(d)
                           dragRef.current = d
@@ -442,7 +449,7 @@ export default function Timeline() {
                           transition: drag?.timelineId === m.id ? 'none' : 'top 0.2s ease',
                           zIndex
                         }}
-                        title={`${label} @ ${(m.start ?? m.start_at_seconds ?? 0).toFixed?.(2)}s${isOverlapping ? ' (Overlapping)' : ''}`}
+                        title={`${label} @ ${getTimelineItemStart(m).toFixed?.(2)}s${isOverlapping ? ' (Overlapping)' : ''}`}
                       >
                         {fadeIn > 0 && (
                           <div style={{

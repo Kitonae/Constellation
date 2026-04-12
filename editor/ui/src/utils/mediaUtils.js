@@ -1,3 +1,10 @@
+import {
+  getTimelineItemDuration,
+  getTimelineItemFadeInSeconds,
+  getTimelineItemFadeOutSeconds,
+  getTimelineItemStart,
+} from '../project/projectCodec.js'
+
 /**
  * Shared media utility functions.
  * Extracted from duplicated copies across App.jsx, store.js, MediaBin.jsx,
@@ -43,12 +50,12 @@ export function computeOverlaps(mediaList) {
     for (let k = j + 1; k < mediaList.length; k++) {
       const m1 = mediaList[j]
       const m2 = mediaList[k]
-      const s1 = m1.start ?? m1.start_at_seconds ?? 0
-      const d1 = m1.duration ?? ((m1.out_seconds - m1.in_seconds) || 0)
+      const s1 = getTimelineItemStart(m1)
+      const d1 = getTimelineItemDuration(m1)
       const e1 = s1 + d1
 
-      const s2 = m2.start ?? m2.start_at_seconds ?? 0
-      const d2 = m2.duration ?? ((m2.out_seconds - m2.in_seconds) || 0)
+      const s2 = getTimelineItemStart(m2)
+      const d2 = getTimelineItemDuration(m2)
       const e2 = s2 + d2
 
       if (s1 < e2 && s2 < e1) {
@@ -65,11 +72,11 @@ export function computeOverlaps(mediaList) {
  * Returns a number 0-1 representing the fade multiplier.
  */
 export function computeFadeOpacity(tm, currentTime) {
-  const start = (tm.start ?? tm.start_at_seconds) || 0
-  const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
+  const start = getTimelineItemStart(tm)
+  const dur = getTimelineItemDuration(tm)
   const timeInClip = currentTime - start
-  const fadeIn = tm.fade_in ?? 0
-  const fadeOut = tm.fade_out ?? 0
+  const fadeIn = getTimelineItemFadeInSeconds(tm)
+  const fadeOut = getTimelineItemFadeOutSeconds(tm)
   let fadeOpacity = 1
 
   if (fadeIn > 0 && timeInClip < fadeIn) {

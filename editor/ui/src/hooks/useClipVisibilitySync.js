@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useEditorStore } from '../store.js'
+import { getTimelineItemDuration, getTimelineItemStart } from '../project/projectCodec.js'
 
 /**
  * Subscribes to store time changes and updates clip DOM visibility + video sync
@@ -23,8 +24,8 @@ export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineIt
         if (!el) return
         const m = allTimelineItems.find(mm => mm.id === id)
         if (!m) return
-        const start = (m.start ?? m.start_at_seconds) || 0
-        const dur = Math.max(0, (m.duration ?? ((m.out_seconds - m.in_seconds) || 0)))
+        const start = getTimelineItemStart(m)
+        const dur = getTimelineItemDuration(m)
         const active = t >= start && t <= start + dur
         el.style.display = active ? 'flex' : 'none'
       })

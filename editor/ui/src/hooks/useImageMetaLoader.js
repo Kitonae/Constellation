@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { resolveImageSrc } from '../components/MediaThumb.jsx'
 import { getVideoMetadata, resolveFileUrl } from '../utils/videoUtils.js'
+import { getTimelineItemAssetId } from '../project/projectCodec.js'
 
 const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg']
 
@@ -16,7 +17,8 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
     let cancelled = false
     async function ensureMeta() {
       for (const { clip, tm } of placements) {
-        if (!clip?.uri || imageMeta[tm.clip_id]) continue
+        const assetId = getTimelineItemAssetId(tm)
+        if (!clip?.uri || imageMeta[assetId]) continue
         const uriStr = String(clip.uri)
         const extFromUri = uriStr.startsWith('blob:') || uriStr.startsWith('data:') ? '' : uriStr.split('?')[0].split('#')[0].split('.').pop().toLowerCase()
         const ext = extFromUri || String(clip.name || '').split('.').pop().toLowerCase()
@@ -26,11 +28,11 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
             const meta = await getVideoMetadata(clip.uri)
             if (cancelled) return
             const videoSrc = resolveFileUrl(clip.uri)
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: meta.width || 1920, h: meta.height || 1080, src: videoSrc } }))
+            setImageMeta((m) => ({ ...m, [assetId]: { w: meta.width || 1920, h: meta.height || 1080, src: videoSrc } }))
           } catch {
             if (cancelled) return
             // Fallback to 1920x1080 so the clip isn't invisible
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: 1920, h: 1080, src: null } }))
+            setImageMeta((m) => ({ ...m, [assetId]: { w: 1920, h: 1080, src: null } }))
           }
           continue
         }
@@ -40,7 +42,7 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
         await new Promise((resolve) => {
           const img = new Image()
           img.onload = () => {
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: img.naturalWidth, h: img.naturalHeight, src } }))
+            setImageMeta((m) => ({ ...m, [assetId]: { w: img.naturalWidth, h: img.naturalHeight, src } }))
             resolve()
           }
           img.onerror = () => resolve()

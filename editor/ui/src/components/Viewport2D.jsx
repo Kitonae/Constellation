@@ -2,8 +2,15 @@ import React, { useMemo, useRef, useEffect, useState, useCallback, Suspense } fr
 import { useEditorStore } from '../store.js'
 import { openImageDialog } from '../utils/fileDialogs.js'
 import { resolveFileUrl } from '../utils/videoUtils.js'
-import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
+import { computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
+import {
+  findMediaAssetByTimelineItem,
+  getNonOverlappingTrackItems,
+  getTimelineItemAssetId,
+  getTimelineItemDuration,
+  getTimelineItemStart,
+} from '../project/projectCodec.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
 import { generateModelThumbnail } from '../utils/modelThumbnail.js'
@@ -159,12 +166,7 @@ export default function Viewport2D() {
   const mediaById = useMemo(() => Object.fromEntries((project?.media || []).map(m => [m.id, m])), [project])
   const allTimelineItems = useMemo(() => {
     const tracks = project?.timeline?.tracks || []
-    return tracks.flatMap(t => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-
-      const overlaps = computeOverlaps(mediaList)
-      return mediaList.filter(m => !overlaps.has(m.id))
-    })
+    return tracks.flatMap((t) => getNonOverlappingTrackItems(t))
   }, [project])
   const clipRefs = useRef(new Map())
   const getClipRef = (id) => {
@@ -180,7 +182,7 @@ export default function Viewport2D() {
     const res = []
     for (const m of allTimelineItems) {
       const screen = m.target_node_id ? nodeIndex.get(m.target_node_id) : null
-      const clip = mediaById[m.clip_id]
+      const clip = mediaById[getTimelineItemAssetId(m)]
       res.push({ tm: m, screen, clip })
     }
     return res
@@ -423,7 +425,7 @@ export default function Viewport2D() {
               const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
               const cx = center.x + (spos.x ?? 0) * scale
               const cy = center.y - (spos.y ?? 0) * scale
-              const meta = imageMeta[tm.clip_id]
+              const meta = imageMeta[getTimelineItemAssetId(tm)]
               const baseW = meta?.w || 100
               const baseH = meta?.h || 100
               const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
@@ -433,8 +435,8 @@ export default function Viewport2D() {
               const left = cx + (tm.position?.x || 0) * ratio - w / 2
               const top = cy - (tm.position?.y || 0) * ratio - h / 2
               const inter = (mx < left + w) && (mx + mw > left) && (my < top + h) && (my + mh > top)
-              const start = (tm.start ?? tm.start_at_seconds) || 0
-              const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
+              const start = getTimelineItemStart(tm)
+              const dur = getTimelineItemDuration(tm)
               const isActive = tNow >= start && tNow <= start + dur
               if (inter && isActive) picked.push(tm.id)
             }
@@ -494,7 +496,7 @@ export default function Viewport2D() {
             const cx = center.x + (spos.x ?? 0) * scale
             const cy = center.y - (spos.y ?? 0) * scale
             const mpos = tm.position || { x: 0, y: 0 }
-            const meta = imageMeta[tm.clip_id]
+            const meta = imageMeta[getTimelineItemAssetId(tm)]
             const baseW = meta?.w || 100
             const baseH = meta?.h || 100
             const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
@@ -505,8 +507,8 @@ export default function Viewport2D() {
             const left = cx + (mpos.x || 0) * ratio - w / 2
             const top = cy - (mpos.y || 0) * ratio - h / 2
             const isSel = selectedClipId === tm.id || selectedClipIds.includes(tm.id)
-            const start = (tm.start ?? tm.start_at_seconds) || 0
-            const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
+            const start = getTimelineItemStart(tm)
+            const dur = getTimelineItemDuration(tm)
             const isActive = tNow >= start && tNow <= start + dur
 
             const finalOpacity = computeFadeOpacity(tm, tNow)
@@ -594,7 +596,7 @@ export default function Viewport2D() {
                 }}
                 onDragStart={(e) => { e.preventDefault() }}
                 onPointerCancel={(e) => { if (dragClipRef.current) { setDragClip(null); dragClipRef.current = null } try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
-                title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds || 0).toFixed?.(2)}s)`}
+                title={(clip?.name || getTimelineItemAssetId(tm)) + ` (${getTimelineItemStart(tm).toFixed?.(2)}s)`}
                 style={{
                   position: 'absolute',
                   left: (dragClip?.targets?.[tm.id]?.currentX !== undefined) ? (cx + dragClip.targets[tm.id].currentX * ratio - w / 2) : left,
@@ -629,10 +631,10 @@ export default function Viewport2D() {
                   if (isVideo) {
                     return <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
                   }
-                  if (imageMeta[tm.clip_id]?.src) {
-                    return <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none', WebkitUserDrag: 'none' }} />
+                  if (imageMeta[getTimelineItemAssetId(tm)]?.src) {
+                    return <img src={imageMeta[getTimelineItemAssetId(tm)].src} alt={clip?.name || getTimelineItemAssetId(tm)} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none', WebkitUserDrag: 'none' }} />
                   }
-                  return <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', userSelect: 'none' }}>{clip?.name || tm.clip_id}</span>
+                  return <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', userSelect: 'none' }}>{clip?.name || getTimelineItemAssetId(tm)}</span>
                 })()}
                 {/* White 1px bounding box overlay */}
                 <div style={{ position: 'absolute', inset: 0, border: '1px solid #ffffff', pointerEvents: 'none' }} />
@@ -642,7 +644,7 @@ export default function Viewport2D() {
         </div>
       </div>
       {/* Selection label (top-left of stage) */}
-      <SelectionOverlay nodes={nodes} nodeIndex={nodeIndex} mediaById={mediaById} selectedId={selectedId} selectedClipId={selectedClipId} />
+      <SelectionOverlay nodes={nodes} nodeIndex={nodeIndex} selectedId={selectedId} selectedClipId={selectedClipId} />
 
       {/* Viewport Controls */}
       <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', flexDirection: 'row', gap: 8, zIndex: 10, pointerEvents: 'none' }}>
@@ -694,7 +696,7 @@ export default function Viewport2D() {
               for (const { tm } of placements) {
                 const mx = tm.position?.x || 0
                 const my = tm.position?.y || 0
-                const meta = imageMeta[tm.clip_id]
+                const meta = imageMeta[getTimelineItemAssetId(tm)]
                 const tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
                 const th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
                 minX = Math.min(minX, mx - tw / 2)
@@ -1081,21 +1083,12 @@ function ZoomLevelBar({ zoom }) {
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
 
-function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedClipId }) {
+function SelectionOverlay({ nodes, nodeIndex, selectedId, selectedClipId }) {
   let text = ''
   if (selectedClipId) {
-    // selectedClipId refers to timeline item id; resolve clip via tracks
     try {
       const proj = useEditorStore.getState().project
-      let mediaEntry = null
-      if (proj?.timeline?.tracks) {
-        for (const t of proj.timeline.tracks) {
-          if (t.media && t.media.id === selectedClipId) {
-            mediaEntry = (proj.media || []).find(m => m.id === t.media.clip_id)
-            break
-          }
-        }
-      }
+      const mediaEntry = findMediaAssetByTimelineItem(proj, selectedClipId)
       text = mediaEntry?.name || mediaEntry?.id || selectedClipId
     } catch { text = selectedClipId }
   } else if (selectedId) {

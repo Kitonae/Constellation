@@ -1,5 +1,21 @@
 import { create } from 'zustand'
-import { parseProject } from './utils/parseProject.js'
+import {
+  computeTimelineDurationFromItems,
+  createDefaultProject,
+  createImportedMediaAsset,
+  createTimelineItemRecord,
+  ensureTimelineRecord,
+  getMediaDurationSeconds,
+  getTimelineDurationSeconds,
+  getTimelineItemAssetId,
+  getTimelineItemEnd,
+  getTimelineItemStart,
+  getTimelineTracks,
+  loadProjectDocument,
+  removeTimelineItemById,
+  removeTimelineItemsByAssetId,
+  updateTimelineItems,
+} from './project/projectCodec.js'
 import { setFileServerBaseUrl } from './utils/videoUtils.js'
 import { toFileUri } from './utils/mediaUtils.js'
 import { setFileServerBase, toFileUri as mfToFileUri } from './media/uri.js'
@@ -102,39 +118,27 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       kind: { type: 'screen', screenType: screenType || 'web', pixels: [px[0] | 0, px[1] | 0], enabled: true },
     }
     const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
-    const proj = s.project || defaultProject(nextScene)
+    const proj = s.project || createDefaultProject(nextScene)
     return { scene: nextScene, project: proj, selectedId: id, _undoLabel: 'Add Screen' }
   }),
   loadProject: (json) => {
-    const proj = parseProject(json)
-    // Migrate legacy tracks (single media object -> array)
-    if (proj.timeline?.tracks) {
-      proj.timeline.tracks = proj.timeline.tracks.map(t => {
-        if (t.media && !Array.isArray(t.media)) {
-          return { ...t, media: [t.media] }
-        }
-        if (!t.media && !Array.isArray(t.media)) {
-          return { ...t, media: [] }
-        }
-        return t
-      })
-    }
+    const proj = loadProjectDocument(json)
     set({ project: proj, scene: proj.scene, selectedId: null, time: 0, _undoLabel: 'Load Project' })
   },
   newProject: () => {
     const scene = { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
-    const proj = defaultProject(scene)
+    const proj = createDefaultProject(scene)
     set({ project: proj, scene: proj.scene, selectedId: null, time: 0, _undoLabel: 'New Project' })
   },
   // Add a generic media clip to the project's media bin
-  addMediaClip: ({ id, name, uri, duration_seconds }) => set((s) => {
-    const clip = {
+  addMediaClip: ({ id, name, uri, duration_seconds, durationSeconds }) => set((s) => {
+    const clip = createImportedMediaAsset({
       id: id || `clip-${Math.random().toString(36).slice(2, 8)}`,
       name: name || 'Clip',
       uri,
-      duration_seconds: duration_seconds ?? 10,
-    }
-    const baseProj = s.project ?? defaultProject(s.scene)
+      durationSeconds: durationSeconds ?? duration_seconds ?? 10,
+    })
+    const baseProj = s.project ?? createDefaultProject(s.scene)
     const nextProj = { ...baseProj, media: [...(baseProj.media ?? []), clip] }
     queueLog('info', `Imported media: ${clip.name}`)
     // If we had to create a default project, also ensure scene is set in store
@@ -145,7 +149,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   addTrack: () => set((s) => {
     const tl = s.project?.timeline
     if (!tl) return {}
-    const tracks = [...(tl.tracks || []), { media: [] }]
+    const tracks = [...getTimelineTracks(tl), { media: [] }]
     return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Add Track' }
   }),
   // Insert an existing clip onto the timeline
@@ -153,27 +157,18 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     if (!s.project) return {}
     const clip = (s.project.media || []).find((m) => m.id === clipId)
     if (!clip) return {}
-    const dur = duration ?? clip.duration_seconds ?? 10
-    // No per-screen association; leave target empty
-    const target = ''
-    const tm = {
+    const dur = duration ?? getMediaDurationSeconds(clip) ?? 10
+    const tm = createTimelineItemRecord({
       id: `tl-${Math.random().toString(36).slice(2, 9)}`,
-      target_node_id: target,
-      clip_id: clipId,
-      in_seconds: 0,
-      out_seconds: dur,
-      start_at_seconds: startAt ?? (s.time || 0),
-      // new fields
-      start: startAt ?? (s.time || 0),
+      assetId: clipId,
+      targetNodeId: '',
+      startAt: startAt ?? (s.time || 0),
       duration: dur,
       position: position ? { x: toInt(position.x, 0), y: toInt(position.y, 0) } : { x: 0, y: 0 },
-      // 0 means use natural dimensions; renderer falls back to image width/height
       scale: scale ? { x: toInt(scale.x, 0), y: toInt(scale.y, 0) } : { x: 0, y: 0 },
-      fade_in: 0,
-      fade_out: 0,
-    }
-    const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + dur) }
-    let tracks = [...(nextTimeline.tracks ?? [])]
+    })
+    const nextTimeline = ensureTimelineRecord(s.project.timeline, (s.time || 0) + dur)
+    let tracks = [...getTimelineTracks(nextTimeline)]
 
     let finalTrackIndex = -1
 
@@ -185,16 +180,15 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       finalTrackIndex = s.selectedTrackIndex
     } else {
       // Find first available track with space
-      const start = tm.start
-      const end = start + tm.duration
+      const start = getTimelineItemStart(tm)
+      const end = getTimelineItemEnd(tm)
       for (let i = 0; i < tracks.length; i++) {
         const t = tracks[i]
-        const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+        const mediaList = getTrackItems(t)
         let hasOverlap = false
         for (const m of mediaList) {
-          const s2 = m.start ?? m.start_at_seconds ?? 0
-          const d2 = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-          const e2 = s2 + d2
+          const s2 = getTimelineItemStart(m)
+          const e2 = getTimelineItemEnd(m)
           if (start < e2 && s2 < end) {
             hasOverlap = true
             break
@@ -209,8 +203,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
 
     if (finalTrackIndex >= 0 && finalTrackIndex < tracks.length) {
       // Add to existing track
-      const existing = tracks[finalTrackIndex].media || []
-      const mediaList = Array.isArray(existing) ? existing : (existing ? [existing] : [])
+      const mediaList = getTrackItems(tracks[finalTrackIndex])
       tracks[finalTrackIndex] = { ...tracks[finalTrackIndex], media: [...mediaList, tm] }
     } else {
       // Append new track (or insert at specific index if provided but out of bounds)
@@ -221,39 +214,30 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       }
     }
 
-    const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? dur))
-    queueLog('info', `Inserted clip '${clip.name}' at ${tm.start_at_seconds.toFixed(2)}s`)
+    const duration_seconds = Math.max(getTimelineDurationSeconds(nextTimeline), getTimelineItemEnd(tm))
+    queueLog('info', `Inserted clip '${clip.name}' at ${getTimelineItemStart(tm).toFixed(2)}s`)
     return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } }, _undoLabel: `Add ${clip.name} to Timeline` }
   }),
   // Add an image media clip and a timeline track targeting a screen
   // Accepts either a raw filePath (OS path) or a fully-resolved file URI.
   addImageToShow: ({ filePath, uri, name, duration = 10 }) => set((s) => {
-    const baseProj = s.project ?? defaultProject(s.scene)
+    const baseProj = s.project ?? createDefaultProject(s.scene)
     const id = `img-${Math.random().toString(36).slice(2, 8)}`
     const clipUri = uri ? String(uri) : toFileUri(String(filePath))
-    const clip = { id, name: name || id, uri: clipUri, duration_seconds: duration }
-    // pick target screen: selected if it's a screen, otherwise first screen in scene
-    // No per-screen association; leave target empty
-    const target = ''
-    const tm = {
+    const clip = createImportedMediaAsset({ id, name: name || id, uri: clipUri, durationSeconds: duration })
+    const tm = createTimelineItemRecord({
       id: `tl-${Math.random().toString(36).slice(2, 9)}`,
-      target_node_id: target ?? '',
-      clip_id: id,
-      in_seconds: 0,
-      out_seconds: duration,
-      start_at_seconds: s.time || 0,
-      start: s.time || 0,
+      assetId: id,
+      targetNodeId: '',
+      startAt: s.time || 0,
       duration,
       position: { x: 0, y: 0 },
-      // 0 means use natural dimensions; renderer falls back to image width/height
       scale: { x: 0, y: 0 },
-      fade_in: 0,
-      fade_out: 0,
-    }
-    const nextTimeline = baseProj.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + duration) }
-    const tracks = [...(nextTimeline.tracks ?? []), { media: [tm] }]
-    const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? duration))
-    queueLog('info', `Added image '${clip.name}' targeting ${tm.target_node_id || 'scene'} at ${tm.start_at_seconds.toFixed(2)}s`)
+    })
+    const nextTimeline = ensureTimelineRecord(baseProj.timeline, (s.time || 0) + duration)
+    const tracks = [...getTimelineTracks(nextTimeline), { media: [tm] }]
+    const duration_seconds = Math.max(getTimelineDurationSeconds(nextTimeline), getTimelineItemEnd(tm))
+    queueLog('info', `Added image '${clip.name}' targeting ${tm.target_node_id || 'scene'} at ${getTimelineItemStart(tm).toFixed(2)}s`)
     const nextProj = {
       ...baseProj,
       media: [...(baseProj.media ?? []), clip],
@@ -266,106 +250,89 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   // Update a timeline clip's 2D transform parameters
   updateClipTransform: ({ clipId, timelineId, position, scale, opacity, blur, fade_in, fade_out }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
-    const tracks = (s.project.timeline.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-        if (!m || !match) return m
-        const nextPos = position
-          ? { x: toInt(position.x, m.position?.x ?? 0), y: toInt(position.y, m.position?.y ?? 0) }
-          : (m.position ? { x: toInt(m.position.x, 0), y: toInt(m.position.y, 0) } : { x: 0, y: 0 })
-        const nextScale = scale
-          ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
-          : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
-        const nextOpacity = (opacity !== undefined)
-          ? Math.max(0, Math.min(1, parseFloat(opacity)))
-          : (m.opacity ?? 1)
-        const nextBlur = (blur !== undefined)
-          ? Math.max(0, parseFloat(blur))
-          : (m.blur ?? 0)
-        const nextFadeIn = (fade_in !== undefined)
-          ? Math.max(0, parseFloat(fade_in))
-          : (m.fade_in ?? 0)
-        const nextFadeOut = (fade_out !== undefined)
-          ? Math.max(0, parseFloat(fade_out))
-          : (m.fade_out ?? 0)
-        return { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur, fade_in: nextFadeIn, fade_out: nextFadeOut }
-      })
-      return { ...t, media: nextMediaList }
+    const timeline = updateTimelineItems(s.project.timeline, (m) => {
+      const match = timelineId ? (m?.id === timelineId) : (clipId ? (getTimelineItemAssetId(m) === clipId) : false)
+      if (!m || !match) return null
+      const nextPos = position
+        ? { x: toInt(position.x, m.position?.x ?? 0), y: toInt(position.y, m.position?.y ?? 0) }
+        : (m.position ? { x: toInt(m.position.x, 0), y: toInt(m.position.y, 0) } : { x: 0, y: 0 })
+      const nextScale = scale
+        ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
+        : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
+      const nextOpacity = (opacity !== undefined)
+        ? Math.max(0, Math.min(1, parseFloat(opacity)))
+        : (m.opacity ?? 1)
+      const nextBlur = (blur !== undefined)
+        ? Math.max(0, parseFloat(blur))
+        : (m.blur ?? 0)
+      const nextFadeIn = (fade_in !== undefined)
+        ? Math.max(0, parseFloat(fade_in))
+        : (m.fade_in ?? 0)
+      const nextFadeOut = (fade_out !== undefined)
+        ? Math.max(0, parseFloat(fade_out))
+        : (m.fade_out ?? 0)
+      return { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur, fade_in: nextFadeIn, fade_out: nextFadeOut }
     })
-    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } }, _undoLabel: position ? 'Move Clip' : scale ? 'Resize Clip' : opacity !== undefined ? 'Change Opacity' : 'Edit Clip' }
+    return { project: { ...s.project, timeline }, _undoLabel: position ? 'Move Clip' : scale ? 'Resize Clip' : opacity !== undefined ? 'Change Opacity' : 'Edit Clip' }
   }),
   // Update a specific effect for a clip
   updateClipEffect: ({ timelineId, effect, value, enabled }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
-    const tracks = (s.project.timeline.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        if (!m || m.id !== timelineId) return m
-        const prevEffects = m.effects || {}
-        const prevEffect = prevEffects[effect] || {}
-        const nextEffect = {
-          value: value !== undefined ? value : (prevEffect.value ?? 0),
-          enabled: enabled !== undefined ? enabled : (prevEffect.enabled ?? false)
-        }
-        return { ...m, effects: { ...prevEffects, [effect]: nextEffect } }
-      })
-      return { ...t, media: nextMediaList }
+    const timeline = updateTimelineItems(s.project.timeline, (m) => {
+      if (!m || m.id !== timelineId) return null
+      const prevEffects = m.effects || {}
+      const prevEffect = prevEffects[effect] || {}
+      const nextEffect = {
+        value: value !== undefined ? value : (prevEffect.value ?? 0),
+        enabled: enabled !== undefined ? enabled : (prevEffect.enabled ?? false)
+      }
+      return { ...m, effects: { ...prevEffects, [effect]: nextEffect } }
     })
-    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } }, _undoLabel: `Change ${effect}` }
+    return { project: { ...s.project, timeline }, _undoLabel: `Change ${effect}` }
   }),
   // Update timing for a clip (e.g., when dragging on timeline)
   updateClipStart: ({ clipId, timelineId, startAt }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tl = s.project.timeline
-    const duration = Math.max(0, tl.duration_seconds ?? 0)
-    const tracks = (tl.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-        if (!m || !match) return m
-        const nextStart = Math.max(0, Math.min(duration, startAt ?? m.start ?? m.start_at_seconds ?? 0))
-        return { ...m, start_at_seconds: nextStart, start: nextStart }
-      })
-      return { ...t, media: nextMediaList }
+    const duration = getTimelineDurationSeconds(tl)
+    const timeline = updateTimelineItems(tl, (m) => {
+      const match = timelineId ? (m?.id === timelineId) : (clipId ? (getTimelineItemAssetId(m) === clipId) : false)
+      if (!m || !match) return null
+      const nextStart = Math.max(0, Math.min(duration, startAt ?? getTimelineItemStart(m)))
+      return { ...m, start_at_seconds: nextStart, start: nextStart }
     })
-    return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Move Clip on Timeline' }
+    return { project: { ...s.project, timeline }, _undoLabel: 'Move Clip on Timeline' }
   }),
   // Update explicit duration for a clip (and legacy out_seconds)
   updateClipDuration: ({ clipId, timelineId, duration }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tl = s.project.timeline
     const nextDur = Math.max(0, duration ?? 0)
-    const tracks = (tl.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-        if (!m || !match) return m
-        return { ...m, duration: nextDur, out_seconds: (m.in_seconds || 0) + nextDur }
-      })
-      return { ...t, media: nextMediaList }
+    const timeline = updateTimelineItems(tl, (m) => {
+      const match = timelineId ? (m?.id === timelineId) : (clipId ? (getTimelineItemAssetId(m) === clipId) : false)
+      if (!m || !match) return null
+      return { ...m, duration: nextDur, out_seconds: (m.in_seconds || 0) + nextDur }
     })
-    // Recompute timeline duration_seconds as max end
-    const duration_seconds = tracks.reduce((acc, t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      return mediaList.reduce((acc2, m) => {
-        if (!m) return acc2
-        const st = m.start ?? m.start_at_seconds ?? 0
-        const dur = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-        return Math.max(acc2, st + dur)
-      }, acc)
-    }, tl.duration_seconds || 0)
-    return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds } }, _undoLabel: 'Resize Clip Duration' }
+    return {
+      project: {
+        ...s.project,
+        timeline: {
+          ...timeline,
+          duration_seconds: Math.max(getTimelineDurationSeconds(timeline), computeTimelineDurationFromItems(timeline)),
+        },
+      },
+      _undoLabel: 'Resize Clip Duration',
+    }
   }),
   reorderClip: (clipId, newIndex) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tl = s.project.timeline
-    const tracks = [...tl.tracks]
+    const tracks = [...getTimelineTracks(tl)]
 
     // Find and remove the clip from its current track
     let movedClip = null
     const nextTracks = tracks.map(t => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      const mediaList = getTrackItems(t)
       const idx = mediaList.findIndex(m => m.id === clipId)
       if (idx !== -1) {
         movedClip = mediaList[idx]
@@ -383,7 +350,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
 
     // Add to target track
     const targetTrack = nextTracks[targetIndex]
-    const targetMedia = Array.isArray(targetTrack.media) ? targetTrack.media : (targetTrack.media ? [targetTrack.media] : [])
+    const targetMedia = getTrackItems(targetTrack)
     nextTracks[targetIndex] = { ...targetTrack, media: [...targetMedia, movedClip] }
 
     return { project: { ...s.project, timeline: { ...tl, tracks: nextTracks } }, _undoLabel: 'Reorder Clip' }
@@ -434,11 +401,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   // Remove a clip instance from the timeline by timeline item id
   removeClip: (clipId) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
-    const tracks = (s.project.timeline.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      return { ...t, media: mediaList.filter((m) => m.id !== clipId) }
-    })
-    const nextTl = { ...(s.project.timeline || {}), tracks }
+    const nextTl = removeTimelineItemById(s.project.timeline, clipId)
     return { project: { ...s.project, timeline: nextTl }, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId, _undoLabel: 'Remove Clip from Timeline' }
   }),
   // Remove a media clip from the bin and any timeline references
@@ -446,15 +409,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     if (!s.project) return {}
     const nextMedia = (s.project.media || []).filter((m) => m.id !== clipId)
     let nextTl = s.project.timeline || null
-    if (nextTl?.tracks?.length) {
-      if (nextTl?.tracks?.length) {
-        const tracks = nextTl.tracks.map((t) => {
-          const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-          return { ...t, media: mediaList.filter((m) => m.clip_id !== clipId) }
-        })
-        nextTl = { ...nextTl, tracks }
-      }
-    }
+    if (nextTl?.tracks?.length) nextTl = removeTimelineItemsByAssetId(nextTl, clipId)
     const nextProject = { ...s.project, media: nextMedia, ...(nextTl ? { timeline: nextTl } : {}) }
     const selectedClipId = s.selectedClipId === clipId ? null : s.selectedClipId
     return { project: nextProject, selectedClipId, _undoLabel: 'Remove Media' }
@@ -510,7 +465,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       kind: { type: 'model', uri },
     }
     const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
-    const proj = s.project || defaultProject(nextScene)
+    const proj = s.project || createDefaultProject(nextScene)
     queueLog('info', `Added 3D model '${node.name}' to scene`)
     return { scene: nextScene, project: proj, selectedId: id, _undoLabel: `Add Model ${name || 'Model'}` }
   }),
@@ -544,17 +499,6 @@ function toInt(val, fallback = 0) {
   const n = Number(val)
   if (!Number.isFinite(n)) return Number.isFinite(fallback) ? Math.round(Number(fallback)) : 0
   return Math.round(n)
-}
-
-function defaultProject(scene) {
-  const baseScene = scene ?? { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
-  return {
-    id: 'untitled',
-    name: 'Untitled',
-    scene: baseScene,
-    media: [],
-    timeline: { id: 'tl', name: 'Timeline', tracks: [{ media: [] }], events: [], duration_seconds: 60 },
-  }
 }
 
 function updateNode(node, id, fn) {

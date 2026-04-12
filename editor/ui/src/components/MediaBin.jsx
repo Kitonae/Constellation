@@ -5,6 +5,7 @@ import { getVideoMetadata } from '../utils/videoUtils.js'
 import { toFileUri, fileToDataUrl } from '../utils/mediaUtils.js'
 import MediaThumb from './MediaThumb.jsx'
 import { isMediaFile } from '../media/index.js'
+import { getMediaDurationSeconds } from '../project/projectCodec.js'
 
 function AddClipButton({ clipId }) {
   const time = useEditorStore((s) => s.time)
@@ -80,7 +81,7 @@ export default React.memo(function MediaBin() {
           }
         }
 
-        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
+        addMediaClip({ id, name, uri: initialUri, durationSeconds: duration })
         i++
       }
     } catch (e) {
@@ -149,7 +150,7 @@ export default React.memo(function MediaBin() {
             <MediaThumb uri={m.uri} alt={m.name || m.id} size={48} />
             <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }} title={m.uri}>
               <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name || m.id}</div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>{getMediaDurationSeconds(m).toFixed(2)}s</div>
             </div>
             <AddClipButton clipId={m.id} />
           </div>

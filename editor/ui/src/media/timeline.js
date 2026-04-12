@@ -374,7 +374,7 @@ export function migrateTimeline(legacyTimeline) {
 
 /**
  * Convert a new-model TimelineClip back to legacy format for backward compatibility
- * during the transition period. Used by buildProjectWrapper in App.jsx.
+ * during the transition period. Used by the project codec export layer.
  *
  * @param {TimelineClip} clip
  * @returns {object} Legacy timeline item

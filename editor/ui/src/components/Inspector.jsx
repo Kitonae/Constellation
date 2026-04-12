@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useEditorStore } from '../store.js'
 import { resolveImageSrc } from './MediaThumb.jsx'
+import {
+  findMediaAssetByTimelineItem,
+  findTimelineItemById,
+  getTimelineItemDuration,
+  getTimelineItemStart,
+} from '../project/projectCodec.js'
 
 function NumberInput({ value, onChange, step = 0.1, style }) {
   return (
@@ -109,18 +115,12 @@ export default function Inspector() {
 
   // Find selected clip media entry
   const selectedMedia = useMemo(() => {
-    if (!selectedClipId || !project?.timeline?.tracks) return null
-    for (const t of project.timeline.tracks) {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const found = mediaList.find(m => m.id === selectedClipId)
-      if (found) return found
-    }
-    return null
+    return findTimelineItemById(project?.timeline, selectedClipId)
   }, [project, selectedClipId])
 
   const selectedClip = useMemo(() => {
     if (!selectedMedia) return null
-    return (project?.media || []).find((m) => m.id === selectedMedia.clip_id) || null
+    return findMediaAssetByTimelineItem(project, selectedMedia.id)
   }, [project, selectedMedia])
 
   useEffect(() => {
@@ -300,8 +300,8 @@ export default function Inspector() {
 
           <Category title="Timing">
             <PropertyRow label="Start / Duration (s)">
-              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
-              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
+              <NumberInput step={0.01} value={getTimelineItemStart(selectedMedia)} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
+              <NumberInput step={0.01} value={getTimelineItemDuration(selectedMedia)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
             </PropertyRow>
             <PropertyRow label="Fade In / Out (s)">
               <NumberInput step={0.1} value={selectedMedia.fade_in ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_in: v })} />
