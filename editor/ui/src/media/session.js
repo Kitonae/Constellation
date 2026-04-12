@@ -11,6 +11,7 @@
 // App.jsx effects, and Timeline.jsx seek handlers.
 
 import { createPresentationClock } from './clock.js'
+import { createSinkClockAdapter } from './sink.js'
 
 /**
  * Transport states — analogous to MF's session states:
@@ -53,9 +54,15 @@ const VALID_TRANSITIONS = {
 export function createMediaSession(opts = {}) {
   const clock = createPresentationClock()
   let _state = 'idle'
+  let _topology = null  // current topology (set via setTopology)
   let _lastUiUpdate = 0
   const _subscribers = new Set()
+  const _sinks = new Map()  // sinkId → MediaSink
   const _uiInterval = opts.uiUpdateInterval ?? 100
+
+  // Wire sinks to clock events
+  const _sinkAdapter = createSinkClockAdapter(_sinks)
+  clock.subscribe(_sinkAdapter)
 
   // Subscribe to clock ticks for broadcasting and UI updates
   clock.subscribe({
@@ -161,12 +168,70 @@ export function createMediaSession(opts = {}) {
     clock.setRate(rate)
   }
 
+  // --- Topology management (analogous to MF's SetTopology) ---
+
+  /**
+   * Set the active topology. Fires onTopologySet to subscribers.
+   * The topology describes the current media pipeline (source → transform → output).
+   *
+   * @param {Topology|null} topology
+   */
+  function setTopology(topology) {
+    _topology = topology
+    _notifyTopologySet(topology)
+  }
+
+  /**
+   * Get the current topology.
+   * @returns {Topology|null}
+   */
+  function getTopology() {
+    return _topology
+  }
+
+  // --- Sink management (analogous to MF's AddClockStateSink) ---
+
+  /**
+   * Add a media sink. The sink will receive clock state notifications.
+   * @param {MediaSink} sink
+   */
+  function addSink(sink) {
+    if (!sink?.id) return
+    _sinks.set(sink.id, sink)
+  }
+
+  /**
+   * Remove a media sink by ID. Calls dispose() on the sink.
+   * @param {string} sinkId
+   */
+  function removeSink(sinkId) {
+    const sink = _sinks.get(sinkId)
+    if (sink) {
+      try { sink.dispose?.() } catch {}
+      _sinks.delete(sinkId)
+    }
+  }
+
+  /**
+   * Get all registered sinks.
+   * @returns {MediaSink[]}
+   */
+  function getSinks() {
+    return [..._sinks.values()]
+  }
+
   /**
    * Dispose of the session and all resources.
    */
   function dispose() {
+    // Dispose all sinks
+    for (const [, sink] of _sinks) {
+      try { sink.dispose?.() } catch {}
+    }
+    _sinks.clear()
     clock.dispose()
     _subscribers.clear()
+    _topology = null
     _state = 'idle'
   }
 
@@ -215,6 +280,14 @@ export function createMediaSession(opts = {}) {
     }
   }
 
+  function _notifyTopologySet(topology) {
+    for (const sub of _subscribers) {
+      try { sub.onTopologySet?.(topology) } catch (e) {
+        console.error('[MediaSession] topology set handler error:', e)
+      }
+    }
+  }
+
   return {
     // State
     getState,
@@ -228,6 +301,15 @@ export function createMediaSession(opts = {}) {
     stop,
     seek,
     setRate,
+
+    // Topology
+    setTopology,
+    getTopology,
+
+    // Sinks
+    addSink,
+    removeSink,
+    getSinks,
 
     // Subscription
     subscribe,

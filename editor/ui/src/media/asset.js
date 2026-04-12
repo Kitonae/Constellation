@@ -8,7 +8,7 @@ import { resolveUri } from './uri.js'
 // --- Constants ---
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'])
-const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'])
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg', 'hevc', 'h265', '265', 'ts', 'mts'])
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'])
 
 const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS])
@@ -314,4 +314,138 @@ export function getAssetDuration(asset) {
   if (typeof asset.duration_seconds === 'number' && asset.duration_seconds > 0) return asset.duration_seconds
   // Images/colors have no intrinsic duration
   return 0
+}
+
+// --- Presentation Descriptors ---
+// Analogous to MF's IMFPresentationDescriptor + IMFStreamDescriptor.
+//
+// Separates "what streams a source has" from the asset identity.
+// Enables multi-stream assets (video+audio) and stream selection.
+
+/**
+ * @typedef {object} StreamDescriptor
+ * @property {string} id         - stream identifier
+ * @property {'video'|'audio'|'image'} streamType - stream type
+ * @property {object} mediaType  - format-specific attributes
+ * @property {boolean} selected  - whether this stream is active
+ */
+
+/**
+ * @typedef {object} PresentationDescriptor
+ * @property {string} assetId     - source asset ID
+ * @property {StreamDescriptor[]} streams - available streams
+ * @property {number} duration    - presentation duration in seconds
+ */
+
+let _streamIdCounter = 0
+
+/**
+ * Create a presentation descriptor for a media asset.
+ *
+ * Inspects the asset type and creates appropriate stream descriptors.
+ * Video assets get both a video and an audio stream (if hasAudio is true).
+ * Image assets get a single video (still frame) stream.
+ * Audio assets get a single audio stream.
+ *
+ * @param {object} asset - MediaAsset
+ * @returns {PresentationDescriptor}
+ */
+export function createPresentationDescriptor(asset) {
+  if (!asset) return { assetId: '', streams: [], duration: 0 }
+
+  const streams = []
+  const duration = getAssetDuration(asset)
+
+  switch (asset.type) {
+    case 'video':
+      streams.push({
+        id: `stream-${(++_streamIdCounter).toString(36)}`,
+        streamType: 'video',
+        mediaType: {
+          width: asset.width || 0,
+          height: asset.height || 0,
+          frameRate: asset.frameRate || 0,
+          format: asset.format || '',
+        },
+        selected: true,
+      })
+      if (asset.hasAudio) {
+        streams.push({
+          id: `stream-${(++_streamIdCounter).toString(36)}`,
+          streamType: 'audio',
+          mediaType: {
+            sampleRate: 0,  // not probed yet
+            channels: 0,
+          },
+          selected: true,
+        })
+      }
+      break
+
+    case 'audio':
+      streams.push({
+        id: `stream-${(++_streamIdCounter).toString(36)}`,
+        streamType: 'audio',
+        mediaType: {
+          sampleRate: asset.sampleRate || 0,
+          channels: asset.channels || 0,
+        },
+        selected: true,
+      })
+      break
+
+    case 'image':
+    case 'color':
+    case 'text':
+    default:
+      streams.push({
+        id: `stream-${(++_streamIdCounter).toString(36)}`,
+        streamType: 'video',
+        mediaType: {
+          width: asset.width || 0,
+          height: asset.height || 0,
+          frameRate: 0,
+          format: asset.format || '',
+        },
+        selected: true,
+      })
+      break
+  }
+
+  return {
+    assetId: asset.id,
+    streams,
+    duration,
+  }
+}
+
+/**
+ * Select or deselect a stream in a presentation descriptor.
+ *
+ * @param {PresentationDescriptor} pd
+ * @param {string} streamId
+ * @param {boolean} selected
+ * @returns {PresentationDescriptor} new descriptor with updated selection
+ */
+export function selectStream(pd, streamId, selected) {
+  return {
+    ...pd,
+    streams: pd.streams.map(s =>
+      s.id === streamId ? { ...s, selected } : s
+    ),
+  }
+}
+
+/**
+ * Get selected streams of a given type from a presentation descriptor.
+ *
+ * @param {PresentationDescriptor} pd
+ * @param {'video'|'audio'} [streamType] - filter by type (omit for all selected)
+ * @returns {StreamDescriptor[]}
+ */
+export function getSelectedStreams(pd, streamType) {
+  if (!pd?.streams) return []
+  return pd.streams.filter(s =>
+    s.selected && (!streamType || s.streamType === streamType)
+  )
 }

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(hpp|cpp\\)$\")",
+      "Bash(taskkill //F //IM constellation-renderer.exe)",
+      "Bash(cmake --build /c/src/Constellation/editor/renderer/build --config Release)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(npx --yes vite build)",
+      "Bash(go build:*)",
+      "Bash(npx vite:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useEditorStore } from './store.js'
+import { toFileUri, fileToDataUrl } from './utils/mediaUtils.js'
 import Viewport3D from './components/Viewport.jsx'
 import DisplaysPanel from './components/DisplaysPanel.jsx'
 import Viewport2D from './components/Viewport2D.jsx'
@@ -13,14 +14,14 @@ import MenuBar from './components/MenuBar.jsx'
 import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
-import { toFileUri, setFileServerBase, isMediaFile } from './media/index.js'
+import { setFileServerBase, isMediaFile } from './media/index.js'
 
 export default function App() {
   const fileRef = useRef(null)
   const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode, showOutputOverlay, toggleOutputOverlay, addScreenNode, newProject, addMediaClip } = useEditorStore()
   const [fileName, setFileName] = useState('')
-  const [addr, setAddr] = useState('http://127.0.0.1:50051')
   const [status, setStatus] = useState('')
   // Resizable left pane (Media Bin)
   const [mediaWidth, setMediaWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
@@ -56,33 +57,23 @@ export default function App() {
       for (const file of files) {
         const name = file.name
         // Filter for media types
-        if (!isMediaFile(name)) continue
+        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) continue
 
         const id = `clip-${Math.random().toString(36).slice(2, 8)}`
         let initialUri = null
-        
+
         // Check for path property (Electron/WebView2)
         const path = file.path
         const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path))
 
         if (isAbsolute) {
             initialUri = toFileUri(path)
-        } else {
-             // Fallback for web: use data URL for images, object URL for videos
-             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
-             if (isVideo) {
-                 initialUri = URL.createObjectURL(file)
-             } else {
-                 try {
-                    initialUri = await fileToDataUrl(file)
-                 } catch (err) {
-                    console.warn('data URL conversion failed', err)
-                    initialUri = URL.createObjectURL(file)
-                 }
-             }
+        } else if (file) {
+             // Fallback for web: use object URL (lightweight reference, not a full copy)
+             initialUri = URL.createObjectURL(file)
         }
         
-        let duration = 10
+        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
         if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
           try {
             const meta = await getVideoMetadata(file || initialUri)
@@ -111,6 +102,7 @@ export default function App() {
         if (port > 0) {
           console.log('Using sidecar file server at port', port)
           setFileServerBaseUrl(`http://localhost:${port}`)
+          useEditorStore.setState({ _fileServerPort: port })
           setFileServerBase(`http://localhost:${port}`)
           useEditorStore.getState().addLog({ level: 'info', message: `Video sidecar active on port ${port}` })
         }
@@ -125,6 +117,15 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e) => {
+      // Undo/Redo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        useEditorStore.getState().undo()
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        useEditorStore.getState().redo()
+      }
       // Toggle console on backquote/tilde key
       if (e.code === 'Backquote') {
         const t = e.target
@@ -153,22 +154,50 @@ export default function App() {
   }, [toggleConsole])
 
   // Open/close display windows based on enabled screens
+  const prevScreensRef = useRef(new Map()) // id → { screenType }
   useEffect(() => {
     const roots = scene?.roots || []
+    const currentScreens = new Map()
+
     for (const n of roots) {
       if (n.kind?.type === 'screen') {
         const enabled = (n.kind?.enabled ?? true)
+        const screenType = n.kind?.screenType || 'web'
         const px = n.kind?.pixels?.[0] || 0
         const py = n.kind?.pixels?.[1] || 0
+        currentScreens.set(n.id, { screenType })
         if (enabled && px > 0 && py > 0) {
-          openDisplayWindow(n.id, px, py)
+          if (screenType === 'web') {
+            openDisplayWindow(n.id, px, py)
+          } else if (screenType === 'renderer') {
+            window.go?.main?.App?.OpenRendererScreen(n.id, px, py)
+              ?.catch(e => { console.error('Failed to open renderer screen:', e); addLog({ level: 'error', message: `Renderer launch failed: ${e}` }) })
+          }
         } else {
-          closeDisplayWindow(n.id)
+          if (screenType === 'web') {
+            closeDisplayWindow(n.id)
+          } else if (screenType === 'renderer') {
+            window.go?.main?.App?.CloseRendererScreen(n.id)?.catch(e => console.warn('CloseRendererScreen:', e))
+          }
         }
       }
     }
+
+    // Close screens that were removed from the scene
+    for (const [id, prev] of prevScreensRef.current) {
+      if (!currentScreens.has(id)) {
+        if (prev.screenType === 'web') {
+          closeDisplayWindow(id)
+        } else if (prev.screenType === 'renderer') {
+          window.go?.main?.App?.CloseRendererScreen(id)?.catch(e => console.warn('CloseRendererScreen:', e))
+        }
+      }
+    }
+    prevScreensRef.current = currentScreens
     // Emit a snapshot once on scene change to update paused display windows
     try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
+    // Update Go-side cached snapshot so newly connecting renderers get current state
+    try { if (project) window.go?.main?.App?.PushSnapshot(JSON.stringify(buildProjectWrapper(project, scene))) } catch { }
   }, [scene])
 
   // Emit snapshot once when project changes
@@ -183,6 +212,13 @@ export default function App() {
       }
       prevMediaRef.current = project?.media
       broadcastToDisplays('display:snapshot', { project: projToSend, scene, time })
+    } catch { }
+    // Push full snapshot to native renderers via Go SSE
+    try {
+      if (project) {
+        const wrapper = buildProjectWrapper(project, scene)
+        window.go?.main?.App?.PushSnapshot(JSON.stringify(wrapper))
+      }
     } catch { }
   }, [project])
 
@@ -205,52 +241,23 @@ export default function App() {
     <div className="layout">
       <header>
         <MenuBar
-          onNewShow={() => {
-            if (confirm('Create new show? Unsaved changes will be lost.')) {
-              newProject()
-            }
-          }}
+          onNewShow={() => { if (confirm('Create new show? Unsaved changes will be lost.')) newProject() }}
           onOpenProject={() => fileRef.current?.click()}
           onSaveShow={() => setShowSaveDialog(true)}
-          onPackageShow={() => alert('Package Show not implemented')}
-          onQuit={() => {
-            if (confirm('Quit?')) {
-              window.close()
-            }
-          }}
-          viewMode={viewMode}
-          setViewMode={setViewMode}
-          gizmoMode={gizmoMode}
-          setGizmoMode={setGizmoMode}
-          onDeselect={() => setSelected(null)}
-          addr={addr}
-          setAddr={setAddr}
-          showOutputOverlay={showOutputOverlay}
-          toggleOutputOverlay={toggleOutputOverlay}
-          onApply={async () => {
-            try {
-              const { applyProject: wApply, wailsAvailable } = await import('./utils/wailsApi.js')
-              const wrapper = buildProjectWrapper(project, scene)
-              const message = await wApply(addr, JSON.stringify(wrapper))
-              setStatus('Applied: ' + message)
-              addLog({ level: 'info', message: `Applied project to ${addr}: ${message}` })
-            } catch (e) {
-              setStatus('Apply failed: ' + e)
-              addLog({ level: 'error', message: `Apply failed: ${e}` })
-            }
-          }}
-          onRemotePlay={async () => { try { const { play } = await import('./utils/wailsApi.js'); const msg = await play(addr); setStatus('Play: ' + msg) } catch (e) { setStatus('Play failed: ' + e) } }}
-          onRemotePause={async () => { try { const { pause } = await import('./utils/wailsApi.js'); const msg = await pause(addr); setStatus('Pause: ' + msg) } catch (e) { setStatus('Pause failed: ' + e) } }}
-          onRemoteStop={async () => { try { const { stop } = await import('./utils/wailsApi.js'); const msg = await stop(addr); setStatus('Stop: ' + msg) } catch (e) { setStatus('Stop failed: ' + e) } }}
           onReopenDisplays={async () => {
             const roots = scene?.roots || []
             for (const n of roots) {
               if (n.kind?.type === 'screen') {
                 const enabled = (n.kind?.enabled ?? true)
+                const screenType = n.kind?.screenType || 'web'
                 const px = n.kind?.pixels?.[0] || 0
                 const py = n.kind?.pixels?.[1] || 0
                 if (enabled && px > 0 && py > 0) {
-                  try { await openDisplayWindow(n.id, px, py) } catch { }
+                  if (screenType === 'web') {
+                    try { await openDisplayWindow(n.id, px, py) } catch { }
+                  } else if (screenType === 'renderer') {
+                    try { await window.go?.main?.App?.OpenRendererScreen(n.id, px, py) } catch (e) { console.error('Reopen renderer failed:', e) }
+                  }
                 }
               }
             }
@@ -284,7 +291,7 @@ export default function App() {
             title="Drag to resize media bin"
           />
         </div>
-        <div className="panel" style={{ flex: 1, minWidth: 0 }}>{viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)}</div>
+        <div className="panel" style={{ flex: 1, minWidth: 0 }}><ErrorBoundary>{viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)}</ErrorBoundary></div>
         <div
           ref={rightPaneRef}
           className="panel"
@@ -311,7 +318,7 @@ export default function App() {
             title="Drag to resize inspector"
           />
           <div style={{ flex: '1 1 auto', minHeight: 100, overflow: 'auto' }}>
-            <Inspector />
+            <ErrorBoundary><Inspector /></ErrorBoundary>
           </div>
         </div>
       </main>
@@ -332,7 +339,7 @@ export default function App() {
           title="Drag to resize timeline"
         />
         <div style={{ position: 'absolute', inset: '6px 0 0 0', overflow: 'hidden' }}>
-          <Timeline />
+          <ErrorBoundary><Timeline /></ErrorBoundary>
         </div>
       </footer>
       <TopConsoleDrawer />
@@ -393,15 +400,3 @@ async function onAddImage() {
   return
 }
 
-// toFileUri is now imported from media/index.js
-
-async function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    try {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = (e) => reject(e)
-      reader.readAsDataURL(file)
-    } catch (e) { reject(e) }
-  })
-}

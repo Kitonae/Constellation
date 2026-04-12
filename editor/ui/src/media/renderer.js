@@ -3,10 +3,13 @@
 // Pure function that takes timeline state + assets + time and produces a list
 // of RenderItems ready for DOM rendering. Consumed by both Viewport2D and
 // DisplayWindow, eliminating the ~150 lines of duplicated render logic.
+//
+// Internally builds a topology (DAG of source → transform → output nodes)
+// and walks it to produce the render list. The topology abstraction enables
+// future extensibility (compositors, format converters, WebGL effects).
 
-import { getActiveClips, getClipSourceTime, getClipOpacity, getClipFilterString } from './timeline.js'
-import { isVideo as isVideoAsset, extFromUri, getAssetDuration } from './asset.js'
-import { resolveUriSync } from './uri.js'
+import { migrateTimeline } from './timeline.js'
+import { buildFromTimeline, walkTopology } from './topology.js'
 
 /**
  * @typedef {object} RenderItem
@@ -27,8 +30,6 @@ import { resolveUriSync } from './uri.js'
  * @property {object} clip          - reference to the full TimelineClip object
  */
 
-const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'])
-
 /**
  * Compute the list of items to render at the given time.
  *
@@ -45,66 +46,16 @@ const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'm
 export function computeRenderList(timeline, assets, time, opts = {}) {
   if (!timeline || !assets) return []
 
-  const assetMap = new Map()
-  for (const a of assets) {
-    assetMap.set(a.id, a)
-  }
+  // Auto-migrate legacy format (tracks[].media[]) → new format (tracks[].clips[])
+  const migrated = migrateTimeline(timeline)
 
-  const activeClips = getActiveClips(timeline, time, {
+  // Build a topology from the timeline state, then walk it to produce RenderItems.
+  // This replaces the hardcoded source→render path with an extensible DAG.
+  const topo = buildFromTimeline(migrated, assets, time, {
     skipOverlaps: opts.skipOverlaps ?? true,
-    skipMuted: true,
   })
 
-  const items = []
-
-  for (const { clip, trackIndex } of activeClips) {
-    const asset = assetMap.get(clip.assetId)
-    if (!asset) continue
-
-    // Resolve URI to a playable URL (sync — for frame-by-frame rendering)
-    const uri = asset.uri || ''
-    const src = resolveUriSync(uri)
-
-    // Determine media type
-    const ext = extFromUri(uri) || extFromUri(asset.name || '')
-    const isVideo = VIDEO_EXTS.has(ext) || isVideoAsset(asset)
-    const mediaType = isVideo ? 'video' : (asset.type || 'image')
-
-    // Transform
-    const transform = clip.transform || {}
-    const x = transform.x ?? 0
-    const y = transform.y ?? 0
-    const width = transform.width ?? 0   // 0 = natural
-    const height = transform.height ?? 0 // 0 = natural
-    const rotation = transform.rotation ?? 0
-
-    // Appearance
-    const opacity = getClipOpacity(clip, time)
-    const filter = getClipFilterString(clip)
-
-    // Source time (for video seeking)
-    const sourceTime = isVideo ? getClipSourceTime(clip, time) : 0
-
-    items.push({
-      clipId: clip.id,
-      assetId: clip.assetId,
-      src,
-      mediaType,
-      x,
-      y,
-      width,
-      height,
-      rotation,
-      opacity,
-      filter,
-      sourceTime,
-      trackIndex,
-      asset,
-      clip,
-    })
-  }
-
-  return items
+  return walkTopology(topo)
 }
 
 /**

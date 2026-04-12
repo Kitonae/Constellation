@@ -2,8 +2,9 @@ import React from 'react'
 import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
 import { getVideoMetadata } from '../utils/videoUtils.js'
+import { toFileUri, fileToDataUrl } from '../utils/mediaUtils.js'
 import MediaThumb from './MediaThumb.jsx'
-import { toFileUri, isMediaFile } from '../media/index.js'
+import { isMediaFile } from '../media/index.js'
 
 function AddClipButton({ clipId }) {
   const time = useEditorStore((s) => s.time)
@@ -28,6 +29,7 @@ export default React.memo(function MediaBin() {
   const updateImportProgress = useEditorStore((s) => s.updateImportProgress)
   const finishImport = useEditorStore((s) => s.finishImport)
   const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
+  const addModelNode = useEditorStore((s) => s.addModelNode)
   const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
 
   const processEntries = async (entries) => {
@@ -45,7 +47,7 @@ export default React.memo(function MediaBin() {
         await new Promise(r => setTimeout(r, 0))
 
         // Filter out non-media files if folder import picked up junk
-        if (!isMediaFile(name)) {
+        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) {
           i++
           continue
         }
@@ -60,25 +62,15 @@ export default React.memo(function MediaBin() {
         if (isAbsolute) {
             initialUri = toFileUri(path)
         } else if (file) {
-             // Fallback for web: use data URL for images, object URL for videos (not persistent)
-             const isVideo = /\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)
-             if (isVideo) {
-                 initialUri = URL.createObjectURL(file)
-             } else {
-                 try {
-                    initialUri = await fileToDataUrl(file)
-                 } catch (err) {
-                    console.warn('data URL conversion failed', err)
-                    initialUri = URL.createObjectURL(file)
-                 }
-             }
+             // Fallback for web: use object URL (lightweight reference, not a full copy)
+             initialUri = URL.createObjectURL(file)
         }
         
         if (!initialUri) {
           initialUri = toFileUri(String(path || file?.name || 'media'))
         }
 
-        let duration = 10
+        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
         if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
           try {
             const meta = await getVideoMetadata(file || initialUri)
@@ -167,6 +159,13 @@ export default React.memo(function MediaBin() {
         <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
           <MenuItem label="Add Files…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFiles() }} />
           <MenuItem label="Add Folder…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFolder() }} />
+          {menu.clipId && isModelClip(menu.clipId, media) && (
+            <MenuItem label="Add to Scene" onClick={() => {
+              const clip = media.find(m => m.id === menu.clipId)
+              if (clip) addModelNode({ name: clip.name, uri: clip.uri })
+              setMenu({ open: false, x: 0, y: 0, clipId: null })
+            }} />
+          )}
           {menu.clipId && <MenuItem label="Remove" onClick={() => { removeMediaClip(menu.clipId); setMenu({ open: false, x: 0, y: 0, clipId: null }) }} />}
         </div>
       )}
@@ -174,17 +173,12 @@ export default React.memo(function MediaBin() {
   )
 })
 
-// toFileUri is now imported from media/index.js
 
-async function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    try {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = (e) => reject(e)
-      reader.readAsDataURL(file)
-    } catch (e) { reject(e) }
-  })
+function isModelClip(clipId, media) {
+  const clip = media.find(m => m.id === clipId)
+  if (!clip) return false
+  const name = String(clip.name || clip.uri || '')
+  return /\.(gltf|glb|obj)$/i.test(name)
 }
 
 function MenuItem({ label, onClick }) {
