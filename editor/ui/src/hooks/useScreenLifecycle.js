@@ -46,6 +46,7 @@ export function useScreenLifecycle() {
       }
     }
     prevScreensRef.current = currentScreens
+    // Push snapshot once (SSE hub caches it for new renderer connections)
     try { getMediaSession().broadcastSnapshot() } catch { }
   }, [scene, addLog])
 }

@@ -394,7 +394,7 @@ function inferRuntimeDuration(source, migrated) {
   const intrinsicDuration = getAssetDuration(migrated)
   if (intrinsicDuration > 0) return intrinsicDuration
 
-  if (isModelAsset(source) || isModelAsset(migrated)) return 0
+  if (isModelAsset(source) || isModelAsset(migrated)) return 10
 
   if (migrated?.type === 'image' || migrated?.type === 'color' || migrated?.type === 'text') {
     return 10

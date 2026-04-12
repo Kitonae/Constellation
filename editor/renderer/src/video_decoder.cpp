@@ -1,4 +1,3 @@
-#define NOMINMAX
 #include "video_decoder.h"
 #include <mferror.h>
 #include <propvarutil.h>

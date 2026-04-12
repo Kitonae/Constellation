@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, Suspense } from 'react'
 import { useEditorStore } from '../../store.js'
-import { generateModelThumbnail } from '../../utils/modelThumbnail.js'
+import { ModelPreview } from './ModelPreview.jsx'
 
 export function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHeld, dragScreen, setDragScreen, dragScreenRef }) {
   const t = node.transform
@@ -97,18 +97,7 @@ export function Node2D({ node, center, scale, selectedId, onSelect, highlight, s
 }
 
 function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
-  const [thumb, setThumb] = useState(null)
   const uri = node.kind?.uri
-
-  useEffect(() => {
-    if (!uri) return
-    let cancelled = false
-    generateModelThumbnail(uri).then(url => {
-      if (!cancelled) setThumb(url)
-    })
-    return () => { cancelled = true }
-  }, [uri])
-
   const sz = Math.max(40, 80 * ratio)
   const borderColor = isSelected ? '#ffcc00' : '#a78bfa'
 
@@ -135,11 +124,7 @@ function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
           overflow: 'hidden',
         }}
       >
-        {thumb ? (
-          <img src={thumb} alt={node.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
-        ) : (
-          <span className="ms" style={{ fontSize: Math.max(16, sz * 0.4), color: '#a78bfa', opacity: 0.8 }}>view_in_ar</span>
-        )}
+        <ModelPreview uri={uri} size={sz} />
         <span style={{
           position: 'absolute', bottom: 2, left: 0, right: 0,
           fontSize: Math.max(8, Math.min(10, sz * 0.11)),

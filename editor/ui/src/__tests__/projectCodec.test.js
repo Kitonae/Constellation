@@ -181,7 +181,7 @@ describe('projectCodec', () => {
   it('derives display durations for runtime media rows', () => {
     expect(getMediaDurationSeconds({ id: 'video-1', type: 'video', uri: 'file:///video.mp4', duration: 8.5 })).toBe(8.5)
     expect(getMediaDurationSeconds({ id: 'image-1', type: 'image', uri: 'file:///image.png' })).toBe(10)
-    expect(getMediaDurationSeconds({ id: 'model-1', name: 'model.glb', uri: 'file:///model.glb' })).toBe(0)
+    expect(getMediaDurationSeconds({ id: 'model-1', name: 'model.glb', uri: 'file:///model.glb' })).toBe(10)
   })
 
   it('creates imported assets and timeline item records through codec helpers', () => {

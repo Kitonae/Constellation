@@ -8,6 +8,7 @@ void Scene::loadSnapshot(const json& data) {
     m_media.clear();
     m_tracks.clear();
     m_screens.clear();
+    m_models.clear();
 
     // Parse project wrapper: { project: { media: [...], timeline: { tracks: [...] }, scene: { roots: [...] } } }
     const json& proj = data.contains("project") ? data["project"] : data;
@@ -17,25 +18,49 @@ void Scene::loadSnapshot(const json& data) {
         for (const auto& root : proj["scene"]["roots"]) {
             if (!root.contains("kind")) continue;
             const auto& kind = root["kind"];
-            if (kind.value("type", "") != "screen") continue;
+            const std::string nodeType = kind.value("type", "");
 
-            ScreenNode sn;
-            sn.id = root.value("id", "");
-            if (sn.id.empty()) continue;
+            if (nodeType == "screen") {
+                ScreenNode sn;
+                sn.id = root.value("id", "");
+                if (sn.id.empty()) continue;
 
-            if (root.contains("transform") && root["transform"].contains("position")) {
-                const auto& pos = root["transform"]["position"];
-                sn.position.x = pos.value("x", 0.0);
-                sn.position.y = pos.value("y", 0.0);
+                if (root.contains("transform") && root["transform"].contains("position")) {
+                    const auto& pos = root["transform"]["position"];
+                    sn.position.x = pos.value("x", 0.0);
+                    sn.position.y = pos.value("y", 0.0);
+                }
+
+                if (kind.contains("pixels") && kind["pixels"].is_array() && kind["pixels"].size() >= 2) {
+                    sn.pixels.x = kind["pixels"][0].get<double>();
+                    sn.pixels.y = kind["pixels"][1].get<double>();
+                }
+
+                sn.enabled = kind.value("enabled", true);
+                m_screens[sn.id] = sn;
+            } else if (nodeType == "model") {
+                ModelNode mn;
+                mn.id = root.value("id", "");
+                mn.name = root.value("name", "");
+                mn.uri = kind.value("uri", "");
+                if (mn.id.empty() || mn.uri.empty()) continue;
+
+                if (root.contains("transform")) {
+                    const auto& t = root["transform"];
+                    if (t.contains("position")) {
+                        mn.position = { t["position"].value("x", 0.0), t["position"].value("y", 0.0), t["position"].value("z", 0.0) };
+                    }
+                    if (t.contains("rotation")) {
+                        mn.rotation = { t["rotation"].value("x", 0.0), t["rotation"].value("y", 0.0), t["rotation"].value("z", 0.0), t["rotation"].value("w", 1.0) };
+                    }
+                    if (t.contains("scale")) {
+                        mn.scale = { t["scale"].value("x", 1.0), t["scale"].value("y", 1.0), t["scale"].value("z", 1.0) };
+                    }
+                }
+
+                printf("[Scene] Model: id=%s name=%s uri=%.80s\n", mn.id.c_str(), mn.name.c_str(), mn.uri.c_str());
+                m_models[mn.id] = std::move(mn);
             }
-
-            if (kind.contains("pixels") && kind["pixels"].is_array() && kind["pixels"].size() >= 2) {
-                sn.pixels.x = kind["pixels"][0].get<double>();
-                sn.pixels.y = kind["pixels"][1].get<double>();
-            }
-
-            sn.enabled = kind.value("enabled", true);
-            m_screens[sn.id] = sn;
         }
     }
 

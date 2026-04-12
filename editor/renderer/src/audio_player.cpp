@@ -1,4 +1,3 @@
-#define NOMINMAX
 #include "audio_player.h"
 #include <cstdio>
 #include <cstring>

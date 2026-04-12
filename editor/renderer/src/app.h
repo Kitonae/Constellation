@@ -11,6 +11,8 @@
 #include "audio_player.h"
 #include "ndi_sender.h"
 #include "debug_text.h"
+#include "model_cache.h"
+#include "mesh_renderer.h"
 
 #include <d3d12.h>
 #include <d3d11.h>
@@ -50,6 +52,7 @@ private:
     // Get or create a video decoder for a media URI. Returns nullptr for non-video.
     VideoDecoder* getVideoDecoder(const std::string& uri);
     static bool isVideoFile(const std::string& uri);
+    static bool isModelFile(const std::string& uri);
 
     AppConfig m_config;
 
@@ -87,6 +90,10 @@ private:
     std::unordered_map<std::string, std::unique_ptr<AudioPlayer>> m_audioPlayers;
     AudioPlayer* getAudioPlayer(const std::string& uri);
     bool m_wasPlaying = false;  // track play state for audio sync
+
+    // 3D model rendering
+    ModelCache m_modelCache;
+    MeshRenderer m_meshRenderer;
 
     // NDI output
     NDISender m_ndiSender;

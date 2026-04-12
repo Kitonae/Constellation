@@ -17,6 +17,14 @@ struct Vec2 {
     double x = 0, y = 0;
 };
 
+struct Vec3 {
+    double x = 0, y = 0, z = 0;
+};
+
+struct Quat {
+    double x = 0, y = 0, z = 0, w = 1;
+};
+
 struct EffectParams {
     bool enabled = false;
     double value = 0;
@@ -54,6 +62,16 @@ struct ScreenNode {
     bool enabled = true;
 };
 
+// 3D model node parsed from scene.roots[]
+struct ModelNode {
+    std::string id;
+    std::string name;
+    std::string uri;
+    Vec3 position;
+    Quat rotation;
+    Vec3 scale = { 1, 1, 1 };
+};
+
 // Scene manages the project state and evaluates the timeline.
 class Scene {
 public:
@@ -66,10 +84,14 @@ public:
     const ScreenNode* getScreen(const std::string& id) const;
     const std::unordered_map<std::string, ScreenNode>& screens() const { return m_screens; }
 
+    // 3D model nodes from the scene tree
+    const std::unordered_map<std::string, ModelNode>& models() const { return m_models; }
+
 private:
     std::unordered_map<std::string, MediaClip> m_media;
     std::vector<TimelineTrack> m_tracks;
     std::unordered_map<std::string, ScreenNode> m_screens;
+    std::unordered_map<std::string, ModelNode> m_models;
 
     static TimelineClip parseTimelineClip(const nlohmann::json& j);
 };

@@ -55,17 +55,19 @@ const CachedTexture* TextureCache::get(const std::string& uri) {
         return it->second.ready ? &it->second : nullptr;
     }
 
+    printf("[TextureCache] Loading: %.80s\n", uri.c_str());
+
     CachedTexture* tex = nullptr;
 
     if (isDataUri(uri)) {
-        // Decode base64 data URI and load from memory
+        printf("[TextureCache]   data URI (%zu bytes)\n", uri.size());
         auto bytes = decodeDataUri(uri);
         if (!bytes.empty()) {
             tex = loadFromMemory(bytes.data(), bytes.size());
         }
     } else {
-        // Load from file path
         std::string path = uriToPath(uri);
+        printf("[TextureCache]   file path: %.80s\n", path.c_str());
         if (!path.empty()) {
             tex = loadFromFile(path);
         }
@@ -111,6 +113,8 @@ std::string TextureCache::uriToPath(const std::string& uri) const {
 }
 
 CachedTexture* TextureCache::loadFromFile(const std::string& path) {
+    printf("[TextureCache] loadFromFile: %s (srvIndex=%u)\n", path.c_str(), m_nextSrvIndex);
+    fflush(stdout);
     if (m_nextSrvIndex >= MAX_TEXTURES) {
         fprintf(stderr, "[TextureCache] Texture limit reached (%u)\n", MAX_TEXTURES);
         return nullptr;
@@ -123,6 +127,7 @@ CachedTexture* TextureCache::loadFromFile(const std::string& path) {
 
     // Decode with WIC
     ComPtr<IWICBitmapDecoder> decoder;
+    printf("[TextureCache]   CreateDecoder...\n"); fflush(stdout);
     HRESULT hr = m_wicFactory->CreateDecoderFromFilename(wpath.data(), nullptr,
         GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
     if (FAILED(hr)) {
@@ -130,22 +135,37 @@ CachedTexture* TextureCache::loadFromFile(const std::string& path) {
         return nullptr;
     }
 
+    printf("[TextureCache]   GetFrame...\n"); fflush(stdout);
     ComPtr<IWICBitmapFrameDecode> frame;
-    decoder->GetFrame(0, &frame);
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr) || !frame) {
+        fprintf(stderr, "[TextureCache] Failed to get frame from %s: 0x%08x\n", path.c_str(), hr);
+        return nullptr;
+    }
 
     // Convert to RGBA8
     ComPtr<IWICFormatConverter> converter;
-    m_wicFactory->CreateFormatConverter(&converter);
-    converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
+    hr = m_wicFactory->CreateFormatConverter(&converter);
+    if (FAILED(hr) || !converter) {
+        fprintf(stderr, "[TextureCache] Failed to create format converter: 0x%08x\n", hr);
+        return nullptr;
+    }
+    hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
         WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+    if (FAILED(hr)) {
+        fprintf(stderr, "[TextureCache] Failed to initialize converter for %s: 0x%08x\n", path.c_str(), hr);
+        return nullptr;
+    }
 
     UINT width, height;
     converter->GetSize(&width, &height);
+    printf("[TextureCache]   image %ux%u\n", width, height); fflush(stdout);
 
     // Read pixel data
     UINT rowPitch = width * 4;
     UINT imageSize = rowPitch * height;
     std::vector<uint8_t> pixels(imageSize);
+    printf("[TextureCache]   CopyPixels (%u bytes)...\n", imageSize); fflush(stdout);
     converter->CopyPixels(nullptr, rowPitch, imageSize, pixels.data());
 
     // Create DX12 texture resource
@@ -202,6 +222,7 @@ CachedTexture* TextureCache::loadFromFile(const std::string& path) {
     }
     uploadBuffer->Unmap(0, nullptr);
 
+    printf("[TextureCache]   uploading to GPU...\n"); fflush(stdout);
     // Record upload commands
     m_uploadAlloc->Reset();
     m_uploadCmdList->Reset(m_uploadAlloc.Get(), nullptr);

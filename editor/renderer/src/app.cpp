@@ -143,6 +143,13 @@ bool App::init(const AppConfig& config) {
         return false;
     }
 
+    // Init 3D mesh renderer (non-fatal if it fails)
+    // TEMPORARILY DISABLED for crash investigation
+    // if (!m_meshRenderer.init(m_device.Get())) {
+    //     printf("[App] 3D mesh renderer init failed (non-fatal, models will not render)\n");
+    // }
+    printf("[App] 3D mesh renderer DISABLED for debugging\n");
+
     // Start SSE client
     m_sseClient = std::make_unique<SSEClient>(m_eventQueue, m_config.host, m_config.port, m_config.screenId);
     m_sseClient->start();
@@ -234,8 +241,13 @@ void App::processEvents() {
     m_eventsProcessed += (int)events.size();
     for (auto& event : events) {
         if (event.type == "snapshot") {
+            // Deduplicate: skip if identical to last snapshot
+            static std::string lastSnapshotStr;
+            std::string snapStr = event.data.dump();
+            if (snapStr == lastSnapshotStr) continue;
+            lastSnapshotStr = std::move(snapStr);
             m_scene.loadSnapshot(event.data);
-            printf("[App] Snapshot loaded\n");
+            printf("[App] Snapshot loaded (%zu bytes)\n", lastSnapshotStr.size());
         } else if (event.type == "time") {
             m_currentTime = event.timeValue;
         } else if (event.type == "control") {
@@ -312,16 +324,22 @@ void App::render() {
         m_wasPlaying = m_playing;
     }
 
+    static int traceCount = 0;
+    bool trace = (traceCount++ < 60); // trace first 60 frames (~1s)
+
     for (auto& [id, screen] : m_screens) {
         if (!screen->isValid()) continue;
 
+        if (trace) printf("[Trace] beginFrame screen=%s %dx%d\n", id.c_str(), screen->width(), screen->height());
         screen->beginFrame(m_cmdList.Get());
 
         // Clear to black
+        if (trace) printf("[Trace] clearScreen\n");
         m_pipeline.clearScreen(m_cmdList.Get(), screen->currentRTV(),
                                screen->width(), screen->height(), 0.0f, 0.0f, 0.0f, 1.0f);
 
         // Bind SRV heap and pipeline state
+        if (trace) printf("[Trace] bindHeap srvHeap=%p\n", (void*)m_textureCache.srvHeap());
         if (m_textureCache.srvHeap()) {
             m_pipeline.bindHeap(m_cmdList.Get(), m_textureCache.srvHeap());
         }
@@ -339,10 +357,15 @@ void App::render() {
         int sw = screen->width();
         int sh = screen->height();
 
+        if (trace) printf("[Trace] drawing %zu active clips at t=%.3f\n", activeClips.size(), m_currentTime);
         for (const auto& ac : activeClips) {
             if (!ac.clip || ac.clip->uri.empty()) continue;
 
             const std::string& uri = ac.clip->uri;
+            if (trace) printf("[Trace]   clip=%s uri=%.80s isModel=%d isVideo=%d\n", ac.tm->id.c_str(), uri.c_str(), isModelFile(uri), isVideoFile(uri));
+
+            // Skip 3D model files — they are rendered in the 3D pass, not as 2D quads
+            if (isModelFile(uri)) { if (trace) printf("[Trace]   SKIP model\n"); continue; }
 
             // Skip blob: and http: URIs — native renderer can't access these
             if (uri.substr(0, 5) == "blob:" || uri.substr(0, 5) == "http:" || uri.substr(0, 6) == "https:") {
@@ -401,6 +424,8 @@ void App::render() {
                 continue;
             }
 
+            if (trace) printf("[Trace]   tex=%p %ux%u nv12=%d srvGpu=%llu\n", (void*)tex, tex->width, tex->height, tex->isNV12, tex->srvGpu.ptr);
+
             // Compute quad dimensions (scale 0 = natural size)
             float w = (ac.tm->scale.x > 0) ? (float)ac.tm->scale.x : (float)tex->width;
             float h = (ac.tm->scale.y > 0) ? (float)ac.tm->scale.y : (float)tex->height;
@@ -436,15 +461,82 @@ void App::render() {
                 effects.blur_radius = (float)ac.tm->blur;
             }
 
+            if (trace) printf("[Trace]   drawQuad pos=(%.0f,%.0f) size=(%.0f,%.0f) screen=(%d,%d) nv12=%d\n", transform.position[0], transform.position[1], transform.scale[0], transform.scale[1], sw, sh, tex->isNV12);
             if (tex->isNV12) {
                 m_pipeline.drawVideoQuad(m_cmdList.Get(), transform, effects,
                     tex->srvGpu, tex->srvGpuUV);
             } else {
                 m_pipeline.drawQuad(m_cmdList.Get(), transform, effects, tex->srvGpu);
             }
+            if (trace) printf("[Trace]   drawQuad OK\n");
         }
 
-        // Record render time (clip drawing only, excluding debug overlay)
+        // --- 3D Model Rendering ---
+        if (trace) printf("[Trace] 3D pass check: meshRenderer=%d\n", m_meshRenderer.isInitialized());
+        if (m_meshRenderer.isInitialized()) {
+            const auto& models = m_scene.models();
+            // Pre-check: any model actually ready to draw?
+            bool hasReadyMesh = false;
+            for (const auto& [modelId, mn] : models) {
+                GpuMesh* mesh = m_modelCache.getOrLoad(mn.uri, m_device.Get());
+                if (mesh && mesh->ready) { hasReadyMesh = true; break; }
+            }
+
+            if (hasReadyMesh) {
+                m_meshRenderer.ensureDepthBuffer(m_device.Get(), sw, sh);
+                m_meshRenderer.clearDepth(m_cmdList.Get());
+
+                auto dsv = m_meshRenderer.dsvHandle();
+                auto rtv3d = screen->currentRTV();
+                m_cmdList->OMSetRenderTargets(1, &rtv3d, FALSE, &dsv);
+
+                m_meshRenderer.bind(m_cmdList.Get());
+
+                float aspect = (float)sw / (std::max)(1.0f, (float)sh);
+                Float4x4 view = lookAtLH(6, 4, 10, 0, 0, 0, 0, 1, 0);
+                Float4x4 proj = perspectiveFovLH(toRadians(45.0f), aspect, 0.1f, 1000.0f);
+                Float4x4 viewProj = multiply(view, proj);
+
+                for (const auto& [modelId, mn] : models) {
+                    GpuMesh* mesh = m_modelCache.getOrLoad(mn.uri, m_device.Get());
+                    if (!mesh || !mesh->ready) continue;
+
+                    Float4x4 modelMat = composeTransform(
+                        mn.position.x, mn.position.y, mn.position.z,
+                        mn.rotation.x, mn.rotation.y, mn.rotation.z, mn.rotation.w,
+                        mn.scale.x, mn.scale.y, mn.scale.z);
+                    Float4x4 mvp = multiply(modelMat, viewProj);
+
+                    ModelTransformCB transform = {};
+                    memcpy(transform.mvp, mvp.m, 64);
+                    memcpy(transform.model, modelMat.m, 64);
+                    transform.cameraPos[0] = 6; transform.cameraPos[1] = 4;
+                    transform.cameraPos[2] = 10; transform.cameraPos[3] = 0;
+
+                    for (const auto& sub : mesh->submeshes) {
+                        ModelMaterialCB material = {};
+                        memcpy(material.baseColor, sub.baseColor, 16);
+                        material.opacity = 1.0f;
+                        float len = sqrtf(1 + 4 + 1);
+                        material.lightDir[0] = -1.0f / len;
+                        material.lightDir[1] = -2.0f / len;
+                        material.lightDir[2] = -1.0f / len;
+                        material.lightColor[0] = material.lightColor[1] = material.lightColor[2] = 0.7f;
+                        material.ambientIntensity = 0.25f;
+
+                        m_meshRenderer.drawMesh(m_cmdList.Get(), *mesh, sub, transform, material);
+                    }
+                }
+
+                // Restore 2D state for debug overlay
+                m_cmdList->OMSetRenderTargets(1, &rtv3d, FALSE, nullptr);
+                if (m_textureCache.srvHeap()) {
+                    m_pipeline.bindHeap(m_cmdList.Get(), m_textureCache.srvHeap());
+                }
+            }
+        }
+
+        // Record render time (clip + model drawing, excluding debug overlay)
         {
             auto renderEnd = std::chrono::steady_clock::now();
             float renderMs = (float)std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
@@ -492,7 +584,7 @@ void App::render() {
                 connected ? (uint8_t)0 : (uint8_t)255,
                 connected ? (uint8_t)255 : (uint8_t)80,
                 (uint8_t)0,
-                "fps=%.0f  t=%.2fs  sse=%s  screen=%s (%dx%d)",
+                "Constellation Renderer v0.3.0  fps=%.0f  t=%.2fs  sse=%s  screen=%s (%dx%d)",
                 m_fps, m_currentTime,
                 connected ? "OK" : "DISCONNECTED",
                 id.c_str(), sw, sh);
@@ -597,7 +689,9 @@ void App::render() {
         }
 #endif
 
+        if (trace) printf("[Trace] endFrame\n");
         screen->endFrame(m_cmdList.Get(), m_cmdQueue.Get());
+        if (trace) printf("[Trace] frame complete\n");
 
         // NDI: signal fence and send the captured frame
 #if HAS_NDI
@@ -649,6 +743,7 @@ void App::shutdown() {
 #endif
     m_audioPlayers.clear();
     m_videoDecoders.clear(); // must be before D3D11 device release
+    m_modelCache.shutdown();
     m_textureCache.shutdown();
     m_dxgiManager.Reset();
     m_d3d11On12Device.Reset();
@@ -658,6 +753,14 @@ void App::shutdown() {
     MFShutdown();
     CoUninitialize();
     printf("[App] Shutdown complete\n");
+}
+
+bool App::isModelFile(const std::string& uri) {
+    size_t dot = uri.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = uri.substr(dot + 1);
+    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    return ext == "gltf" || ext == "glb" || ext == "obj";
 }
 
 bool App::isVideoFile(const std::string& uri) {

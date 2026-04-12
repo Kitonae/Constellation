@@ -16,6 +16,7 @@ import { VideoFrame } from './viewport2d/VideoFrame.jsx'
 import { StageMenu } from './viewport2d/StageMenu.jsx'
 import { SelectionOverlay } from './viewport2d/SelectionOverlay.jsx'
 import { IconButton } from './viewport2d/IconButton.jsx'
+import { ModelPreview } from './viewport2d/ModelPreview.jsx'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
@@ -86,6 +87,9 @@ export default function Viewport2D() {
         document.querySelector('[title="Frame All (F)"]')?.click()
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        const t = e.target
+        const tag = (t?.tagName || '').toLowerCase()
+        if (t?.isContentEditable || tag === 'input' || tag === 'textarea') return
         const st = useEditorStore.getState()
         const sel = st.selectedId
         if (sel) {
@@ -417,17 +421,26 @@ export default function Viewport2D() {
             const ratio = ratioFromZoom(zoom)
             const picked = []
             const tNow = useEditorStore.getState().time
-            for (const { tm, screen } of placements) {
+            for (const { tm, screen, clip: mc } of placements) {
               const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
               const cx = center.x + (spos.x ?? 0) * scale
               const cy = center.y - (spos.y ?? 0) * scale
-              const meta = imageMeta[getTimelineItemAssetId(tm)]
-              const baseW = meta?.w || 100
-              const baseH = meta?.h || 100
-              const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
-              const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
-              const w = Math.max(2, targetWpx * ratio)
-              const h = Math.max(2, targetHpx * ratio)
+              const isModelHit = /\.(gltf|glb|obj)$/i.test(mc?.name || mc?.uri || '')
+              let w, h
+              if (isModelHit) {
+                const ms = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : 1
+                const bsz = 200 * ms
+                w = Math.max(2, bsz * ratio)
+                h = w
+              } else {
+                const meta = imageMeta[getTimelineItemAssetId(tm)]
+                const baseW = meta?.w || 100
+                const baseH = meta?.h || 100
+                const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
+                const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
+                w = Math.max(2, targetWpx * ratio)
+                h = Math.max(2, targetHpx * ratio)
+              }
               const left = cx + (tm.position?.x || 0) * ratio - w / 2
               const top = cy - (tm.position?.y || 0) * ratio - h / 2
               const inter = (mx < left + w) && (mx + mw > left) && (my < top + h) && (my + mh > top)
@@ -493,13 +506,23 @@ export default function Viewport2D() {
             const cy = center.y - (spos.y ?? 0) * scale
             const mpos = tm.position || { x: 0, y: 0 }
             const meta = imageMeta[getTimelineItemAssetId(tm)]
-            const baseW = meta?.w || 100
-            const baseH = meta?.h || 100
-            const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
-            const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
+            const isModel = /\.(gltf|glb|obj)$/i.test(clip?.name || clip?.uri || '')
             const ratio = ratioFromZoom(zoom)
-            const w = Math.max(2, targetWpx * ratio)
-            const h = Math.max(2, targetHpx * ratio)
+            let w, h
+            if (isModel) {
+              // 3D models: scale is a uniform multiplier, base size 200px
+              const modelScale = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : 1
+              const baseSz = 200 * modelScale
+              w = Math.max(2, baseSz * ratio)
+              h = w
+            } else {
+              const baseW = meta?.w || 100
+              const baseH = meta?.h || 100
+              const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
+              const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
+              w = Math.max(2, targetWpx * ratio)
+              h = Math.max(2, targetHpx * ratio)
+            }
             const left = cx + (mpos.x || 0) * ratio - w / 2
             const top = cy - (mpos.y || 0) * ratio - h / 2
             const isSel = selectedClipId === tm.id || selectedClipIds.includes(tm.id)
@@ -599,11 +622,11 @@ export default function Viewport2D() {
                   top: (dragClip?.targets?.[tm.id]?.currentY !== undefined) ? (cy - dragClip.targets[tm.id].currentY * ratio - h / 2) : top,
                   width: w,
                   height: h,
-                  background: '#0b0d12',
-                  border: `1px solid ${isSel ? '#ffcc00' : '#3a4060'}`,
+                  background: isModel ? 'transparent' : '#0b0d12',
+                  border: `1px solid ${isSel ? '#ffcc00' : (isModel ? 'transparent' : '#3a4060')}`,
                   boxShadow: isSel ? '0 0 0 1px #ffcc0066' : 'none',
                   borderRadius: 4,
-                  overflow: 'hidden',
+                  overflow: isModel ? 'visible' : 'hidden',
                   display: isActive ? 'flex' : 'none',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -623,8 +646,12 @@ export default function Viewport2D() {
                 {(() => {
                   const uri_ = String(clip?.uri || '')
                   const ext = extFromUri(uri_) || extFromUri(clip?.name || '')
-                  const isVideo = mediaTypeFromExt(ext) === 'video'
-                  if (isVideo) {
+                  const mediaType = mediaTypeFromExt(ext)
+                  const isModel = /\.(gltf|glb|obj)$/i.test(clip?.name || uri_)
+                  if (isModel) {
+                    return <ModelPreview uri={uri_} size={Math.max(w, h)} />
+                  }
+                  if (mediaType === 'video') {
                     return <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
                   }
                   if (imageMeta[getTimelineItemAssetId(tm)]?.src) {
@@ -632,8 +659,8 @@ export default function Viewport2D() {
                   }
                   return <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', userSelect: 'none' }}>{clip?.name || getTimelineItemAssetId(tm)}</span>
                 })()}
-                {/* White 1px bounding box overlay */}
-                <div style={{ position: 'absolute', inset: 0, border: '1px solid #ffffff', pointerEvents: 'none' }} />
+                {/* White 1px bounding box overlay (hidden for 3D models) */}
+                {!isModel && <div style={{ position: 'absolute', inset: 0, border: '1px solid #ffffff', pointerEvents: 'none' }} />}
               </div>
             )
           })}
@@ -689,12 +716,19 @@ export default function Viewport2D() {
                 hasContent = true
               }
 
-              for (const { tm } of placements) {
+              for (const { tm, clip: mc } of placements) {
                 const mx = tm.position?.x || 0
                 const my = tm.position?.y || 0
-                const meta = imageMeta[getTimelineItemAssetId(tm)]
-                const tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
-                const th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
+                const isModelFrame = /\.(gltf|glb|obj)$/i.test(mc?.name || mc?.uri || '')
+                let tw, th
+                if (isModelFrame) {
+                  const ms = (tm.scale?.x > 0 ? tm.scale.x : 1)
+                  tw = th = 200 * ms
+                } else {
+                  const meta = imageMeta[getTimelineItemAssetId(tm)]
+                  tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
+                  th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
+                }
                 minX = Math.min(minX, mx - tw / 2)
                 maxX = Math.max(maxX, mx + tw / 2)
                 minY = Math.min(minY, my - th / 2)

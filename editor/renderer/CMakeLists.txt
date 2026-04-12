@@ -10,7 +10,16 @@ FetchContent_Declare(
     json
     URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
 )
-FetchContent_MakeAvailable(json)
+FetchContent_Declare(
+    cgltf
+    URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.14.tar.gz
+)
+FetchContent_Declare(
+    tinyobjloader
+    GIT_REPOSITORY https://github.com/tinyobjloader/tinyobjloader.git
+    GIT_TAG v2.0.0rc13
+)
+FetchContent_MakeAvailable(json cgltf tinyobjloader)
 
 add_executable(constellation-renderer
     src/main.cpp
@@ -25,6 +34,9 @@ add_executable(constellation-renderer
     src/audio_player.cpp
     src/ndi_sender.cpp
     src/debug_text.cpp
+    src/model_loader.cpp
+    src/model_cache.cpp
+    src/mesh_renderer.cpp
 )
 
 target_link_libraries(constellation-renderer PRIVATE
@@ -68,7 +80,10 @@ else()
     target_compile_definitions(constellation-renderer PRIVATE HAS_NDI=0)
 endif()
 
+target_compile_definitions(constellation-renderer PRIVATE NOMINMAX)
 target_include_directories(constellation-renderer PRIVATE src)
+target_include_directories(constellation-renderer PRIVATE ${cgltf_SOURCE_DIR})
+target_include_directories(constellation-renderer PRIVATE ${tinyobjloader_SOURCE_DIR})
 
 # Compile HLSL shaders to headers
 find_program(DXC dxc HINTS "$ENV{WindowsSdkDir}/bin/$ENV{WindowsSDKVersion}/x64" "C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64")
@@ -103,10 +118,30 @@ if(DXC)
         COMMENT "Compiling nv12_effects_ps.hlsl"
     )
 
+    # 3D model vertex shader
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT_DIR}/model_vs.h
+        COMMAND ${DXC} -T vs_6_0 -E VSMain -Fh ${SHADER_OUTPUT_DIR}/model_vs.h -Vn g_modelVS
+            ${CMAKE_SOURCE_DIR}/shaders/model_vs.hlsl
+        DEPENDS ${CMAKE_SOURCE_DIR}/shaders/model_vs.hlsl
+        COMMENT "Compiling model_vs.hlsl"
+    )
+
+    # 3D model pixel shader
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT_DIR}/model_ps.h
+        COMMAND ${DXC} -T ps_6_0 -E PSMain -Fh ${SHADER_OUTPUT_DIR}/model_ps.h -Vn g_modelPS
+            ${CMAKE_SOURCE_DIR}/shaders/model_ps.hlsl
+        DEPENDS ${CMAKE_SOURCE_DIR}/shaders/model_ps.hlsl
+        COMMENT "Compiling model_ps.hlsl"
+    )
+
     target_sources(constellation-renderer PRIVATE
         ${SHADER_OUTPUT_DIR}/quad_vs.h
         ${SHADER_OUTPUT_DIR}/effects_ps.h
         ${SHADER_OUTPUT_DIR}/nv12_effects_ps.h
+        ${SHADER_OUTPUT_DIR}/model_vs.h
+        ${SHADER_OUTPUT_DIR}/model_ps.h
     )
     target_include_directories(constellation-renderer PRIVATE ${SHADER_OUTPUT_DIR})
 else()

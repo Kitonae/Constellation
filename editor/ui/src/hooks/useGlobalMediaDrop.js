@@ -34,7 +34,7 @@ export function useGlobalMediaDrop() {
           initialUri = URL.createObjectURL(file)
         }
 
-        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
+        let duration = 10
         if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
           try {
             const meta = await getVideoMetadata(file || initialUri)
