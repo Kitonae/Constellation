@@ -57,6 +57,11 @@ func NewRendererManager(hub Broadcaster, appCtx context.Context) *RendererManage
 func resolveRendererExe() string {
 	candidates := []string{}
 
+	// 0. Explicit override via environment variable
+	if env := os.Getenv("CONSTELLATION_RENDERER"); env != "" {
+		candidates = append(candidates, env)
+	}
+
 	// 1. Next to the running binary (production layout)
 	if self, err := os.Executable(); err == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(self), "constellation-renderer.exe"))
@@ -68,6 +73,13 @@ func resolveRendererExe() string {
 			filepath.Join(wd, "..", "renderer", "build", "Release", "constellation-renderer.exe"),
 			filepath.Join(wd, "..", "renderer", "build", "Debug", "constellation-renderer.exe"),
 			filepath.Join(wd, "build", "bin", "constellation-renderer.exe"),
+		)
+
+		// 3. Sibling repo checkout (e.g. working from a refactor branch copy)
+		parent := filepath.Dir(filepath.Dir(filepath.Dir(wd))) // up from editor/wails to repo root, then parent
+		candidates = append(candidates,
+			filepath.Join(parent, "Constellation", "editor", "renderer", "build", "Release", "constellation-renderer.exe"),
+			filepath.Join(parent, "Constellation", "editor", "renderer", "build", "Debug", "constellation-renderer.exe"),
 		)
 	}
 
