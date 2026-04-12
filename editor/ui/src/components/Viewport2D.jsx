@@ -1,11 +1,8 @@
-import React, { useMemo, useRef, useEffect, useState, useCallback, Suspense } from 'react'
+import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
-import { openImageDialog } from '../utils/fileDialogs.js'
-import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
 import {
-  findMediaAssetByTimelineItem,
   getNonOverlappingTrackItems,
   getTimelineItemAssetId,
   getTimelineItemDuration,
@@ -13,7 +10,12 @@ import {
 } from '../project/projectCodec.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
-import { generateModelThumbnail } from '../utils/modelThumbnail.js'
+import { clamp, dotGridBg, scaleFromZoom, ratioFromZoom, stageCenter, STAGE_W, STAGE_H, BASE_SCALE, Z_NEUTRAL } from './viewport2d/viewportMath.js'
+import { Node2D } from './viewport2d/Node2D.jsx'
+import { VideoFrame } from './viewport2d/VideoFrame.jsx'
+import { StageMenu } from './viewport2d/StageMenu.jsx'
+import { SelectionOverlay } from './viewport2d/SelectionOverlay.jsx'
+import { IconButton } from './viewport2d/IconButton.jsx'
 
 export default function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
@@ -149,12 +151,8 @@ export default function Viewport2D() {
     return () => ro.disconnect()
   }, [])
 
-  const BASE_SCALE = 50 // pixels per scene unit at neutral zoom
-  const Z_NEUTRAL = 0.2
-  const scale = BASE_SCALE * (zoom / Z_NEUTRAL)
-  const STAGE_W = 4000
-  const STAGE_H = 3000
-  const center = { x: STAGE_W / 2, y: STAGE_H / 2 }
+  const scale = scaleFromZoom(zoom)
+  const center = stageCenter()
 
   const nodes = useMemo(() => (scene?.roots ?? []), [scene])
   const nodeIndex = useMemo(() => {
@@ -333,8 +331,7 @@ export default function Viewport2D() {
           const rect = sc.getBoundingClientRect()
           const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
           const contentTop = sc.scrollTop + (e.clientY - rect.top)
-          const Z_NEUTRAL = 0.2
-          const ratio = (zoom / Z_NEUTRAL)
+          const ratio = ratioFromZoom(zoom)
           let target = null
           for (const n of nodes) {
             if (n.kind?.type !== 'screen' || (n.kind?.enabled === false)) continue
@@ -364,8 +361,7 @@ export default function Viewport2D() {
           const rect = sc.getBoundingClientRect()
           const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
           const contentTop = sc.scrollTop + (e.clientY - rect.top)
-          const Z_NEUTRAL = 0.2
-          const ratio = (zoom / Z_NEUTRAL)
+          const ratio = ratioFromZoom(zoom)
           // No per-screen association; position relative to world center
           const pos = { x: (contentLeft - center.x) / ratio, y: (center.y - contentTop) / ratio }
           const { addClipToTimeline, time } = useEditorStore.getState()
@@ -418,7 +414,7 @@ export default function Viewport2D() {
             const mw = Math.abs(marquee.x2 - marquee.x1)
             const mh = Math.abs(marquee.y2 - marquee.y1)
             // Collect all intersecting clips
-            const ratio = (zoom / Z_NEUTRAL)
+            const ratio = ratioFromZoom(zoom)
             const picked = []
             const tNow = useEditorStore.getState().time
             for (const { tm, screen } of placements) {
@@ -480,7 +476,7 @@ export default function Viewport2D() {
             const cy = center.y - (spos.y || 0) * scale
             const px = screen.kind?.pixels?.[0] || 0
             const py = screen.kind?.pixels?.[1] || 0
-            const ratio = (zoom / Z_NEUTRAL)
+            const ratio = ratioFromZoom(zoom)
             const w = Math.max(2, px * ratio)
             const h = Math.max(2, py * ratio)
             const left = cx - w / 2
@@ -501,7 +497,7 @@ export default function Viewport2D() {
             const baseH = meta?.h || 100
             const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
             const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
-            const ratio = (zoom / Z_NEUTRAL)
+            const ratio = ratioFromZoom(zoom)
             const w = Math.max(2, targetWpx * ratio)
             const h = Math.max(2, targetHpx * ratio)
             const left = cx + (mpos.x || 0) * ratio - w / 2
@@ -772,364 +768,3 @@ export default function Viewport2D() {
   )
 }
 
-function VideoFrame({ clip, style }) {
-  const [thumb, setThumb] = useState(null)
-  const uri = String(clip?.uri || '')
-
-  useEffect(() => {
-    let cancelled = false
-    async function loadThumb() {
-      try {
-        const { generateVideoThumbnail } = await import('../utils/videoUtils.js')
-        const dataUrl = await generateVideoThumbnail(uri, 0)
-        if (!cancelled) setThumb(dataUrl)
-      } catch { }
-    }
-    if (uri) loadThumb()
-    return () => { cancelled = true }
-  }, [uri])
-
-  if (thumb) {
-    return <img src={thumb} alt={clip?.name || ''} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
-  }
-  return <span style={{ padding: '0 4px', color: '#888', fontSize: 11, userSelect: 'none', ...style }}>{clip?.name || 'video'}</span>
-}
-
-function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHeld, dragScreen, setDragScreen, dragScreenRef }) {
-  const t = node.transform
-  const Z_NEUTRAL = 0.2
-  const ratio = scale / 50 // since scale already includes zoom/Z_NEUTRAL, and BASE_SCALE is 50
-  const posX = (t?.position?.x ?? 0)
-  const posY = (t?.position?.y ?? 0)
-  const x = posX * ratio + center.x
-  const y = center.y - posY * ratio
-  const s = t?.scale ?? { x: 1, y: 1, z: 1 }
-  const isSelected = node.id === selectedId
-
-  const children = (node.children ?? []).map((c) => (
-    <Node2D key={c.id} node={c} center={center} scale={scale} selectedId={selectedId} onSelect={onSelect} shiftHeld={shiftHeld} dragScreen={dragScreen} setDragScreen={setDragScreen} dragScreenRef={dragScreenRef} />
-  ))
-
-  if (node.kind?.type === 'screen') {
-    const px = node.kind?.pixels?.[0] || 0
-    const py = node.kind?.pixels?.[1] || 0
-    const w = Math.max(2, px * (ratio))
-    const h = Math.max(2, py * (ratio))
-    const isRenderer = (node.kind?.screenType || 'web') === 'renderer'
-    const borderColor = isSelected || highlight ? '#ffcc00' : '#3a4e85'
-
-    // Apply drag offset if this screen is being dragged
-    const isDragging = dragScreen?.nodeId === node.id
-    const drawX = isDragging && dragScreen.currentX !== undefined ? dragScreen.currentX * ratio + center.x : x
-    const drawY = isDragging && dragScreen.currentY !== undefined ? center.y - dragScreen.currentY * ratio : y
-    const screenLabel = `${node.name || node.id} (${px}x${py})`
-    const typeTag = isRenderer ? 'NDI' : 'Web'
-
-    return (
-      <>
-        <div
-          onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
-          onPointerDown={(e) => {
-            if (!shiftHeld || e.button !== 0) return
-            e.stopPropagation()
-            e.preventDefault()
-            try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-            onSelect(node.id)
-            const d = { nodeId: node.id, origX: posX, origY: posY, startX: e.clientX, startY: e.clientY }
-            setDragScreen(d)
-            dragScreenRef.current = d
-          }}
-          onPointerMove={(e) => {
-            const d = dragScreenRef.current
-            if (!d || d.nodeId !== node.id) return
-            if ((e.buttons & 1) === 0) { setDragScreen(null); dragScreenRef.current = null; return }
-            const dx = e.clientX - d.startX
-            const dy = e.clientY - d.startY
-            const next = { ...d, currentX: d.origX + dx / ratio, currentY: d.origY - dy / ratio }
-            dragScreenRef.current = next
-            setDragScreen(next)
-          }}
-          onPointerUp={(e) => {
-            const d = dragScreenRef.current
-            if (!d || d.nodeId !== node.id) return
-            if (d.currentX !== undefined) {
-              useEditorStore.getState().updateNodeTransform(d.nodeId, {
-                position: { x: d.currentX, y: d.currentY, z: 0 },
-              })
-            }
-            setDragScreen(null)
-            dragScreenRef.current = null
-            try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
-          }}
-          title={screenLabel}
-          draggable={false}
-          onDragStart={(e) => e.preventDefault()}
-          style={{ position: 'absolute', left: drawX - w / 2, top: drawY - h / 2, width: w, height: h, background: isSelected ? 'rgba(30,40,80,0.5)' : 'rgba(16,21,32,0.5)', border: `1px dashed ${borderColor}`, borderRadius: 2, zIndex: 1, cursor: shiftHeld ? 'move' : (isSelected ? 'not-allowed' : 'default') }}
-        >
-          {shiftHeld && <>
-            <span style={{ position: 'absolute', top: 3, left: 5, fontSize: 10, color: '#8898b8', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: w - 10, pointerEvents: 'none', userSelect: 'none' }}>
-              {screenLabel}
-            </span>
-            <span style={{ position: 'absolute', top: 3, right: 5, fontSize: 9, color: isRenderer ? '#a78bfa' : '#6aa0ff', fontWeight: 600, pointerEvents: 'none', userSelect: 'none', background: 'rgba(0,0,0,0.4)', padding: '1px 4px', borderRadius: 2 }}>
-              {typeTag}
-            </span>
-          </>}
-        </div>
-        {children}
-      </>
-    )
-  }
-
-  // Model nodes: render thumbnail preview
-  if (node.kind?.type === 'model') {
-    return <ModelNode2D node={node} x={x} y={y} ratio={ratio} isSelected={isSelected} onSelect={onSelect}>{children}</ModelNode2D>
-  }
-
-  // default: draw a small dot for other nodes
-  return (
-    <>
-      <div onClick={(e) => { e.stopPropagation(); onSelect(node.id) }} style={{ position: 'absolute', left: x - 2, top: y - 2, width: 4, height: 4, background: '#5a78ff', borderRadius: 2 }} title={node.name || node.id} />
-      {children}
-    </>
-  )
-}
-
-function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
-  const [thumb, setThumb] = useState(null)
-  const uri = node.kind?.uri
-
-  useEffect(() => {
-    if (!uri) return
-    let cancelled = false
-    generateModelThumbnail(uri).then(url => {
-      if (!cancelled) setThumb(url)
-    })
-    return () => { cancelled = true }
-  }, [uri])
-
-  const sz = Math.max(40, 80 * ratio)
-  const borderColor = isSelected ? '#ffcc00' : '#a78bfa'
-
-  return (
-    <>
-      <div
-        onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
-        title={node.name || node.id}
-        style={{
-          position: 'absolute',
-          left: x - sz / 2,
-          top: y - sz / 2,
-          width: sz,
-          height: sz,
-          border: `1px dashed ${borderColor}`,
-          borderRadius: 4,
-          background: '#0b0d12',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          zIndex: 2,
-          overflow: 'hidden',
-        }}
-      >
-        {thumb ? (
-          <img src={thumb} alt={node.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
-        ) : (
-          <span className="ms" style={{ fontSize: Math.max(16, sz * 0.4), color: '#a78bfa', opacity: 0.8 }}>view_in_ar</span>
-        )}
-        <span style={{
-          position: 'absolute', bottom: 2, left: 0, right: 0,
-          fontSize: Math.max(8, Math.min(10, sz * 0.11)),
-          color: '#c7cfdb', textAlign: 'center',
-          background: 'rgba(0,0,0,0.6)', padding: '1px 4px',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {node.name || 'Model'}
-        </span>
-      </div>
-      {children}
-    </>
-  )
-}
-
-function gridBg() {
-  // legacy; not used
-  return {}
-}
-
-function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
-  const hasSelectedClip = useEditorStore((s) => !!s.selectedClipId)
-  const selectedId = useEditorStore((s) => s.selectedId)
-  const scene = useEditorStore((s) => s.scene)
-  const isScreenSelected = useMemo(() => {
-    if (!selectedId || !scene?.roots) return false
-    const stack = [...scene.roots]
-    while (stack.length) {
-      const n = stack.pop()
-      if (!n) continue
-      if (n.id === selectedId) return n.kind?.type === 'screen'
-      if (n.children?.length) stack.push(...n.children)
-    }
-    return false
-  }, [selectedId, scene])
-  return (
-    <div>
-      <MenuItem label="Add Web Screen" onClick={() => onAddScreen('web')} />
-      <MenuItem label="Add Renderer Screen" onClick={() => onAddScreen('renderer')} />
-      {hasSelectedClip && <MenuItem label="Remove Selected Clip" onClick={onRemoveClip} />}
-      {isScreenSelected && <MenuItem label="Remove Screen" onClick={onRemoveScreen} />}
-    </div>
-  )
-}
-
-function MenuItem({ label, onClick }) {
-  return (
-    <button type="button" onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'transparent', color: '#c7cfdb', border: 'none', padding: '8px 12px', cursor: 'pointer' }}>
-      {label}
-    </button>
-  )
-}
-
-// Cache for the grid tile canvas data URL
-const _gridCache = { key: '', url: '' }
-
-function dotGridBg(center, zoom) {
-  const Z_NEUTRAL = 0.2
-  const BASE_SCALE = 50
-  const pxPerUnit = BASE_SCALE * (zoom / Z_NEUTRAL)
-
-  // Adaptive: pick smallest world-space interval that gives >= 16px on screen
-  const levels = [10, 50, 100, 500, 1000, 5000]
-  let minorWorld = 100
-  for (const lv of levels) {
-    if (lv * pxPerUnit >= 16) { minorWorld = lv; break }
-  }
-  const majorMult = 10
-  const minorPx = Math.round(minorWorld * pxPerUnit)
-  const tilePx = minorPx * majorMult // tile = one major cell = 10 minor cells
-
-  if (minorPx < 4) return { background: '#0b0d12' }
-
-  // Build a single canvas tile with both minor and major dots baked in
-  const cacheKey = `${tilePx}_${minorPx}`
-  if (_gridCache.key !== cacheKey) {
-    const c = document.createElement('canvas')
-    c.width = tilePx
-    c.height = tilePx
-    const ctx = c.getContext('2d')
-
-    // Minor dots
-    ctx.fillStyle = '#2a375b'
-    for (let gy = 0; gy < majorMult; gy++) {
-      for (let gx = 0; gx < majorMult; gx++) {
-        if (gx === 0 && gy === 0) continue // skip origin — major dot goes there
-        const x = gx * minorPx
-        const y = gy * minorPx
-        ctx.beginPath()
-        ctx.arc(x, y, 1, 0, Math.PI * 2)
-        ctx.fill()
-      }
-    }
-
-    // Major dot at tile origin (0,0) — larger and brighter
-    ctx.fillStyle = '#6a8fd8'
-    ctx.beginPath()
-    ctx.arc(0, 0, 2.5, 0, Math.PI * 2)
-    ctx.fill()
-
-    _gridCache.key = cacheKey
-    _gridCache.url = c.toDataURL()
-  }
-
-  // Offset so tile origin aligns with world origin (center of stage)
-  const mod = (v, m) => ((v % m) + m) % m
-  const offX = mod(center.x, tilePx)
-  const offY = mod(center.y, tilePx)
-
-  return {
-    backgroundImage: `url(${_gridCache.url})`,
-    backgroundSize: `${tilePx}px ${tilePx}px`,
-    backgroundPosition: `${offX}px ${offY}px`,
-    backgroundRepeat: 'repeat',
-  }
-}
-
-function ZoomLevelBar({ zoom }) {
-  // Discrete levels with neutral at 20%; include deeper zoom-out
-  const NEUTRAL = 0.2
-  const levels = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 4, 10]
-  return (
-    <div style={{ display: 'flex', gap: 4, padding: '2px 4px', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
-      {levels.map((lv) => {
-        const filled = zoom >= lv * 0.98 // small tolerance
-        const isNeutral = Math.abs(lv - NEUTRAL) < 1e-6
-        return (
-          <div key={lv}
-            title={`${Math.round(lv * 100)}%`}
-            style={{
-              width: 10,
-              height: 8,
-              background: filled ? '#6aa0ff' : '#2a3148',
-              border: `1px solid ${isNeutral ? '#89b4ff' : '#3a4060'}`,
-              borderRadius: 2,
-            }}
-          />
-        )
-      })}
-    </div>
-  )
-}
-
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
-
-function SelectionOverlay({ nodes, nodeIndex, selectedId, selectedClipId }) {
-  let text = ''
-  if (selectedClipId) {
-    try {
-      const proj = useEditorStore.getState().project
-      const mediaEntry = findMediaAssetByTimelineItem(proj, selectedClipId)
-      text = mediaEntry?.name || mediaEntry?.id || selectedClipId
-    } catch { text = selectedClipId }
-  } else if (selectedId) {
-    const n = nodeIndex.get(selectedId)
-    if (n) {
-      const prefix = n.kind?.type === 'screen'
-        ? `Screen (${n.kind?.screenType || 'web'})`
-        : 'Node'
-      text = `${prefix}: ${n.name || n.id}`
-    }
-  }
-  if (!text) return null
-  return (
-    <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10, pointerEvents: 'none', padding: '2px 6px', fontSize: 12, color: '#b9c3d6', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
-      {text}
-    </div>
-  )
-}
-
-function IconButton({ active, onClick, title, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      style={{
-        width: 32,
-        height: 32,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: active ? '#2a3148' : 'transparent',
-        color: active ? '#6aa0ff' : '#c7cfdb',
-        border: 'none',
-        cursor: 'pointer',
-        outline: 'none',
-      }}
-      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = '#1c202b' }}
-      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent' }}
-    >
-      {children}
-    </button>
-  )
-}

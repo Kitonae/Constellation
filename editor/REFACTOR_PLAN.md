@@ -128,7 +128,7 @@ Done when:
 
 ### Phase 4 - Viewport And Timeline Decomposition
 
-Status: planned
+Status: done
 
 Scope:
 - Break up the largest editor surfaces into smaller rendering and interaction modules.
@@ -233,6 +233,7 @@ Guardrails for the next session:
 
 ## Change Log
 
+- 2026-04-12: Phase 4 — extracted Timeline math to timeline/timelineUtils.js. Extracted Viewport2D helpers (Node2D, ModelNode2D, VideoFrame, StageMenu, SelectionOverlay, IconButton) and math (dotGridBg, clamp, coordinate utils) to viewport2d/ submodules. Viewport2D reduced from 1135 to 770 lines.
 - 2026-04-12: Phase 3 — split store.js into 6 concern-based slices (projectSlice, sceneSlice, transportSlice, uiSlice, consoleSlice, importSlice). Extracted App.jsx orchestration into 4 hooks (useHotkeys, useScreenLifecycle, useSnapshotSync, useGlobalMediaDrop). App.jsx is now mostly composition and layout. Removed duplicate sidecar init.
 - 2026-04-12: Phase 2 — consolidated playback/output authority around MediaSession. Removed store.tick() double time authority, registered NativeSink for Go renderer, stripped scattered broadcastToDisplays/PushTime/PushSnapshot calls from GlobalTicker, App.jsx, Timeline.jsx.
 - 2026-04-12: Phase 1 — extracted project codec boundary (dfba134). Fixed missing getTrackItems import (bea2d8d).

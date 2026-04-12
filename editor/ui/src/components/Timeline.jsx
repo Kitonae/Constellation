@@ -10,6 +10,7 @@ import {
   getTimelineItemFadeOutSeconds,
   getTimelineItemStart,
 } from '../project/projectCodec.js'
+import { formatTimecode, pickTickStep, generateTicks, generateSecondDots, LABEL_W, ROW_HEIGHT, TRACK_ROW_HEIGHT } from './timeline/timelineUtils.js'
 
 export default function Timeline() {
   const project = useEditorStore((s) => s.project)
@@ -61,10 +62,7 @@ export default function Timeline() {
   const tracksLabelsRef = useRef(null)
   const seekingRef = useRef(false)
 
-  // Layout constants shared by slider, playhead and hit-testing
-  const LABEL_W = 120
-  const ROW_MARGIN_X = 8
-  const GRID_GAP = 8
+  // Layout constants from timelineUtils
 
   // Translate a clientX within the tracks viewport to timeline time considering scroll
   const timeFromClientX = useCallback((clientX) => {
@@ -97,8 +95,7 @@ export default function Timeline() {
       if (vp) {
         const rect = vp.getBoundingClientRect()
         const relY = e.clientY - rect.top + vp.scrollTop
-        // Top padding 8px, row height 40px (28 + 6 + 6)
-        trackIndex = Math.floor((relY - 8) / 40)
+        trackIndex = Math.floor((relY - 8) / TRACK_ROW_HEIGHT)
       }
 
       addClipToTimeline({ clipId, startAt: tAt, trackIndex })
@@ -141,32 +138,9 @@ export default function Timeline() {
 
   const stop = useCallback(() => { const st = useEditorStore.getState(); st.stop() }, [])
 
-  const formatTimecode = (t) => {
-    const abs = Math.max(0, t || 0)
-    const h = Math.floor(abs / 3600)
-    const m = Math.floor((abs % 3600) / 60)
-    const s = abs % 60
-    const sStr = s.toFixed(2).padStart(5, '0')
-    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sStr}` : `${m}:${sStr}`
-  }
-
-  const pickTickStep = (pxPerSec) => {
-    // Target ~100px per major tick
-    const target = 100 / pxPerSec
-    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
-    // Find closest step >= target
-    for (const st of steps) { if (st >= target) return st }
-    return steps[steps.length - 1]
-  }
   const tickStep = pickTickStep(pxPerSecond)
-  const ticks = []
-  // Limit ticks to prevent crash if duration is huge and step is small (shouldn't happen with dynamic step)
-  for (let t = 0; t <= duration + 1e-6; t += tickStep) ticks.push(Number(t.toFixed(6)))
-  const secondDots = []
-  // Only show second dots if zoom is high enough (> 10px/s)
-  if (pxPerSecond > 10) {
-    for (let s = 0; s <= Math.floor(duration + 1e-6); s++) secondDots.push(s)
-  }
+  const ticks = generateTicks(duration, tickStep)
+  const secondDots = generateSecondDots(duration, pxPerSecond)
 
   const IconButton = ({ label, onClick, children }) => (
     <button
@@ -377,8 +351,6 @@ export default function Timeline() {
                     const isSelected = selectedClipId === m.id
                     const isOverlapping = overlaps.has(m.id)
 
-                    // Vertical drag calculation
-                    const ROW_HEIGHT = 28
                     const verticalOffset = (drag?.timelineId === m.id && drag.currentY !== undefined) ? drag.currentY : 0
                     const zIndex = (drag?.timelineId === m.id) ? 100 : 1
 
