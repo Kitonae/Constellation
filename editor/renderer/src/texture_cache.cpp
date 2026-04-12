@@ -223,6 +223,11 @@ CachedTexture* TextureCache::loadFromFile(const std::string& path) {
     uploadBuffer->Unmap(0, nullptr);
 
     printf("[TextureCache]   uploading to GPU...\n"); fflush(stdout);
+    // Ensure previous upload is complete before resetting the shared allocator
+    if (m_uploadFence->GetCompletedValue() < m_uploadFenceValue) {
+        m_uploadFence->SetEventOnCompletion(m_uploadFenceValue, m_uploadEvent);
+        WaitForSingleObject(m_uploadEvent, INFINITE);
+    }
     // Record upload commands
     m_uploadAlloc->Reset();
     m_uploadCmdList->Reset(m_uploadAlloc.Get(), nullptr);
@@ -366,6 +371,11 @@ CachedTexture* TextureCache::loadFromMemory(const uint8_t* data, size_t size) {
     }
     uploadBuffer->Unmap(0, nullptr);
 
+    // Ensure previous upload is complete before resetting the shared allocator
+    if (m_uploadFence->GetCompletedValue() < m_uploadFenceValue) {
+        m_uploadFence->SetEventOnCompletion(m_uploadFenceValue, m_uploadEvent);
+        WaitForSingleObject(m_uploadEvent, INFINITE);
+    }
     m_uploadAlloc->Reset();
     m_uploadCmdList->Reset(m_uploadAlloc.Get(), nullptr);
 
@@ -536,6 +546,12 @@ const CachedTexture* TextureCache::uploadPixels(const std::string& key, const ui
         memcpy(dst + y * footprint.Footprint.RowPitch, pixels + y * rowPitch, rowPitch);
     }
     uploadBuffer->Unmap(0, nullptr);
+
+    // Ensure previous upload is complete before resetting the shared allocator
+    if (m_uploadFence->GetCompletedValue() < m_uploadFenceValue) {
+        m_uploadFence->SetEventOnCompletion(m_uploadFenceValue, m_uploadEvent);
+        WaitForSingleObject(m_uploadEvent, INFINITE);
+    }
 
     // Record and execute GPU copy
     m_uploadAlloc->Reset();

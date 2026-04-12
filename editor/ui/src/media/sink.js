@@ -129,6 +129,7 @@ export function createDisplaySink(targetWindow, opts = {}) {
 export function createNativeSink(opts = {}) {
   const id = opts.id || sinkId('native')
   let _disposed = false
+  let _lastSnapshotTime = 0
 
   const _pushTime = opts.pushTime || ((t) => {
     try { window?.go?.main?.App?.PushTime?.(t) } catch {}
@@ -137,6 +138,14 @@ export function createNativeSink(opts = {}) {
   const _pushSnapshot = opts.pushSnapshot || ((json) => {
     try { window?.go?.main?.App?.PushSnapshot?.(json) } catch {}
   })
+
+  // Throttle snapshot pushes to max ~2/second to avoid flooding the renderer
+  function _throttledSnapshot() {
+    const now = performance.now()
+    if (now - _lastSnapshotTime < 500) return
+    _lastSnapshotTime = now
+    _sendSnapshot()
+  }
 
   function onClockTick(time) {
     if (_disposed) return
@@ -157,7 +166,7 @@ export function createNativeSink(opts = {}) {
 
   function onClockSeek(time) {
     _pushTime(time)
-    _sendSnapshot()
+    _throttledSnapshot()
   }
 
   function onSnapshot(_snapshot) {

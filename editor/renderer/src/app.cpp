@@ -324,8 +324,7 @@ void App::render() {
         m_wasPlaying = m_playing;
     }
 
-    static int traceCount = 0;
-    bool trace = (traceCount++ < 60); // trace first 60 frames (~1s)
+    bool trace = m_config.verbose;
 
     for (auto& [id, screen] : m_screens) {
         if (!screen->isValid()) continue;
@@ -561,6 +560,7 @@ void App::render() {
         }
 
         // Debug overlay
+        if (trace) printf("[Trace] debug overlay (showDebug=%d)\n", m_showDebug); fflush(stdout);
         if (m_showDebug) {
             // Update FPS counter
             m_frameCount++;
@@ -663,8 +663,10 @@ void App::render() {
             }
 
             std::string dbgKey = "__debug_" + id;
+            if (trace) printf("[Trace] debug uploadRGBA %ux%u\n", m_debugText.width(), m_debugText.height()); fflush(stdout);
             const CachedTexture* dbgTex = m_textureCache.uploadRGBA(
                 dbgKey, m_debugText.pixels(), m_debugText.width(), m_debugText.height());
+            if (trace) printf("[Trace] debug uploadRGBA done tex=%p\n", (void*)dbgTex); fflush(stdout);
             if (dbgTex) {
                 TransformCB dt = {};
                 dt.scale[0] = (float)sw;
@@ -689,7 +691,7 @@ void App::render() {
         }
 #endif
 
-        if (trace) printf("[Trace] endFrame\n");
+        if (trace) { printf("[Trace] pre-endFrame\n"); fflush(stdout); }
         screen->endFrame(m_cmdList.Get(), m_cmdQueue.Get());
         if (trace) printf("[Trace] frame complete\n");
 

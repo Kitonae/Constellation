@@ -21,7 +21,9 @@ type SSEClient struct {
 type SSEHub struct {
 	mu           sync.Mutex
 	clients      map[*SSEClient]struct{}
-	lastSnapshot []byte // cached so new connections get it immediately
+	lastSnapshot []byte   // cached so new connections get it immediately
+	lastTime     float64  // cached so new connections start at the right time
+	hasTime      bool     // true after first BroadcastTime call
 	stopCh       chan struct{} // signals shutdown to background goroutines
 
 	// Stats (atomic, lock-free)
@@ -114,15 +116,21 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	h.clients[client] = struct{}{}
 	snapshot := h.lastSnapshot
+	cachedTime := h.lastTime
+	hasTime := h.hasTime
 	h.mu.Unlock()
 
-	// Send cached snapshot on connect
+	// Send cached snapshot and time on connect
 	if snapshot != nil {
-		log.Printf("[SSE] Client connected, sending cached snapshot (%d bytes)", len(snapshot))
+		log.Printf("[SSE] Client connected, sending cached snapshot (%d bytes) and time=%.3f", len(snapshot), cachedTime)
 		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", snapshot)
 		flusher.Flush()
 	} else {
 		log.Printf("[SSE] Client connected, no cached snapshot available")
+	}
+	if hasTime {
+		fmt.Fprintf(w, "event: time\ndata: %.6f\n\n", cachedTime)
+		flusher.Flush()
 	}
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -180,6 +188,8 @@ func (h *SSEHub) BroadcastTime(t float64) {
 	h.statTimePushed.Add(1)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.lastTime = t
+	h.hasTime = true
 	for client := range h.clients {
 		// Replace: drain old value, push new
 		select {
