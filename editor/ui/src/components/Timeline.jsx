@@ -1,6 +1,5 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { useEditorStore } from '../store.js'
-import { broadcastToDisplays } from '../display/displayManager.js'
 import { computeOverlaps } from '../utils/mediaUtils.js'
 import {
   getTrackItems,
@@ -251,7 +250,6 @@ export default function Timeline() {
             try { if (tracksViewportRef.current) tracksViewportRef.current.scrollLeft = 0 } catch { }
             try { if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = '0px' } catch { }
             try { if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = '0px' } catch { }
-            try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: 0 }) } catch { }
             st.addLog({ level: 'info', message: 'Local Stop' })
           }}>■</IconButton>
         </div>
@@ -262,8 +260,8 @@ export default function Timeline() {
         <div ref={rulerViewportRef} className="no-scrollbar" style={{ position: 'relative', overflowX: 'auto', overflowY: 'hidden', height: 24, border: '1px solid #232636', borderRadius: 4, background: '#141821', cursor: 'pointer' }}
           onPointerDown={(e) => { seekingRef.current = true; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); try { e.currentTarget.setPointerCapture(e.pointerId) } catch { } }}
           onPointerMove={(e) => { if (!seekingRef.current) return; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t) }}
-          onPointerUp={(e) => { seekingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } try { const st = useEditorStore.getState(); if (!st.playing) broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: st.time }) } catch { } }}
-          onClick={(e) => { const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); if (!st.playing) { try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: t }) } catch { } } }}
+          onPointerUp={(e) => { seekingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
+          onClick={(e) => { const t = timeFromClientX(e.clientX); useEditorStore.getState().seek(t) }}
         >
           <div ref={rulerInnerRef} style={{ position: 'relative', width: timelineWidth, height: '100%' }}>
             {ticks.map((tVal, idx) => {

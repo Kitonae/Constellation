@@ -11,7 +11,8 @@ import { openImageDialog } from './utils/fileDialogs.js'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
-import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
+import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
+import { getMediaSession } from './store.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
@@ -195,32 +196,21 @@ export default function App() {
       }
     }
     prevScreensRef.current = currentScreens
-    // Emit a snapshot once on scene change to update paused display windows
-    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
-    // Update Go-side cached snapshot so newly connecting renderers get current state
-    try { if (project) window.go?.main?.App?.PushSnapshot(JSON.stringify(createProjectDocument(project, scene))) } catch { }
+    // Emit a snapshot to all outputs (display windows + native renderer)
+    try { getMediaSession().broadcastSnapshot() } catch { }
   }, [scene])
 
   // Emit snapshot once when project changes
   const prevMediaRef = useRef(null)
   useEffect(() => {
-    try {
-      let projToSend = project
-      // Optimization: if media array reference hasn't changed, don't resend it.
-      // This prevents serializing/sending large data URIs on every timeline update (e.g. dragging).
-      if (project && project.media === prevMediaRef.current) {
-        projToSend = { ...project, media: undefined }
-      }
-      prevMediaRef.current = project?.media
-      broadcastToDisplays('display:snapshot', { project: projToSend, scene, time })
-    } catch { }
-    // Push full snapshot to native renderers via Go SSE
-    try {
-      if (project) {
-        const wrapper = createProjectDocument(project, scene)
-        window.go?.main?.App?.PushSnapshot(JSON.stringify(wrapper))
-      }
-    } catch { }
+    // Optimization: if media array reference hasn't changed, don't resend it
+    // to display windows (avoids serializing large data URIs on timeline drags).
+    let projToSend = project
+    if (project && project.media === prevMediaRef.current) {
+      projToSend = { ...project, media: undefined }
+    }
+    prevMediaRef.current = project?.media
+    try { getMediaSession().broadcastSnapshot({ project: projToSend }) } catch { }
   }, [project])
 
   const onFile = async (e) => {
@@ -260,7 +250,7 @@ export default function App() {
                 }
               }
             }
-            try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
+            try { getMediaSession().broadcastSnapshot() } catch { }
           }}
         />
         <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />

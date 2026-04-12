@@ -249,17 +249,47 @@ export function createMediaSession(opts = {}) {
     }
   }
 
-  /** Broadcast full snapshot (project + scene + time) to displays */
+  /** Broadcast full snapshot (project + scene + time) to displays and sinks */
   function _broadcastSnapshot() {
-    if (!opts.broadcastFn || !opts.getStore) return
+    const snapshot = _buildSnapshot()
+    if (!snapshot) return
+    // Display windows via broadcastFn
+    if (opts.broadcastFn) {
+      try { opts.broadcastFn('display:snapshot', snapshot) } catch {}
+    }
+    // All registered sinks (native renderer, etc.)
+    for (const [, sink] of _sinks) {
+      try { sink.onSnapshot?.(snapshot) } catch {}
+    }
+  }
+
+  function _buildSnapshot(overrides) {
+    if (!opts.getStore) return null
     try {
       const s = opts.getStore()
-      opts.broadcastFn('display:snapshot', {
-        project: s.project,
-        scene: s.scene,
+      return {
+        project: overrides?.project !== undefined ? overrides.project : s.project,
+        scene: overrides?.scene !== undefined ? overrides.scene : s.scene,
         time: clock.getTime(),
-      })
-    } catch {}
+      }
+    } catch { return null }
+  }
+
+  /**
+   * Public: broadcast a snapshot to all outputs (display windows + sinks).
+   * Call this on topology changes (project/scene updates) that happen outside
+   * the normal play/pause/stop/seek flow.
+   * @param {object} [overrides] - optional { project, scene } overrides
+   */
+  function broadcastSnapshot(overrides) {
+    const snapshot = _buildSnapshot(overrides)
+    if (!snapshot) return
+    if (opts.broadcastFn) {
+      try { opts.broadcastFn('display:snapshot', snapshot) } catch {}
+    }
+    for (const [, sink] of _sinks) {
+      try { sink.onSnapshot?.(snapshot) } catch {}
+    }
   }
 
   // --- Notification helpers ---
@@ -310,6 +340,9 @@ export function createMediaSession(opts = {}) {
     addSink,
     removeSink,
     getSinks,
+
+    // Broadcasting
+    broadcastSnapshot,
 
     // Subscription
     subscribe,

@@ -21,6 +21,7 @@ import { setFileServerBaseUrl } from './utils/videoUtils.js'
 import { toFileUri } from './utils/mediaUtils.js'
 import { setFileServerBase, toFileUri as mfToFileUri } from './media/uri.js'
 import { createMediaSession } from './media/session.js'
+import { createNativeSink } from './media/sink.js'
 import { createUndoStore, withUndo } from './undo.js'
 
 // Initialize file server base URL if in Wails environment
@@ -356,10 +357,6 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
 
     return { project: { ...s.project, timeline: { ...tl, tracks: nextTracks } }, _undoLabel: 'Reorder Clip' }
   }),
-  tick: (dt) => {
-    if (!get().playing) return
-    set((s) => ({ time: s.time + dt }))
-  },
   play: () => {
     queueLog('info', 'Local: play')
     set({ playing: true })
@@ -556,23 +553,32 @@ export function getMediaSession() {
           broadcastToDisplays(event, payload)
         } catch { }
       },
-      uiUpdateInterval: 100,
+      // Match RAF cadence so store.time drives smooth playhead updates
+      uiUpdateInterval: 16,
     })
 
-    // Sync session time updates back into zustand
+    // Sync session time/state back into zustand (session is the sole time authority)
     _mediaSession.subscribe({
       onTimeUpdate(time) {
-        // Only update store if session is authoritative (playing)
-        const s = useEditorStore.getState()
-        if (s.playing) {
-          useEditorStore.setState({ time })
-        }
+        useEditorStore.setState({ time })
       },
       onStateChange(newState) {
         const playing = newState === 'playing'
         useEditorStore.setState({ playing })
       },
     })
+
+    // Register native renderer sink for Go/DX12 output
+    const nativeSink = createNativeSink({
+      id: 'native-main',
+      getSnapshot: () => {
+        const s = useEditorStore.getState()
+        if (!s.project) return null
+        // Go renderer expects the project document wrapper format
+        return createProjectDocument(s.project, s.scene)
+      },
+    })
+    _mediaSession.addSink(nativeSink)
   }
   return _mediaSession
 }

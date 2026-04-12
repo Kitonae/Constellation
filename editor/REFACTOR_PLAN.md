@@ -64,7 +64,7 @@ Done when:
 
 ### Phase 1 - Project And Snapshot Codec Boundary
 
-Status: next
+Status: done (dfba134, bea2d8d)
 
 Scope:
 - Create one module that owns project import, migration, normalization, and export serialization.
@@ -89,7 +89,7 @@ Done when:
 
 ### Phase 2 - Playback And Output Authority
 
-Status: planned
+Status: next
 
 Scope:
 - Consolidate time, play/pause/seek, and output fanout around `MediaSession`.
@@ -219,20 +219,23 @@ Current branch:
 - `refactor/project-codec-boundary`
 
 Immediate next task:
-- Start Phase 1 by extracting a dedicated project codec module.
+- Start Phase 2 by consolidating playback/output authority around MediaSession.
 
 First files to inspect when resuming:
-- `editor/ui/src/utils/parseProject.js`
+- `editor/ui/src/media/session.js`
+- `editor/ui/src/media/sink.js`
+- `editor/ui/src/display/displayManager.js`
+- `editor/ui/src/components/GlobalTicker.jsx`
 - `editor/ui/src/App.jsx`
-- `editor/ui/src/store.js`
-- `editor/ui/src/media/timeline.js`
 
 Guardrails for the next session:
-- Do not start by rewriting `store.js` wholesale.
 - Keep snapshot JSON compatible with current `editor/wails` and `editor/renderer` consumers.
-- Treat load/save/export compatibility as the codec layer's job, not the UI's job.
-- Re-run `npm run build` in `editor/ui` after each codec milestone.
+- Session must remain the single authority for time and transport state.
+- Native and web display sinks must converge to one output path.
+- Re-run `npm run build` in `editor/ui` after each milestone.
 
 ## Change Log
 
+- 2026-04-12: Phase 2 — consolidated playback/output authority around MediaSession. Removed store.tick() double time authority, registered NativeSink for Go renderer, stripped scattered broadcastToDisplays/PushTime/PushSnapshot calls from GlobalTicker, App.jsx, Timeline.jsx.
+- 2026-04-12: Phase 1 — extracted project codec boundary (dfba134). Fixed missing getTrackItems import (bea2d8d).
 - 2026-04-12: Initial plan written after architecture audit, cleanup baseline, and branch realignment.

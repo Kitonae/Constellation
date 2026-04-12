@@ -160,11 +160,10 @@ export function createNativeSink(opts = {}) {
     _sendSnapshot()
   }
 
-  function onSnapshot(snapshot) {
-    if (_disposed) return
-    try {
-      _pushSnapshot(JSON.stringify(snapshot))
-    } catch {}
+  function onSnapshot(_snapshot) {
+    // Ignore the raw snapshot payload; always use getSnapshot() which returns
+    // the project document format the Go renderer expects.
+    _sendSnapshot()
   }
 
   function _sendSnapshot() {
