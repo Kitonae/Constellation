@@ -99,7 +99,7 @@ export default function ConsolePanel() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', height: '100%', background: '#0b0d12' }}>
+    <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr auto', height: '100%', background: '#0b0d12', overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', color: '#c7cfdb' }}>
         <div style={{ fontWeight: 600 }}>Console</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -137,7 +137,7 @@ export default function ConsolePanel() {
             onKeyDown={onKeyDown}
             placeholder='Type a command (try "help")'
             style={{
-              width: '100%', background: '#0f1115', color: '#c7cfdb',
+              width: '100%', boxSizing: 'border-box', background: '#0f1115', color: '#c7cfdb',
               border: '1px solid #232636', borderRadius: 4, padding: '6px 8px',
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12,
               position: 'relative', zIndex: 1,
