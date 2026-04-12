@@ -31,8 +31,6 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   importingMediaCountUpdatedAt: 0,
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
-  remoteAddr: 'localhost:9090',
-  setRemoteAddr: (addr) => set({ remoteAddr: addr }),
   selectedId: null,
   selectedClipId: null, // primary selected timeline item id
   selectedClipIds: [], // multi-select support for stage/timeline

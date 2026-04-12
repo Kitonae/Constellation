@@ -1,7 +1,6 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback, Suspense } from 'react'
 import { useEditorStore } from '../store.js'
 import { openImageDialog } from '../utils/fileDialogs.js'
-import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 import { extFromUri, mediaTypeFromExt } from '../media/asset.js'

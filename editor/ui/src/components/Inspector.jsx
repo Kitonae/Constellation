@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useEditorStore } from '../store.js'
-import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
+import { resolveImageSrc } from './MediaThumb.jsx'
 
 function NumberInput({ value, onChange, step = 0.1, style }) {
   return (
@@ -132,19 +132,7 @@ export default function Inspector() {
       await new Promise((resolve) => {
         const img = new Image()
         img.onload = () => { if (!cancelled) setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }); resolve() }
-        img.onerror = async () => {
-          try {
-            const inlined = await inlineFromUri(selectedClip.uri)
-            if (inlined) {
-              const probe = new Image()
-              probe.onload = () => { if (!cancelled) setNaturalSize({ w: probe.naturalWidth, h: probe.naturalHeight }); resolve() }
-              probe.onerror = () => resolve()
-              probe.src = inlined
-              return
-            }
-          } catch { }
-          resolve()
-        }
+        img.onerror = () => resolve()
         img.src = src
       })
     }

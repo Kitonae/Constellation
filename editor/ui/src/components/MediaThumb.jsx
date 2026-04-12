@@ -3,6 +3,7 @@ import { useEditorStore } from '../store.js'
 import Spinner from './Spinner.jsx'
 import { generateVideoThumbnail } from '../utils/videoUtils.js'
 import { generateModelThumbnail } from '../utils/modelThumbnail.js'
+import { resolveUriSync } from '../media/uri.js'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -35,41 +36,17 @@ function extFromUri(uri) {
   } catch { return '' }
 }
 
-function u8ToBase64(u8) {
-  // Chunk to avoid call stack limits on large files
-  let res = ''
-  const chunk = 0x8000
-  for (let i = 0; i < u8.length; i += chunk) {
-    const sub = u8.subarray(i, i + chunk)
-    res += String.fromCharCode.apply(null, sub)
-  }
-  return btoa(res)
-}
-
-function base64ToU8(b64) {
-  const bin = atob(b64)
-  const u8 = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
-  return u8
-}
-
 export async function resolveImageSrc(uri, mimeHint = 'image/*') {
   if (!uri) return null
   const u = String(uri)
   if (u.startsWith('data:')) return u
   if (u.startsWith('blob:')) return u
   if (u.startsWith('file://')) {
-    // Use the sidecar file server to serve the image via HTTP (no base64 copy)
-    const { resolveUriSync } = await import('../media/uri.js')
+    // Use the sidecar file server to serve the image via HTTP.
     const resolved = resolveUriSync(u)
     return resolved || null
   }
   return u
-}
-
-export async function inlineFromUri(uri, mimeHint = 'image/*') {
-  // (Tauri inline fallback removed)
-  return null
 }
 
 function isVideoExt(ext) {
@@ -93,7 +70,6 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
   const isVideo = useMemo(() => isVideoExt(ext), [ext])
   const isModel = useMemo(() => isModelExt(ext), [ext])
   const mime = useMemo(() => MIME_BY_EXT[ext] || (isVideo ? 'video/*' : 'image/*'), [ext, isVideo])
-  const [triedInlineFallback, setTriedInlineFallback] = useState(false)
 
   useEffect(() => {
     let cancelled = false

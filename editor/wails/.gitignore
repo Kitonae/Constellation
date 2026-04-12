@@ -11,9 +11,6 @@ dist/
 *.out
 go.work
 
-# Generated protobuf code
-internal/proto/
-
 # IDE
 .idea/
 .vscode/
@@ -29,4 +26,7 @@ Thumbs.db
 *.log
 
 # Frontend (copied from ../ui/dist)
-frontend/
+frontend/*
+!frontend/dist/
+frontend/dist/*
+!frontend/dist/.keep

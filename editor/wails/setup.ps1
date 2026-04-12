@@ -1,5 +1,5 @@
 # Constellation Editor - Wails Setup Script
-# Run this once to set up the development environment
+# Run this once to install the Wails shell and UI dependencies.
 
 $ErrorActionPreference = "Stop"
 
@@ -20,7 +20,7 @@ try {
     Write-Host "✓ $goVersion" -ForegroundColor Green
 } catch {
     Write-Host "✗ Go not found" -ForegroundColor Red
-    Write-Host "Please install Go 1.21 or higher from https://go.dev/dl/" -ForegroundColor Yellow
+    Write-Host "Please install Go 1.22 or higher from https://go.dev/dl/" -ForegroundColor Yellow
     exit 1
 }
 
@@ -67,45 +67,37 @@ try {
 
 Write-Host "`n[Setup Steps]" -ForegroundColor Yellow
 
-# Step 1: Generate protobuf
-Write-Host "`n1. Generating protobuf Go bindings..."
-& .\gen-proto.ps1
+# Step 1: Go dependencies
+Write-Host "`n1. Downloading Go dependencies..."
+go mod download
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Protobuf generation failed" -ForegroundColor Red
-    exit 1
-}
-
-# Step 2: Go dependencies
-Write-Host "`n2. Installing Go dependencies..."
-go mod tidy
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Go mod tidy failed" -ForegroundColor Red
+    Write-Host "✗ Go mod download failed" -ForegroundColor Red
     exit 1
 }
 Write-Host "✓ Go dependencies installed" -ForegroundColor Green
 
-# Step 3: Frontend dependencies
-Write-Host "`n3. Installing frontend dependencies..."
-npm --prefix ../ui install
+# Step 2: Frontend dependencies
+Write-Host "`n2. Installing frontend dependencies..."
+npm --prefix ../ui ci
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ npm install failed" -ForegroundColor Red
+    Write-Host "✗ npm ci failed" -ForegroundColor Red
     exit 1
 }
 Write-Host "✓ Frontend dependencies installed" -ForegroundColor Green
 
-# Step 4: Verify
-Write-Host "`n4. Verifying setup..."
-$protoExists = Test-Path "internal\proto\proto\constellation\v1\*.pb.go"
+# Step 3: Verify
+Write-Host "`n3. Verifying setup..."
 $goModExists = Test-Path "go.mod"
 $nodeModulesExists = Test-Path "..\ui\node_modules"
+$frontendPlaceholderExists = Test-Path "frontend\dist\.keep"
 
-if ($protoExists -and $goModExists -and $nodeModulesExists) {
+if ($goModExists -and $nodeModulesExists -and $frontendPlaceholderExists) {
     Write-Host "✓ All files in place" -ForegroundColor Green
 } else {
     Write-Host "⚠ Some files may be missing:" -ForegroundColor Yellow
-    if (-not $protoExists) { Write-Host "  - Protobuf bindings" }
     if (-not $goModExists) { Write-Host "  - go.mod" }
     if (-not $nodeModulesExists) { Write-Host "  - node_modules" }
+    if (-not $frontendPlaceholderExists) { Write-Host "  - frontend/dist/.keep" }
 }
 
 Write-Host @"
@@ -116,12 +108,12 @@ Write-Host @"
 
 Next Steps:
   • Run 'wails dev' to start development mode
-  • Or run '.\build.ps1' to create a production build
+  • Build the native renderer from '..\renderer' if you are working on native output
+  • Or run '.\build.ps1' to create a production Wails shell build
 
 Documentation:
-  • README.md        - Complete documentation
+  • README.md        - Architecture and workflow
   • QUICKSTART.md    - Quick reference guide
-  • MIGRATION_GUIDE.md - Tauri to Wails migration
 
 Happy coding! 🚀
 

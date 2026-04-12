@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { resolveImageSrc, inlineFromUri } from '../components/MediaThumb.jsx'
+import { resolveImageSrc } from '../components/MediaThumb.jsx'
 import { getVideoMetadata, resolveFileUrl } from '../utils/videoUtils.js'
 
 const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg']
@@ -7,8 +7,6 @@ const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpe
 /**
  * Preloads image/video natural sizes for clip placements.
  * For videos, probes dimensions via a hidden <video> element.
- * Falls back to inline base64 if asset protocol blocks access.
- *
  * @param {Array} placements - Array of { tm, clip } objects
  * @param {Object} imageMeta - Current image metadata state { [clipId]: { w, h, src } }
  * @param {Function} setImageMeta - State setter for image metadata
@@ -45,22 +43,7 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
             setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: img.naturalWidth, h: img.naturalHeight, src } }))
             resolve()
           }
-          img.onerror = async () => {
-            try {
-              const inlined = await inlineFromUri(clip.uri)
-              if (inlined) {
-                const probe = new Image()
-                probe.onload = () => {
-                  setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: probe.naturalWidth, h: probe.naturalHeight, src: inlined } }))
-                  resolve()
-                }
-                probe.onerror = () => resolve()
-                probe.src = inlined
-                return
-              }
-            } catch { }
-            resolve()
-          }
+          img.onerror = () => resolve()
           img.src = src
         })
       }

@@ -27,8 +27,6 @@ export default function MenuBar({
   const showOutputOverlay = useEditorStore((s) => s.showOutputOverlay)
   const toggleOutputOverlay = useEditorStore((s) => s.toggleOutputOverlay)
   const setSelected = useEditorStore((s) => s.setSelected)
-  const addr = useEditorStore((s) => s.remoteAddr)
-  const setAddr = useEditorStore((s) => s.setRemoteAddr)
   const [open, setOpen] = useState(null) // 'file' | 'view' | 'remote' | null
   const wrapRef = useRef(null)
   useClickAway(wrapRef, () => setOpen(null))
@@ -94,22 +92,7 @@ export default function MenuBar({
         <Item onClick={() => setSelected(null)}>Deselect</Item>
       </Menu>
 
-      <Menu id="remote" title="Remote" disabled>
-        <SectionTitle>Display Address</SectionTitle>
-        <div style={{ padding: '0 6px 6px 6px' }}>
-          <input value={addr} onChange={(e) => setAddr(e.target.value)} style={{ width: 240, background: '#0f1115', color: '#c7cfdb', border: '1px solid #232636', borderRadius: 4, padding: '4px 6px' }} />
-        </div>
-        <div style={{ display: 'flex', gap: 6, padding: '0 6px 6px 6px', alignItems: 'center' }}>
-          <button type="button" onPointerDown={async () => {
-            setOpen(null)
-            try { const { applyProject } = await import('../utils/wailsApi.js'); await applyProject(addr, JSON.stringify(useEditorStore.getState().project)) } catch (e) { console.error('Apply failed:', e) }
-          }} onClick={(e) => e.preventDefault()}>Apply</button>
-          <button type="button" onPointerDown={async () => { setOpen(null); try { const { play } = await import('../utils/wailsApi.js'); await play(addr) } catch {} }} onClick={(e) => e.preventDefault()}>Play</button>
-          <button type="button" onPointerDown={async () => { setOpen(null); try { const { pause } = await import('../utils/wailsApi.js'); await pause(addr) } catch {} }} onClick={(e) => e.preventDefault()}>Pause</button>
-          <button type="button" onPointerDown={async () => { setOpen(null); try { const { stop } = await import('../utils/wailsApi.js'); await stop(addr) } catch {} }} onClick={(e) => e.preventDefault()}>Stop</button>
-          <button type="button" onPointerDown={() => { setOpen(null); onReopenDisplays?.() }} onClick={(e) => e.preventDefault()}>Re-open Displays</button>
-        </div>
-      </Menu>
+      <Menu id="remote" title="Remote" disabled />
     </div>
   )
 }

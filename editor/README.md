@@ -1,31 +1,25 @@
-Editor UI
+# Editor
 
-What’s here
-- ui/: Vite + React app with react-three-fiber viewport, simple timeline slider, and inspector placeholder.
-- wails/: Wails backend for the editor.
+The active desktop editor stack lives here.
 
-Run (Dev)
-Option A (manual):
-1) In `editor/ui`: `npm install` then `npm run dev` (port 5173).
-2) In `editor/wails`: `wails dev` (or `go run .`).
+What is in this directory:
+- `ui/` - React + Vite editor frontend
+- `wails/` - Go/Wails desktop shell, local sidecar server, and renderer process manager
+- `renderer/` - native Windows DX12 renderer used for output windows and native playback
 
-Build
-- UI: `npm run build` in `editor/ui`.
-- Backend: `wails build` in `editor/wails`.
+Development workflow:
+1. `cd editor/ui && npm ci`
+2. `cd editor/wails && wails dev`
+3. If you are working on native output, build the renderer separately:
+   - `cmake -S ../renderer -B ../renderer/build -A x64`
+   - `cmake --build ../renderer/build --config Release`
 
-Usage
-- Click the file picker in the header and select `examples/scene.example.json` from the repo root.
-- The viewport shows a ground grid, any screens as planes, and basic lights. Click a screen to select it.
-- Use Move/Rotate/Scale to manipulate the selected node via gizmos. Inspector edits position/scale/quaternion numerically.
-- Timeline slider scrubs local time; Play/Pause toggles a simple local clock.
-- Console: Toggle the in-app console via the "Console" button to see import/apply logs and errors. Use "Clear" to reset.
-- Console: Press the tilde/backtick key (`~` / backquote) to toggle a top drop-down console drawer. It is scrollable and shows import/apply logs and errors. Use "Clear" to reset.
-- Enter Display address (e.g., `http://127.0.0.1:50051`) and click "Apply to Display" to send the current project to the Display server. Use Play/Pause/Stop to control transport remotely.
-- Add content: click "Add Image" to choose an image file. The image is added to the project's media list and a timeline track is inserted targeting the first screen (or the currently selected screen), starting at the current time with a default 10s duration.
- - Media Bin: Use the Media Bin panel to import images into the project’s media library without placing them yet. Each media row has an "Insert at <time>" button to drop it onto the timeline at the current playhead.
- - Timeline Tracks: The timeline now visualizes media tracks as bars positioned by start time and duration, with a playhead indicator.
+Production shell build:
+1. `cd editor/ui && npm run build`
+2. `cd editor/wails && .\copy-frontend.ps1`
+3. `wails build`
 
-Next
-- Selection + gizmos; outline hovered/selected nodes.
-- Map cameras from scene to bookmarks; add camera dropdown.
-- Wire to Display server via gRPC-web or a local bridge for live preview/apply.
+Notes:
+- `editor/wails/frontend/dist/.keep` is a tracked placeholder so clean checkouts compile before a real frontend build is copied in.
+- The renderer binary is not built by `wails build`; build it from `editor/renderer` when needed.
+- This directory is organized around the current React + Wails + DX12 workflow.

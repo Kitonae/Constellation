@@ -7,6 +7,9 @@ Cargo.lock
 node_modules/
 dist/
 build/
+.vite/
+playwright-report/
+test-results/
 .env
 .env.*
 
@@ -15,6 +18,7 @@ build/
 # .vscode/
 !.vscode/launch.json
 !.vscode/tasks.json
+**/.claude/settings.local.json
 *.swp
 *.swo
 *.bak
@@ -51,3 +55,10 @@ yarn-error.log*
 
 # Examples
 examples/*.json
+
+# Keep the embedded Wails frontend placeholder tracked
+!editor/wails/frontend/
+editor/wails/frontend/*
+!editor/wails/frontend/dist/
+editor/wails/frontend/dist/*
+!editor/wails/frontend/dist/.keep

@@ -3,7 +3,7 @@
   "name": "Constellation Editor",
   "outputfilename": "constellation-editor",
   "frontend:dir": "frontend",
-  "frontend:install": "npm --prefix ../../ui install",
+  "frontend:install": "npm --prefix ../../ui ci",
   "frontend:build": "cmd /c echo skip-build",
   "frontend:dev:watcher": "npm --prefix ../../ui run dev",
   "frontend:dev:serverUrl": "http://localhost:5173",

@@ -229,8 +229,6 @@ export default function App() {
     const text = await f.text()
     try {
       const data = JSON.parse(text)
-      // If running in Tauri, import any external media into local cache and relink
-      // (Tauri support removed)
       loadProject(data)
     } catch (err) {
       alert('Invalid JSON: ' + err)
@@ -389,7 +387,7 @@ function buildProjectWrapper(project, scene) {
 }
 
 async function onAddImage() {
-  // Use Tauri dialog to get a file path for the image
+  // Use the active file dialog helper to get a path for the image.
   const filePath = await openImageDialog()
   if (!filePath) return
   // Infer name from path

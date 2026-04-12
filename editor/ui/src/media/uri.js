@@ -3,8 +3,7 @@
 //
 // Replaces the scattered implementations in:
 //   - videoUtils.js (resolveFileUrl)
-//   - MediaThumb.jsx (resolveImageSrc, inlineFromUri)
-//   - wailsApi.js (resolveMediaSrc)
+//   - MediaThumb.jsx (resolveImageSrc)
 //   - store.js, MediaBin.jsx, App.jsx (toFileUri)
 
 let _fileServerBase = ''

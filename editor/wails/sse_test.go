@@ -57,7 +57,7 @@ func TestSSEHub_BroadcastToClients(t *testing.T) {
 	hub := NewSSEHub()
 
 	// Add a test client
-	client := &SSEClient{ch: make(chan []byte, 64)}
+	client := &SSEClient{ch: make(chan []byte, 64), timeCh: make(chan []byte, 1)}
 	hub.mu.Lock()
 	hub.clients[client] = struct{}{}
 	hub.mu.Unlock()
@@ -65,7 +65,7 @@ func TestSSEHub_BroadcastToClients(t *testing.T) {
 	hub.BroadcastTime(1.5)
 
 	select {
-	case msg := <-client.ch:
+	case msg := <-client.timeCh:
 		if !strings.Contains(string(msg), "event: time") {
 			t.Errorf("expected time event, got %q", msg)
 		}
