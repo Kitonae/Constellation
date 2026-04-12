@@ -117,9 +117,8 @@ export default function ConsolePanel() {
           </div>
         ))}
       </div>
-      <form onSubmit={(e) => { e.preventDefault(); runCommand(cmd); setCmd('') }} style={{ padding: '6px 8px', borderTop: '1px solid #232636', display: 'flex', gap: 8 }}>
-        <div style={{ flex: 1, position: 'relative' }}>
-          {/* Ghost text for autocomplete suggestion */}
+      <form onSubmit={(e) => { e.preventDefault(); runCommand(cmd); setCmd('') }} style={{ padding: '6px 8px', borderTop: '1px solid #232636' }}>
+        <div style={{ position: 'relative' }}>
           {suggestion && (
             <div style={{
               position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
@@ -145,7 +144,6 @@ export default function ConsolePanel() {
             }}
           />
         </div>
-        <button type="submit">Run</button>
       </form>
     </div>
   )
