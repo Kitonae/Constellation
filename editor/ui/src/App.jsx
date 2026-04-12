@@ -1,41 +1,46 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useEditorStore } from './store.js'
-import { toFileUri, fileToDataUrl } from './utils/mediaUtils.js'
+import { useEditorStore, getMediaSession } from './store.js'
 import Viewport3D from './components/Viewport.jsx'
 import DisplaysPanel from './components/DisplaysPanel.jsx'
 import Viewport2D from './components/Viewport2D.jsx'
 import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
 import Inspector from './components/Inspector.jsx'
-import { openImageDialog } from './utils/fileDialogs.js'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
-import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
-import { getMediaSession } from './store.js'
+import { openDisplayWindow } from './display/displayManager.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { createProjectDocument } from './project/projectCodec.js'
-import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
-import { setFileServerBase, isMediaFile } from './media/index.js'
+import { useHotkeys } from './hooks/useHotkeys.js'
+import { useScreenLifecycle } from './hooks/useScreenLifecycle.js'
+import { useSnapshotSync } from './hooks/useSnapshotSync.js'
+import { useGlobalMediaDrop } from './hooks/useGlobalMediaDrop.js'
 
 export default function App() {
   const fileRef = useRef(null)
-  const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode, showOutputOverlay, toggleOutputOverlay, addScreenNode, newProject, addMediaClip } = useEditorStore()
+  const { loadProject, project, scene, addLog, viewMode, newProject } = useEditorStore()
   const [fileName, setFileName] = useState('')
   const [status, setStatus] = useState('')
   // Resizable left pane (Media Bin)
   const [mediaWidth, setMediaWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
-  const leftPaneDragRef = useRef(null) // { startX, startW }
+  const leftPaneDragRef = useRef(null)
   // Resizable right pane (Inspector)
   const [inspectorWidth, setInspectorWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
-  const rightPaneDragRef = useRef(null) // { startX, startW }
+  const rightPaneDragRef = useRef(null)
   const rightPaneRef = useRef(null)
   // Resizable footer (timeline) height
   const [timelineHeight, setTimelineHeight] = useState(350)
-  const footerDragRef = useRef(null) // { startY, startH }
+  const footerDragRef = useRef(null)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
+
+  // Shell orchestration hooks
+  useHotkeys()
+  useScreenLifecycle()
+  useSnapshotSync()
+  useGlobalMediaDrop()
 
   // Initialize default project on startup
   useEffect(() => {
@@ -43,175 +48,6 @@ export default function App() {
       newProject()
     }
   }, [])
-
-  // Global drag and drop handler for importing media
-  useEffect(() => {
-    const onDragOver = (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-    const onDrop = async (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const files = Array.from(e.dataTransfer.files || [])
-      if (!files.length) return
-
-      for (const file of files) {
-        const name = file.name
-        // Filter for media types
-        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) continue
-
-        const id = `clip-${Math.random().toString(36).slice(2, 8)}`
-        let initialUri = null
-
-        // Check for path property (Electron/WebView2)
-        const path = file.path
-        const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path))
-
-        if (isAbsolute) {
-            initialUri = toFileUri(path)
-        } else if (file) {
-             // Fallback for web: use object URL (lightweight reference, not a full copy)
-             initialUri = URL.createObjectURL(file)
-        }
-        
-        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
-        if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
-          try {
-            const meta = await getVideoMetadata(file || initialUri)
-            if (meta?.duration) duration = meta.duration
-          } catch (e) {
-            console.warn('Failed to get video metadata', e)
-          }
-        }
-
-        addMediaClip({ id, name, uri: initialUri, durationSeconds: duration })
-      }
-    }
-
-    window.addEventListener('dragover', onDragOver)
-    window.addEventListener('drop', onDrop)
-    return () => {
-      window.removeEventListener('dragover', onDragOver)
-      window.removeEventListener('drop', onDrop)
-    }
-  }, [addMediaClip])
-
-  // Initialize sidecar file server for video support in dev mode
-  useEffect(() => {
-    if (window.go?.main?.App?.GetFileServerPort) {
-      window.go.main.App.GetFileServerPort().then(port => {
-        if (port > 0) {
-          console.log('Using sidecar file server at port', port)
-          setFileServerBaseUrl(`http://localhost:${port}`)
-          useEditorStore.setState({ _fileServerPort: port })
-          setFileServerBase(`http://localhost:${port}`)
-          useEditorStore.getState().addLog({ level: 'info', message: `Video sidecar active on port ${port}` })
-        }
-      }).catch(err => {
-        console.warn('Failed to get file server port', err)
-        useEditorStore.getState().addLog({ level: 'error', message: `Sidecar error: ${err}` })
-      })
-    } else {
-      useEditorStore.getState().addLog({ level: 'warn', message: 'Wails API not available' })
-    }
-  }, [])
-
-  useEffect(() => {
-    const onKey = (e) => {
-      // Undo/Redo
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        useEditorStore.getState().undo()
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-        e.preventDefault()
-        useEditorStore.getState().redo()
-      }
-      // Toggle console on backquote/tilde key
-      if (e.code === 'Backquote') {
-        const t = e.target
-        // ignore when typing in inputs/textareas/contenteditable
-        const tag = (t?.tagName || '').toLowerCase()
-        const isEditable = t?.isContentEditable || tag === 'input' || tag === 'textarea'
-        if (isEditable) return
-        e.preventDefault()
-        toggleConsole()
-      }
-      // Delete selected timeline clip with Delete key
-      if (e.key === 'Delete') {
-        const t = e.target
-        const tag = (t?.tagName || '').toLowerCase()
-        const isEditable = t?.isContentEditable || tag === 'input' || tag === 'textarea'
-        if (isEditable) return
-        const { selectedClipId, removeClip } = useEditorStore.getState()
-        if (selectedClipId) {
-          e.preventDefault()
-          removeClip(selectedClipId)
-        }
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [toggleConsole])
-
-  // Open/close display windows based on enabled screens
-  const prevScreensRef = useRef(new Map()) // id → { screenType }
-  useEffect(() => {
-    const roots = scene?.roots || []
-    const currentScreens = new Map()
-
-    for (const n of roots) {
-      if (n.kind?.type === 'screen') {
-        const enabled = (n.kind?.enabled ?? true)
-        const screenType = n.kind?.screenType || 'web'
-        const px = n.kind?.pixels?.[0] || 0
-        const py = n.kind?.pixels?.[1] || 0
-        currentScreens.set(n.id, { screenType })
-        if (enabled && px > 0 && py > 0) {
-          if (screenType === 'web') {
-            openDisplayWindow(n.id, px, py)
-          } else if (screenType === 'renderer') {
-            window.go?.main?.App?.OpenRendererScreen(n.id, px, py)
-              ?.catch(e => { console.error('Failed to open renderer screen:', e); addLog({ level: 'error', message: `Renderer launch failed: ${e}` }) })
-          }
-        } else {
-          if (screenType === 'web') {
-            closeDisplayWindow(n.id)
-          } else if (screenType === 'renderer') {
-            window.go?.main?.App?.CloseRendererScreen(n.id)?.catch(e => console.warn('CloseRendererScreen:', e))
-          }
-        }
-      }
-    }
-
-    // Close screens that were removed from the scene
-    for (const [id, prev] of prevScreensRef.current) {
-      if (!currentScreens.has(id)) {
-        if (prev.screenType === 'web') {
-          closeDisplayWindow(id)
-        } else if (prev.screenType === 'renderer') {
-          window.go?.main?.App?.CloseRendererScreen(id)?.catch(e => console.warn('CloseRendererScreen:', e))
-        }
-      }
-    }
-    prevScreensRef.current = currentScreens
-    // Emit a snapshot to all outputs (display windows + native renderer)
-    try { getMediaSession().broadcastSnapshot() } catch { }
-  }, [scene])
-
-  // Emit snapshot once when project changes
-  const prevMediaRef = useRef(null)
-  useEffect(() => {
-    // Optimization: if media array reference hasn't changed, don't resend it
-    // to display windows (avoids serializing large data URIs on timeline drags).
-    let projToSend = project
-    if (project && project.media === prevMediaRef.current) {
-      projToSend = { ...project, media: undefined }
-    }
-    prevMediaRef.current = project?.media
-    try { getMediaSession().broadcastSnapshot({ project: projToSend }) } catch { }
-  }, [project])
 
   const onFile = async (e) => {
     const f = e.target.files?.[0]
@@ -297,7 +133,6 @@ export default function App() {
               const dx = e.clientX - rightPaneDragRef.current.startX
               const minW = 200
               const maxW = window.innerWidth * 0.45
-              // Dragging left increases width
               const next = Math.max(minW, Math.min(maxW, rightPaneDragRef.current.startW - dx))
               setInspectorWidth(next)
               e.preventDefault()
@@ -312,7 +147,6 @@ export default function App() {
         </div>
       </main>
       <footer className="panel" style={{ height: timelineHeight, minHeight: 80, position: 'relative', overflow: 'hidden' }}>
-        {/* Drag handle at top of footer to resize timeline height */}
         <div
           onPointerDown={(e) => { try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }; footerDragRef.current = { startY: e.clientY, startH: timelineHeight } }}
           onPointerMove={(e) => {
@@ -341,7 +175,6 @@ export default function App() {
         onSave={(name) => {
           try {
             const wrapper = createProjectDocument(project, scene)
-            // Update project name in wrapper if needed, or just use filename
             if (wrapper.project) wrapper.project.name = name
 
             const blob = new Blob([JSON.stringify(wrapper, null, 2)], { type: 'application/json' })
@@ -362,16 +195,3 @@ export default function App() {
     </div>
   )
 }
-
-async function onAddImage() {
-  // Use the active file dialog helper to get a path for the image.
-  const filePath = await openImageDialog()
-  if (!filePath) return
-  // Infer name from path
-  const name = String(filePath).split(/[\\\/]/).pop()
-  // Fast path: skip caching
-  useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
-  useEditorStore.getState().addLog({ level: 'info', message: `Added image: ${name}` })
-  return
-}
-

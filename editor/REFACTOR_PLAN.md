@@ -89,7 +89,7 @@ Done when:
 
 ### Phase 2 - Playback And Output Authority
 
-Status: next
+Status: done (834a3ce)
 
 Scope:
 - Consolidate time, play/pause/seek, and output fanout around `MediaSession`.
@@ -110,7 +110,7 @@ Done when:
 
 ### Phase 3 - Store And Shell Decomposition
 
-Status: planned
+Status: done
 
 Scope:
 - Split editor state from app shell orchestration.
@@ -219,23 +219,21 @@ Current branch:
 - `refactor/project-codec-boundary`
 
 Immediate next task:
-- Start Phase 2 by consolidating playback/output authority around MediaSession.
+- Start Phase 4 by breaking up Viewport2D and Timeline into smaller modules.
 
 First files to inspect when resuming:
-- `editor/ui/src/media/session.js`
-- `editor/ui/src/media/sink.js`
-- `editor/ui/src/display/displayManager.js`
-- `editor/ui/src/components/GlobalTicker.jsx`
-- `editor/ui/src/App.jsx`
+- `editor/ui/src/components/Viewport2D.jsx`
+- `editor/ui/src/components/Timeline.jsx`
+- `editor/ui/src/media/renderer.js`
 
 Guardrails for the next session:
-- Keep snapshot JSON compatible with current `editor/wails` and `editor/renderer` consumers.
-- Session must remain the single authority for time and transport state.
-- Native and web display sinks must converge to one output path.
+- Extract math/render logic into testable modules outside the full components.
+- Keep working behavior stable — the components should render identically.
 - Re-run `npm run build` in `editor/ui` after each milestone.
 
 ## Change Log
 
+- 2026-04-12: Phase 3 — split store.js into 6 concern-based slices (projectSlice, sceneSlice, transportSlice, uiSlice, consoleSlice, importSlice). Extracted App.jsx orchestration into 4 hooks (useHotkeys, useScreenLifecycle, useSnapshotSync, useGlobalMediaDrop). App.jsx is now mostly composition and layout. Removed duplicate sidecar init.
 - 2026-04-12: Phase 2 — consolidated playback/output authority around MediaSession. Removed store.tick() double time authority, registered NativeSink for Go renderer, stripped scattered broadcastToDisplays/PushTime/PushSnapshot calls from GlobalTicker, App.jsx, Timeline.jsx.
 - 2026-04-12: Phase 1 — extracted project codec boundary (dfba134). Fixed missing getTrackItems import (bea2d8d).
 - 2026-04-12: Initial plan written after architecture audit, cleanup baseline, and branch realignment.
