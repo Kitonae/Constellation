@@ -11,6 +11,7 @@ import {
   getTimelineItemEnd,
   getTimelineItemStart,
   getTimelineTracks,
+  getTrackItems,
   loadProjectDocument,
   removeTimelineItemById,
   removeTimelineItemsByAssetId,
