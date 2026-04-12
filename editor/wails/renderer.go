@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // RendererStatus is returned to the frontend via Wails binding.
@@ -30,18 +31,23 @@ type rendererProc struct {
 // RendererManager owns all renderer processes and the SSE hub.
 type RendererManager struct {
 	mu      sync.Mutex
+	wg      sync.WaitGroup // tracks exit-watcher goroutines
 	procs   map[string]*rendererProc
 	hub     Broadcaster
 	exePath string
+	appCtx  context.Context // app lifecycle context
 }
 
 // NewRendererManager creates a new renderer manager.
-func NewRendererManager(hub Broadcaster) *RendererManager {
+// The appCtx is the Wails app context — child processes are derived from it
+// so they are cancelled when the app shuts down.
+func NewRendererManager(hub Broadcaster, appCtx context.Context) *RendererManager {
 	exe := resolveRendererExe()
 	return &RendererManager{
-		procs:   make(map[string]*rendererProc),
-		hub:     hub,
+		procs:  make(map[string]*rendererProc),
+		hub:    hub,
 		exePath: exe,
+		appCtx: appCtx,
 	}
 }
 
@@ -65,11 +71,6 @@ func resolveRendererExe() string {
 		)
 	}
 
-	// 3. Common absolute dev path
-	candidates = append(candidates,
-		`C:\src\Constellation\editor\renderer\build\Release\constellation-renderer.exe`,
-	)
-
 	for _, c := range candidates {
 		if abs, err := filepath.Abs(c); err == nil {
 			if _, err := os.Stat(abs); err == nil {
@@ -88,10 +89,14 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	// If a previous process exists and hasn't stopped, reject.
+	// If it's stopped (exited), clean it up and allow relaunch.
 	if p, ok := rm.procs[screenID]; ok {
 		if p.cmd != nil && p.cmd.Process != nil && p.status.State != "stopped" {
 			return fmt.Errorf("renderer already running for screen %s (PID %d)", screenID, p.cmd.Process.Pid)
 		}
+		// Clean up stale entry
+		delete(rm.procs, screenID)
 	}
 
 	// Check if executable exists
@@ -100,7 +105,8 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 		return fmt.Errorf("renderer executable not found: %s", rm.exePath)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive from app context so child processes are cancelled on app shutdown
+	ctx, cancel := context.WithCancel(rm.appCtx)
 	cmd := exec.CommandContext(ctx, rm.exePath,
 		"--port", fmt.Sprintf("%d", serverPort),
 		"--screen", screenID,
@@ -115,6 +121,7 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 		return fmt.Errorf("failed to start renderer: %w", err)
 	}
 
+	// Only add to map after successful Start()
 	rp := &rendererProc{
 		cmd:      cmd,
 		screenID: screenID,
@@ -129,7 +136,9 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 	log.Printf("Launched renderer for screen %s (PID %d)", screenID, cmd.Process.Pid)
 
 	// Watch for process exit
+	rm.wg.Add(1)
 	go func() {
+		defer rm.wg.Done()
 		err := cmd.Wait()
 		rm.mu.Lock()
 		defer rm.mu.Unlock()
@@ -148,35 +157,66 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 }
 
 // StopRenderer stops the renderer process for a screen.
+// Waits briefly for the process to exit before returning.
 func (rm *RendererManager) StopRenderer(screenID string) error {
 	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
 	p, ok := rm.procs[screenID]
 	if !ok {
+		rm.mu.Unlock()
 		return nil
 	}
 
 	if p.cancel != nil {
 		p.cancel()
 	}
+	rm.mu.Unlock()
+
+	// Wait briefly for the process to exit (the exit watcher will update state).
+	// Don't hold the lock while waiting.
+	if p.cmd != nil && p.cmd.Process != nil {
+		done := make(chan struct{})
+		go func() {
+			p.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			log.Printf("Renderer for screen %s did not exit within 3s after cancel", screenID)
+		}
+	}
+
+	rm.mu.Lock()
 	delete(rm.procs, screenID)
+	rm.mu.Unlock()
 	log.Printf("Stopped renderer for screen %s", screenID)
 	return nil
 }
 
-// ShutdownAll stops all renderer processes.
+// ShutdownAll stops all renderer processes and waits for exit watchers.
 func (rm *RendererManager) ShutdownAll() {
 	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
 	for id, p := range rm.procs {
 		if p.cancel != nil {
 			p.cancel()
 		}
-		log.Printf("Shutdown: stopped renderer for screen %s", id)
+		log.Printf("Shutdown: stopping renderer for screen %s", id)
 	}
 	rm.procs = make(map[string]*rendererProc)
+	rm.mu.Unlock()
+
+	// Wait for all exit-watcher goroutines to finish (with timeout)
+	done := make(chan struct{})
+	go func() {
+		rm.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		log.Printf("All renderer processes exited")
+	case <-time.After(5 * time.Second):
+		log.Printf("Warning: timed out waiting for renderer processes to exit")
+	}
 }
 
 // GetStatus returns the status of a renderer for a given screen.

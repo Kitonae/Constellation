@@ -99,7 +99,7 @@ func (a *App) startup(ctx context.Context) {
 
 	sseHub := NewSSEHub()
 	a.hub = sseHub
-	a.renderers = NewRendererManager(sseHub)
+	a.renderers = NewRendererManager(sseHub, ctx)
 	a.files = &FileService{}
 
 	// Start a sidecar file server for dev mode access and renderer communication
@@ -126,6 +126,9 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	if a.renderers != nil {
 		a.renderers.ShutdownAll()
+	}
+	if sseHub, ok := a.hub.(*SSEHub); ok {
+		sseHub.Close()
 	}
 	if a.fileServer != nil {
 		a.fileServer.Close()
@@ -187,14 +190,14 @@ func (a *App) OpenRendererScreen(screenID string, width, height int) error {
 	return nil
 }
 
-// CloseRendererScreen sends a screen-close event and stops the renderer.
+// CloseRendererScreen stops the renderer and then broadcasts the close event.
 func (a *App) CloseRendererScreen(screenID string) {
 	if err := validateScreenID(screenID); err != nil {
 		log.Printf("Invalid screen ID in CloseRendererScreen: %v", err)
 		return
 	}
-	a.hub.BroadcastScreenClose(screenID)
 	a.renderers.StopRenderer(screenID)
+	a.hub.BroadcastScreenClose(screenID)
 }
 
 // PushSnapshot sends the full project state to all connected renderers.

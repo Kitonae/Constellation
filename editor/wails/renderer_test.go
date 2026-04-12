@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 )
 
@@ -19,7 +20,7 @@ func (m *mockBroadcaster) BroadcastScreenClose(screenID string)                 
 
 func TestRendererManager_GetStatus_UnknownScreen(t *testing.T) {
 	hub := &mockBroadcaster{}
-	rm := NewRendererManager(hub)
+	rm := NewRendererManager(hub, context.Background())
 
 	status := rm.GetStatus("nonexistent")
 	if status.State != "stopped" {
@@ -32,7 +33,7 @@ func TestRendererManager_GetStatus_UnknownScreen(t *testing.T) {
 
 func TestRendererManager_UpdateStatus(t *testing.T) {
 	hub := &mockBroadcaster{}
-	rm := NewRendererManager(hub)
+	rm := NewRendererManager(hub, context.Background())
 
 	// Manually add a proc to update
 	rm.mu.Lock()
@@ -62,7 +63,7 @@ func TestRendererManager_UpdateStatus(t *testing.T) {
 
 func TestRendererManager_UpdateStatus_NonexistentScreen(t *testing.T) {
 	hub := &mockBroadcaster{}
-	rm := NewRendererManager(hub)
+	rm := NewRendererManager(hub, context.Background())
 
 	// Should not panic
 	rm.UpdateStatus(RendererStatus{
@@ -78,7 +79,7 @@ func TestRendererManager_UpdateStatus_NonexistentScreen(t *testing.T) {
 
 func TestRendererManager_StopRenderer_UnknownScreen(t *testing.T) {
 	hub := &mockBroadcaster{}
-	rm := NewRendererManager(hub)
+	rm := NewRendererManager(hub, context.Background())
 
 	err := rm.StopRenderer("nonexistent")
 	if err != nil {
@@ -102,7 +103,7 @@ func TestRendererManager_LaunchRenderer_BadExe(t *testing.T) {
 
 func TestRendererManager_ShutdownAll(t *testing.T) {
 	hub := &mockBroadcaster{}
-	rm := NewRendererManager(hub)
+	rm := NewRendererManager(hub, context.Background())
 
 	// Add some mock procs
 	rm.mu.Lock()

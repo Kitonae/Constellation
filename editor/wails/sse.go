@@ -22,6 +22,7 @@ type SSEHub struct {
 	mu           sync.Mutex
 	clients      map[*SSEClient]struct{}
 	lastSnapshot []byte // cached so new connections get it immediately
+	stopCh       chan struct{} // signals shutdown to background goroutines
 
 	// Stats (atomic, lock-free)
 	statTimePushed  atomic.Int64
@@ -33,9 +34,22 @@ type SSEHub struct {
 
 // NewSSEHub creates a new SSE hub.
 func NewSSEHub() *SSEHub {
-	hub := &SSEHub{clients: make(map[*SSEClient]struct{})}
+	hub := &SSEHub{
+		clients: make(map[*SSEClient]struct{}),
+		stopCh:  make(chan struct{}),
+	}
 	go hub.logStats()
 	return hub
+}
+
+// Close stops background goroutines and releases resources.
+func (h *SSEHub) Close() {
+	select {
+	case <-h.stopCh:
+		// already closed
+	default:
+		close(h.stopCh)
+	}
 }
 
 func (h *SSEHub) logStats() {
@@ -52,7 +66,13 @@ func (h *SSEHub) logStats() {
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		case <-ticker.C:
+		}
+
 		tp := h.statTimePushed.Swap(0)
 		ts := h.statTimeSent.Swap(0)
 		ep := h.statEventPushed.Swap(0)

@@ -146,7 +146,7 @@ Done when:
 
 ### Phase 5 - Wails Sidecar And Renderer Process Hardening
 
-Status: planned
+Status: done
 
 Scope:
 - Strengthen lifecycle and delivery guarantees between Wails and the native renderer.
@@ -233,6 +233,7 @@ Guardrails for the next session:
 
 ## Change Log
 
+- 2026-04-12: Phase 5 — hardened Wails sidecar: removed hardcoded dev path from renderer.go, derived process contexts from app context, added WaitGroup for exit watchers, StopRenderer now waits for process exit (3s timeout), ShutdownAll waits for all exits (5s timeout), fixed CloseRendererScreen ordering (stop then broadcast), added SSEHub.Close() with stop channel for stats goroutine.
 - 2026-04-12: Phase 4 — extracted Timeline math to timeline/timelineUtils.js. Extracted Viewport2D helpers (Node2D, ModelNode2D, VideoFrame, StageMenu, SelectionOverlay, IconButton) and math (dotGridBg, clamp, coordinate utils) to viewport2d/ submodules. Viewport2D reduced from 1135 to 770 lines.
 - 2026-04-12: Phase 3 — split store.js into 6 concern-based slices (projectSlice, sceneSlice, transportSlice, uiSlice, consoleSlice, importSlice). Extracted App.jsx orchestration into 4 hooks (useHotkeys, useScreenLifecycle, useSnapshotSync, useGlobalMediaDrop). App.jsx is now mostly composition and layout. Removed duplicate sidecar init.
 - 2026-04-12: Phase 2 — consolidated playback/output authority around MediaSession. Removed store.tick() double time authority, registered NativeSink for Go renderer, stripped scattered broadcastToDisplays/PushTime/PushSnapshot calls from GlobalTicker, App.jsx, Timeline.jsx.
