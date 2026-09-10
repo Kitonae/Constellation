@@ -1,15 +1,16 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback, Suspense } from 'react'
 import { useEditorStore } from '../store.js'
-import { openImageDialog } from '../utils/fileDialogs.js'
-import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
+import { resolveImageSrc } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
 import { generateModelThumbnail } from '../utils/modelThumbnail.js'
+import { isEditableTarget } from '../hooks/useShortcuts.js'
+import { viewportActions } from '../viewportActions.js'
 
-export default function Viewport2D() {
+function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
   const project = useEditorStore((s) => s.project)
   // Throttle time-dependent React updates; direct DOM updates for clip positions
@@ -68,45 +69,28 @@ export default function Viewport2D() {
     }
   }, [])
 
-  // Track shift key and handle Delete key for removing selected screen/clip
+  // Modifier-key state for the hand tool. Commands (Delete, Frame All) live in
+  // App's single shortcut layer; this effect only tracks held keys, never
+  // swallows a keystroke aimed at a text field, and cleans up its own blur
+  // listener.
   useEffect(() => {
     const down = (e) => {
+      if (isEditableTarget(e.target)) return
       if (e.key === 'Shift') setShiftHeld(true)
       if (e.key === ' ') { setSpaceHeld(true); spaceHeldRef.current = true; e.preventDefault() }
-      if (e.key === 'f' || e.key === 'F') {
-        // Trigger frame all via a synthetic click on the button
-        document.querySelector('[title="Frame All (F)"]')?.click()
-      }
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        const st = useEditorStore.getState()
-        const sel = st.selectedId
-        if (sel) {
-          const nodes = st.scene?.roots || []
-          const stack = [...nodes]
-          while (stack.length) {
-            const n = stack.pop()
-            if (!n) continue
-            if (n.id === sel) {
-              if (n.kind?.type === 'screen') st.removeScreenNode(sel)
-              break
-            }
-            if (n.children?.length) stack.push(...n.children)
-          }
-        } else if (st.selectedClipId) {
-          st.removeClip(st.selectedClipId)
-        }
-      }
     }
     const up = (e) => {
       if (e.key === 'Shift') setShiftHeld(false)
       if (e.key === ' ') { setSpaceHeld(false); spaceHeldRef.current = false }
     }
+    const onBlur = () => { setShiftHeld(false); setSpaceHeld(false); spaceHeldRef.current = false }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
-    window.addEventListener('blur', () => { setShiftHeld(false); setSpaceHeld(false); spaceHeldRef.current = false })
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', onBlur)
     }
   }, [])
 
@@ -179,13 +163,83 @@ export default function Viewport2D() {
   }
   const placements = useMemo(() => {
     const res = []
+    const live = new Set()
     for (const m of allTimelineItems) {
       const screen = m.target_node_id ? nodeIndex.get(m.target_node_id) : null
       const clip = mediaById[m.clip_id]
+      live.add(m.id)
       res.push({ tm: m, screen, clip })
     }
+    // Drop refs for clips that are gone; these maps used to grow for the
+    // lifetime of the session.
+    for (const id of [...clipRefs.current.keys()]) if (!live.has(id)) clipRefs.current.delete(id)
+    for (const id of [...videoRefs.current.keys()]) if (!live.has(id)) videoRefs.current.delete(id)
     return res
   }, [allTimelineItems, nodeIndex, mediaById])
+
+  // Fit every screen and clip in the viewport. Registered in
+  // `viewportActions` so App's shortcut layer can drive it with `F`.
+  const frameAll = useCallback(() => {
+      // Compute bounding box of all screens and clips in world-space
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      let hasContent = false
+
+      for (const n of nodes) {
+        if (n.kind?.type !== 'screen') continue
+        const px = n.kind?.pixels?.[0] || 0
+        const py = n.kind?.pixels?.[1] || 0
+        if (px <= 0 || py <= 0) continue
+        const sx = n.transform?.position?.x || 0
+        const sy = n.transform?.position?.y || 0
+        minX = Math.min(minX, sx - px / 2)
+        maxX = Math.max(maxX, sx + px / 2)
+        minY = Math.min(minY, sy - py / 2)
+        maxY = Math.max(maxY, sy + py / 2)
+        hasContent = true
+      }
+
+      for (const { tm } of placements) {
+        const mx = tm.position?.x || 0
+        const my = tm.position?.y || 0
+        const meta = imageMeta[tm.clip_id]
+        const tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
+        const th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
+        minX = Math.min(minX, mx - tw / 2)
+        maxX = Math.max(maxX, mx + tw / 2)
+        minY = Math.min(minY, my - th / 2)
+        maxY = Math.max(maxY, my + th / 2)
+        hasContent = true
+      }
+
+      if (!hasContent) return
+
+      const padding = 100
+      const worldW = (maxX - minX) + padding * 2
+      const worldH = (maxY - minY) + padding * 2
+      const sc = scrollRef.current
+      if (!sc) return
+      const viewW = sc.clientWidth
+      const viewH = sc.clientHeight
+
+      const fitZoom = Math.min(viewW / worldW, viewH / worldH) * Z_NEUTRAL / BASE_SCALE
+      const clampedZoom = clamp(fitZoom, 0.01, 20)
+      setZoom(clampedZoom)
+
+      const newRatio = (clampedZoom / Z_NEUTRAL)
+      const centerWorldX = (minX + maxX) / 2
+      const centerWorldY = (minY + maxY) / 2
+      requestAnimationFrame(() => {
+        const s = scrollRef.current
+        if (!s) return
+        s.scrollLeft = STAGE_W / 2 + centerWorldX * newRatio - s.clientWidth / 2
+        s.scrollTop = STAGE_H / 2 - centerWorldY * newRatio - s.clientHeight / 2
+      })
+  }, [nodes, placements, imageMeta])
+
+  useEffect(() => {
+    viewportActions.frameAll = frameAll
+    return () => { if (viewportActions.frameAll === frameAll) viewportActions.frameAll = null }
+  }, [frameAll])
 
   // 60fps store subscription for clip visibility + video sync (extracted hook)
   useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems, setTimeDisplay, lastTimeUiRef)
@@ -513,7 +567,7 @@ export default function Viewport2D() {
             const finalOpacity = computeFadeOpacity(tm, tNow)
 
             return (
-              <div key={idx} ref={getClipRef(tm.id)}
+              <div key={tm.id} ref={getClipRef(tm.id)}
                 onClick={(e) => {
                   e.stopPropagation()
                   if (clipDraggedRef.current) {
@@ -673,62 +727,7 @@ export default function Viewport2D() {
             {Math.round(zoom * 100)}%
           </div>
           <div style={{ display: 'flex', flexDirection: 'row', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
-            <IconButton onClick={() => {
-              // Compute bounding box of all screens and clips in world-space
-              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-              let hasContent = false
-
-              for (const n of nodes) {
-                if (n.kind?.type !== 'screen') continue
-                const px = n.kind?.pixels?.[0] || 0
-                const py = n.kind?.pixels?.[1] || 0
-                if (px <= 0 || py <= 0) continue
-                const sx = n.transform?.position?.x || 0
-                const sy = n.transform?.position?.y || 0
-                minX = Math.min(minX, sx - px / 2)
-                maxX = Math.max(maxX, sx + px / 2)
-                minY = Math.min(minY, sy - py / 2)
-                maxY = Math.max(maxY, sy + py / 2)
-                hasContent = true
-              }
-
-              for (const { tm } of placements) {
-                const mx = tm.position?.x || 0
-                const my = tm.position?.y || 0
-                const meta = imageMeta[tm.clip_id]
-                const tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
-                const th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
-                minX = Math.min(minX, mx - tw / 2)
-                maxX = Math.max(maxX, mx + tw / 2)
-                minY = Math.min(minY, my - th / 2)
-                maxY = Math.max(maxY, my + th / 2)
-                hasContent = true
-              }
-
-              if (!hasContent) return
-
-              const padding = 100
-              const worldW = (maxX - minX) + padding * 2
-              const worldH = (maxY - minY) + padding * 2
-              const sc = scrollRef.current
-              if (!sc) return
-              const viewW = sc.clientWidth
-              const viewH = sc.clientHeight
-
-              const fitZoom = Math.min(viewW / worldW, viewH / worldH) * Z_NEUTRAL / BASE_SCALE
-              const clampedZoom = clamp(fitZoom, 0.01, 20)
-              setZoom(clampedZoom)
-
-              const newRatio = (clampedZoom / Z_NEUTRAL)
-              const centerWorldX = (minX + maxX) / 2
-              const centerWorldY = (minY + maxY) / 2
-              requestAnimationFrame(() => {
-                const s = scrollRef.current
-                if (!s) return
-                s.scrollLeft = STAGE_W / 2 + centerWorldX * newRatio - s.clientWidth / 2
-                s.scrollTop = STAGE_H / 2 - centerWorldY * newRatio - s.clientHeight / 2
-              })
-            }} title="Frame All (F)">
+            <IconButton onClick={frameAll} title="Frame All (F)">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /><path d="M15 3v18" /><path d="M3 9h18" /><path d="M3 15h18" /></svg>
             </IconButton>
           </div>
@@ -952,11 +951,6 @@ function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
   )
 }
 
-function gridBg() {
-  // legacy; not used
-  return {}
-}
-
 function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
   const hasSelectedClip = useEditorStore((s) => !!s.selectedClipId)
   const selectedId = useEditorStore((s) => s.selectedId)
@@ -1054,32 +1048,6 @@ function dotGridBg(center, zoom) {
   }
 }
 
-function ZoomLevelBar({ zoom }) {
-  // Discrete levels with neutral at 20%; include deeper zoom-out
-  const NEUTRAL = 0.2
-  const levels = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 4, 10]
-  return (
-    <div style={{ display: 'flex', gap: 4, padding: '2px 4px', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
-      {levels.map((lv) => {
-        const filled = zoom >= lv * 0.98 // small tolerance
-        const isNeutral = Math.abs(lv - NEUTRAL) < 1e-6
-        return (
-          <div key={lv}
-            title={`${Math.round(lv * 100)}%`}
-            style={{
-              width: 10,
-              height: 8,
-              background: filled ? '#6aa0ff' : '#2a3148',
-              border: `1px solid ${isNeutral ? '#89b4ff' : '#3a4060'}`,
-              borderRadius: 2,
-            }}
-          />
-        )
-      })}
-    </div>
-  )
-}
-
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
 
 function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedClipId }) {
@@ -1089,12 +1057,14 @@ function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedCli
     try {
       const proj = useEditorStore.getState().project
       let mediaEntry = null
-      if (proj?.timeline?.tracks) {
-        for (const t of proj.timeline.tracks) {
-          if (t.media && t.media.id === selectedClipId) {
-            mediaEntry = (proj.media || []).find(m => m.id === t.media.clip_id)
-            break
-          }
+      // `t.media` is an array of timeline items; the old code treated it as a
+      // single object, so a clip name never resolved.
+      for (const t of proj?.timeline?.tracks ?? []) {
+        const list = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+        const item = list.find((m) => m?.id === selectedClipId)
+        if (item) {
+          mediaEntry = (proj.media || []).find((m) => m.id === item.clip_id)
+          break
         }
       }
       text = mediaEntry?.name || mediaEntry?.id || selectedClipId
@@ -1141,3 +1111,6 @@ function IconButton({ active, onClick, title, children }) {
     </button>
   )
 }
+
+// Memoized: App re-renders when a panel is resized; the 2D stage must not.
+export default React.memo(Viewport2D)

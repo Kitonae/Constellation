@@ -10,7 +10,7 @@ test.describe('Editor Interactions', () => {
         // Verify Menu Bar
         await expect(page.getByText('File', { exact: true })).toBeVisible();
         await expect(page.getByText('View', { exact: true })).toBeVisible();
-        await expect(page.getByText('Remote', { exact: true })).toBeVisible();
+        await expect(page.getByText('Displays', { exact: true })).toBeVisible();
 
         // Verify Timeline
         await expect(page.getByText('Timeline', { exact: true })).toBeVisible();
@@ -24,17 +24,16 @@ test.describe('Editor Interactions', () => {
     });
 
     test('should open and navigate File menu', async ({ page }) => {
-        await page.getByText('File', { exact: true }).dispatchEvent('pointerdown');
+        await page.getByText('File', { exact: true }).click();
 
         await expect(page.getByText('New Show')).toBeVisible();
         await expect(page.getByText('Open Show…')).toBeVisible();
         await expect(page.getByText('Save Show…')).toBeVisible();
-        await expect(page.getByText('Package Show…')).toBeVisible();
         await expect(page.getByText('Quit')).toBeVisible();
     });
 
     test('should open and navigate View menu', async ({ page }) => {
-        await page.getByText('View', { exact: true }).dispatchEvent('pointerdown');
+        await page.getByText('View', { exact: true }).click();
 
         await expect(page.getByRole('button', { name: '2D' })).toBeVisible();
         await expect(page.getByRole('button', { name: '3D' })).toBeVisible();
@@ -54,8 +53,8 @@ test.describe('Editor Interactions', () => {
             await dialog.accept();
         });
 
-        await page.getByText('File', { exact: true }).dispatchEvent('pointerdown');
-        await page.getByText('New Show').dispatchEvent('pointerdown');
+        await page.getByText('File', { exact: true }).click();
+        await page.getByText('New Show').click();
     });
 
     test('should add a new track', async ({ page }) => {
@@ -65,7 +64,7 @@ test.describe('Editor Interactions', () => {
         // Note: The app might start with some tracks or none. 
         // Let's assume it starts with empty or we can just look for the button.
 
-        await page.getByLabel('Add Track').dispatchEvent('pointerdown');
+        await page.getByLabel('Add Track').click();
         // After clicking, we expect a new track label to appear. 
         // If it was empty, "Track 1" appears. If "Track 1" was there, "Track 2" appears.
         // Let's just verify the button is clickable and doesn't crash.
@@ -79,8 +78,8 @@ test.describe('Editor Interactions', () => {
         await expect(zoomIn).toBeVisible();
         await expect(zoomOut).toBeVisible();
 
-        await zoomIn.dispatchEvent('pointerdown');
-        await zoomOut.dispatchEvent('pointerdown');
+        await zoomIn.click();
+        await zoomOut.click();
     });
 
 });

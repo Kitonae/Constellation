@@ -1,9 +1,14 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
-import { useEditorStore } from '../store.js'
-import { broadcastToDisplays } from '../display/displayManager.js'
+import { useEditorStore, getMediaSession } from '../store.js'
 import { computeOverlaps } from '../utils/mediaUtils.js'
 
-export default function Timeline() {
+// Track row geometry. Exported so the drop hit-test and the row style can
+// never drift apart again — they used to disagree (28 px rows, 40 px maths),
+// which put every drop past the first row on the wrong track.
+export const ROW_H = 28
+export const PAD_TOP = 8
+
+export default React.memo(function Timeline() {
   const project = useEditorStore((s) => s.project)
   const playing = useEditorStore((s) => s.playing)
   const addLog = useEditorStore((s) => s.addLog)
@@ -42,6 +47,11 @@ export default function Timeline() {
   const [drag, setDrag] = useState(null) // { clipId, startAtOffset }
   const dragRef = useRef(null)
   const [timelineWidth, setTimelineWidth] = useState(0)
+  // Visible slice of the ruler, mirrored from scrollLeft at most every 50 ms
+  // so tick rendering can be limited to what is on screen.
+  const [view, setView] = useState({ left: 0, width: 0 })
+  const viewRef = useRef({ left: 0, width: 0 })
+  const viewFlushRef = useRef(0)
   const [tracksViewportHeight, setTracksViewportHeight] = useState(0)
   const [pxPerSecond, setPxPerSecond] = useState(20) // Default 20 px/s
   // Local throttled time display (avoids re-rendering heavy timeline each frame)
@@ -83,18 +93,18 @@ export default function Timeline() {
     if (clipId) {
       const tAt = timeFromClientX(e.clientX)
 
-      // Calculate track index from Y
+      // Calculate track index from Y using the real row geometry
       const vp = tracksViewportRef.current
       let trackIndex = -1
       if (vp) {
         const rect = vp.getBoundingClientRect()
         const relY = e.clientY - rect.top + vp.scrollTop
-        // Top padding 8px, row height 40px (28 + 6 + 6)
-        trackIndex = Math.floor((relY - 8) / 40)
+        trackIndex = Math.floor((relY - PAD_TOP) / ROW_H)
       }
 
-      addClipToTimeline({ clipId, startAt: tAt, trackIndex })
-      setSelectedClip(clipId)
+      // Selection is by timeline item id, not media asset id.
+      const newId = addClipToTimeline({ clipId, startAt: tAt, trackIndex })
+      if (newId) setSelectedClip(newId)
     }
     setDragOver(false); setHoverTime(null)
   }
@@ -109,6 +119,7 @@ export default function Timeline() {
       const width = Math.max(visibleTrackWidth, Math.round(duration * pxPerSecond))
       setTimelineWidth(width)
       setTracksViewportHeight(vp.clientHeight || 0)
+      setView({ left: vp.scrollLeft, width: vp.clientWidth })
     }
     recalc()
     const ro = new ResizeObserver(() => recalc())
@@ -116,20 +127,52 @@ export default function Timeline() {
     return () => ro.disconnect()
   }, [duration, pxPerSecond])
 
-  // Sync horizontal scroll between ruler and tracks
+  // Sync horizontal scroll between ruler and tracks, and publish the visible
+  // range for the tick renderer. The range goes through a trailing 50 ms
+  // flush so a scroll gesture does not re-render the ruler every frame.
   useEffect(() => {
     const rvp = rulerViewportRef.current
     const tvp = tracksViewportRef.current
     if (!rvp || !tvp) return
     let lock = false
-    function syncFromR() { if (lock) return; lock = true; tvp.scrollLeft = rvp.scrollLeft; lock = false }
-    function syncFromT() { if (lock) return; lock = true; rvp.scrollLeft = tvp.scrollLeft; lock = false }
+    let timer = 0
+    const publish = () => {
+      const next = { left: tvp.scrollLeft, width: tvp.clientWidth }
+      viewRef.current = next
+      const now = performance.now()
+      if (now - viewFlushRef.current > 50) {
+        viewFlushRef.current = now
+        setView(next)
+      } else if (!timer) {
+        timer = setTimeout(() => { timer = 0; viewFlushRef.current = performance.now(); setView(viewRef.current) }, 50)
+      }
+    }
+    function syncFromR() { if (!lock) { lock = true; tvp.scrollLeft = rvp.scrollLeft; lock = false } publish() }
+    function syncFromT() { if (!lock) { lock = true; rvp.scrollLeft = tvp.scrollLeft; lock = false } publish() }
     rvp.addEventListener('scroll', syncFromR)
     tvp.addEventListener('scroll', syncFromT)
-    return () => { rvp.removeEventListener('scroll', syncFromR); tvp.removeEventListener('scroll', syncFromT) }
+    publish()
+    return () => {
+      if (timer) clearTimeout(timer)
+      rvp.removeEventListener('scroll', syncFromR)
+      tvp.removeEventListener('scroll', syncFromT)
+    }
   }, [])
 
-  // Vertical scroll sync no longer needed; labels are inside the same viewport
+  // Keep the labels column aligned with the tracks it labels. They are
+  // separate scroll containers so the ruler can stay pinned above the tracks,
+  // which means their vertical offsets have to be mirrored explicitly.
+  useEffect(() => {
+    const lbl = tracksLabelsRef.current
+    const tvp = tracksViewportRef.current
+    if (!lbl || !tvp) return
+    let lock = false
+    function fromLabels() { if (lock) return; lock = true; tvp.scrollTop = lbl.scrollTop; lock = false }
+    function fromTracks() { if (lock) return; lock = true; lbl.scrollTop = tvp.scrollTop; lock = false }
+    lbl.addEventListener('scroll', fromLabels)
+    tvp.addEventListener('scroll', fromTracks)
+    return () => { lbl.removeEventListener('scroll', fromLabels); tvp.removeEventListener('scroll', fromTracks) }
+  }, [])
 
   const stop = useCallback(() => { const st = useEditorStore.getState(); st.stop() }, [])
 
@@ -151,14 +194,25 @@ export default function Timeline() {
     return steps[steps.length - 1]
   }
   const tickStep = pickTickStep(pxPerSecond)
-  const ticks = []
-  // Limit ticks to prevent crash if duration is huge and step is small (shouldn't happen with dynamic step)
-  for (let t = 0; t <= duration + 1e-6; t += tickStep) ticks.push(Number(t.toFixed(6)))
-  const secondDots = []
-  // Only show second dots if zoom is high enough (> 10px/s)
-  if (pxPerSecond > 10) {
-    for (let s = 0; s <= Math.floor(duration + 1e-6); s++) secondDots.push(s)
-  }
+
+  // Only build ticks for the visible slice of the ruler. Spanning the whole
+  // 360 s buffer at 200 px/s meant ~700 tick divs plus ~360 dots rebuilt on
+  // every render.
+  const { ticks, secondDots } = useMemo(() => {
+    const from = Math.max(0, view.left / pxPerSecond - tickStep)
+    const to = Math.min(duration, (view.left + view.width) / pxPerSecond + tickStep)
+    const ticksOut = []
+    const first = Math.floor(from / tickStep) * tickStep
+    for (let t = first; t <= to + 1e-6; t += tickStep) {
+      if (t >= -1e-6) ticksOut.push(Number(t.toFixed(6)))
+    }
+    const dotsOut = []
+    // Second dots only make sense once a second is more than a few pixels
+    if (pxPerSecond > 10) {
+      for (let sec = Math.max(0, Math.floor(from)); sec <= Math.floor(to + 1e-6); sec++) dotsOut.push(sec)
+    }
+    return { ticks: ticksOut, secondDots: dotsOut }
+  }, [view.left, view.width, pxPerSecond, tickStep, duration])
 
   const IconButton = ({ label, onClick, children }) => (
     <button
@@ -166,8 +220,7 @@ export default function Timeline() {
       aria-label={label}
       title={label}
       onClick={onClick}
-      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); onClick?.(e) }}
-      onMouseDown={(e) => { e.stopPropagation(); }}
+      onMouseDown={(e) => { e.stopPropagation() }}
       style={{
         width: 24,
         height: 24,
@@ -190,13 +243,13 @@ export default function Timeline() {
     </button>
   )
 
-  // Subscribe to store changes and update playhead/timecode without re-rendering heavy UI
+  // Drive the playhead straight from the PresentationClock. Going through the
+  // store meant the playhead moved at the store's 10 Hz mirror rate, and the
+  // clamp used `duration_seconds` (60 s) instead of the duration actually
+  // rendered, so the playhead froze while time kept running.
   useEffect(() => {
-    const unsub = useEditorStore.subscribe((state) => {
-      const t = state.time || 0
-      const dur = project?.timeline?.duration_seconds ?? duration
-      const width = timelineWidth
-      const clamped = Math.max(0, Math.min(dur, t))
+    const place = (t) => {
+      const clamped = Math.max(0, Math.min(duration, t || 0))
       const x = clamped * pxPerSecond
       if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
       if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
@@ -205,19 +258,12 @@ export default function Timeline() {
         lastDisplayRef.current = now
         setTimeDisplay(t)
       }
-    })
-    // Initial position
-    try {
-      const t = useEditorStore.getState().time
-      const dur = project?.timeline?.duration_seconds ?? duration
-      const width = timelineWidth
-      const clamped = Math.max(0, Math.min(dur, t))
-      const x = clamped * pxPerSecond
-      if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = x + 'px'
-      if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = x + 'px'
-    } catch { }
+    }
+    const clock = getMediaSession().getClock()
+    const unsub = clock.subscribe({ onTick: place, onSeek: place, onStop: () => place(0) })
+    place(clock.getTime())
     return () => { try { unsub() } catch { } }
-  }, [timelineWidth, duration, project, pxPerSecond])
+  }, [duration, pxPerSecond])
 
   return (
     <div style={{ padding: 8, color: '#c7cfdb', height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', minHeight: 0, userSelect: 'none', WebkitUserSelect: 'none' }}>
@@ -244,7 +290,6 @@ export default function Timeline() {
             try { if (tracksViewportRef.current) tracksViewportRef.current.scrollLeft = 0 } catch { }
             try { if (rulerPlayheadRef.current) rulerPlayheadRef.current.style.left = '0px' } catch { }
             try { if (tracksPlayheadRef.current) tracksPlayheadRef.current.style.left = '0px' } catch { }
-            try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: 0 }) } catch { }
             st.addLog({ level: 'info', message: 'Local Stop' })
           }}>■</IconButton>
         </div>
@@ -255,8 +300,8 @@ export default function Timeline() {
         <div ref={rulerViewportRef} className="no-scrollbar" style={{ position: 'relative', overflowX: 'auto', overflowY: 'hidden', height: 24, border: '1px solid #232636', borderRadius: 4, background: '#141821', cursor: 'pointer' }}
           onPointerDown={(e) => { seekingRef.current = true; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); try { e.currentTarget.setPointerCapture(e.pointerId) } catch { } }}
           onPointerMove={(e) => { if (!seekingRef.current) return; const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t) }}
-          onPointerUp={(e) => { seekingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } try { const st = useEditorStore.getState(); if (!st.playing) broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: st.time }) } catch { } }}
-          onClick={(e) => { const t = timeFromClientX(e.clientX); const st = useEditorStore.getState(); st.seek(t); if (!st.playing) { try { broadcastToDisplays('display:snapshot', { project: st.project, scene: st.scene, time: t }) } catch { } } }}
+          onPointerUp={(e) => { seekingRef.current = false; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
+          onClick={(e) => { if (seekingRef.current) return; useEditorStore.getState().seek(timeFromClientX(e.clientX)) }}
         >
           <div ref={rulerInnerRef} style={{ position: 'relative', width: timelineWidth, height: '100%' }}>
             {ticks.map((tVal, idx) => {
@@ -283,7 +328,7 @@ export default function Timeline() {
       </div>
       {/* Tracks (labels separated for alignment with ruler) */}
       <div style={{ display: 'flex', marginTop: 8, flex: 1, minHeight: 0 }}>
-        <div ref={tracksLabelsRef} className="no-scrollbar" style={{ width: LABEL_W, flex: '0 0 auto', padding: '8px 0', height: '100%', overflowY: 'auto' }}>
+        <div ref={tracksLabelsRef} className="no-scrollbar" style={{ width: LABEL_W, flex: '0 0 auto', padding: `${PAD_TOP}px 0`, height: '100%', overflowY: 'auto' }}>
           {tracks.map((t, i) => {
             const isSelected = selectedTrackIndex === i
             return (
@@ -291,7 +336,7 @@ export default function Timeline() {
                 key={i}
                 onClick={() => setSelectedTrackIndex(i)}
                 style={{
-                  height: 28,
+                  height: ROW_H,
                   boxSizing: 'border-box',
                   margin: 0,
                   marginRight: 0,
@@ -314,6 +359,7 @@ export default function Timeline() {
             <button
               onClick={addTrack}
               title="Add Track"
+              aria-label="Add Track"
               style={{
                 flex: 1,
                 background: '#161820',
@@ -352,14 +398,14 @@ export default function Timeline() {
             height: '100%',
           }}
         >
-          <div ref={tracksInnerRef} style={{ position: 'relative', width: timelineWidth, padding: '8px 0' }}>
+          <div ref={tracksInnerRef} style={{ position: 'relative', width: timelineWidth, padding: `${PAD_TOP}px 0` }}>
             {tracks.map((t, i) => {
               const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
 
               const overlaps = computeOverlaps(mediaList)
 
               return (
-                <div key={i} style={{ position: 'relative', height: 28, margin: 0, zIndex: 1, background: selectedTrackIndex === i ? 'rgba(53, 64, 102, 0.2)' : 'transparent', borderRadius: '0 4px 4px 0' }}>
+                <div key={i} style={{ position: 'relative', height: ROW_H, margin: 0, zIndex: 1, background: selectedTrackIndex === i ? 'rgba(53, 64, 102, 0.2)' : 'transparent', borderRadius: '0 4px 4px 0' }}>
                   {mediaList.map((m) => {
                     const startVal = (m.start ?? m.start_at_seconds) || 0
                     const durVal = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
@@ -373,7 +419,6 @@ export default function Timeline() {
                     const isOverlapping = overlaps.has(m.id)
 
                     // Vertical drag calculation
-                    const ROW_HEIGHT = 28
                     const verticalOffset = (drag?.timelineId === m.id && drag.currentY !== undefined) ? drag.currentY : 0
                     const zIndex = (drag?.timelineId === m.id) ? 100 : 1
 
@@ -407,16 +452,13 @@ export default function Timeline() {
                         onPointerUp={(e) => {
                           if (dragRef.current?.timelineId === m.id) {
                             const d = dragRef.current
-                            // Horizontal commit
-                            if (d.currentStart !== undefined) {
-                              useEditorStore.getState().updateClipStart({ timelineId: m.id, startAt: d.currentStart })
-                            }
-                            // Vertical commit (reorder)
-                            if (d.currentY !== undefined) {
-                              const rowDelta = Math.round(d.currentY / ROW_HEIGHT)
-                              if (rowDelta !== 0) {
-                                useEditorStore.getState().reorderClip(m.id, d.originalIndex + rowDelta)
-                              }
+                            // One gesture, one commit, one undo entry.
+                            const rowDelta = d.currentY !== undefined ? Math.round(d.currentY / ROW_H) : 0
+                            const patch = {}
+                            if (d.currentStart !== undefined) patch.start = d.currentStart
+                            if (rowDelta !== 0) patch.trackIndex = d.originalIndex + rowDelta
+                            if (patch.start !== undefined || patch.trackIndex !== undefined) {
+                              useEditorStore.getState().moveClip(m.id, patch)
                             }
                             setDrag(null)
                             dragRef.current = null
@@ -428,7 +470,7 @@ export default function Timeline() {
                           left,
                           top: verticalOffset,
                           width,
-                          height: 28,
+                          height: ROW_H,
                           boxSizing: 'border-box',
                           background: isOverlapping ? '#4a2a2a' : (isSelected ? '#354066' : '#2a2f45'),
                           border: `1px solid ${isOverlapping ? '#ff4444' : (isSelected ? '#6aa0ff' : '#3a4060')}`,
@@ -490,4 +532,4 @@ export default function Timeline() {
       </div>
     </div>
   )
-}
+})

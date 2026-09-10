@@ -3,6 +3,8 @@ import { useEditorStore } from '../store.js'
 import Spinner from './Spinner.jsx'
 import { generateVideoThumbnail } from '../utils/videoUtils.js'
 import { generateModelThumbnail } from '../utils/modelThumbnail.js'
+import { extFromUri, isVideoName, isModelName } from '../media/asset.js'
+import { resolveUriSync } from '../media/uri.js'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -22,62 +24,9 @@ const MIME_BY_EXT = {
   mpeg: 'video/mpeg',
 }
 
-function extFromUri(uri) {
-  try {
-    const u = String(uri)
-    // blob: and data: URLs don't contain a meaningful file extension
-    if (u.startsWith('blob:') || u.startsWith('data:')) return ''
-    const q = u.split('?')[0]
-    const p = q.split('#')[0]
-    const s = p.split('.')
-    if (s.length < 2) return ''
-    return (s[s.length - 1] || '').toLowerCase()
-  } catch { return '' }
-}
-
-function u8ToBase64(u8) {
-  // Chunk to avoid call stack limits on large files
-  let res = ''
-  const chunk = 0x8000
-  for (let i = 0; i < u8.length; i += chunk) {
-    const sub = u8.subarray(i, i + chunk)
-    res += String.fromCharCode.apply(null, sub)
-  }
-  return btoa(res)
-}
-
-function base64ToU8(b64) {
-  const bin = atob(b64)
-  const u8 = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
-  return u8
-}
-
 export async function resolveImageSrc(uri, mimeHint = 'image/*') {
   if (!uri) return null
-  const u = String(uri)
-  if (u.startsWith('data:')) return u
-  if (u.startsWith('blob:')) return u
-  if (u.startsWith('file://')) {
-    // Use the sidecar file server to serve the image via HTTP (no base64 copy)
-    const { resolveUriSync } = await import('../media/uri.js')
-    const resolved = resolveUriSync(u)
-    return resolved || null
-  }
-  return u
-}
-
-export async function inlineFromUri(uri, mimeHint = 'image/*') {
-  // (Tauri inline fallback removed)
-  return null
-}
-
-function isVideoExt(ext) {
-  return ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
-}
-
-function isModelExt(ext) {
-  return ['gltf', 'glb', 'obj'].includes(ext)
+  return resolveUriSync(uri) || null
 }
 
 export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
@@ -90,8 +39,8 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
     // Fallback: try to get extension from alt text (filename) if uri is a blob/data url
     return extFromUri(alt)
   }, [uri, alt])
-  const isVideo = useMemo(() => isVideoExt(ext), [ext])
-  const isModel = useMemo(() => isModelExt(ext), [ext])
+  const isVideo = useMemo(() => isVideoName('x.' + ext), [ext])
+  const isModel = useMemo(() => isModelName('x.' + ext), [ext])
   const mime = useMemo(() => MIME_BY_EXT[ext] || (isVideo ? 'video/*' : 'image/*'), [ext, isVideo])
   const [triedInlineFallback, setTriedInlineFallback] = useState(false)
 

@@ -24,6 +24,34 @@ function snapshotsEqual(a, b) {
   return true
 }
 
+/**
+ * Undo/redo restores the document (project + scene) but selection is UI state
+ * and is not part of a snapshot. After a restore the selected clip or node may
+ * no longer exist, leaving the Inspector pointed at a ghost, so drop any
+ * selection the restored document does not contain.
+ */
+function pruneSelection(state) {
+  const clipIds = new Set()
+  for (const t of state.project?.timeline?.tracks ?? []) {
+    const list = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+    for (const m of list) if (m?.id) clipIds.add(m.id)
+  }
+  const nodeIds = new Set()
+  const stack = [...(state.scene?.roots ?? [])]
+  while (stack.length) {
+    const n = stack.pop()
+    if (!n) continue
+    if (n.id) nodeIds.add(n.id)
+    if (n.children?.length) stack.push(...n.children)
+  }
+  const selectedClipIds = (state.selectedClipIds ?? []).filter((id) => clipIds.has(id))
+  return {
+    selectedId: nodeIds.has(state.selectedId) ? state.selectedId : null,
+    selectedClipId: clipIds.has(state.selectedClipId) ? state.selectedClipId : null,
+    selectedClipIds,
+  }
+}
+
 export function createUndoStore(set, get, api) {
   return {
     // Undo stack
@@ -54,7 +82,7 @@ export function createUndoStore(set, get, api) {
         const currentSnap = cloneTracked(s)
         // Push current state to redo with the label that created it
         const redoStack = [...s._redoStack, { label: s._currentLabel, state: currentSnap }]
-        set({ ...entry.state, _undoStack: stack, _redoStack: redoStack, _currentLabel: entry.label })
+        set({ ...entry.state, ...pruneSelection({ ...s, ...entry.state }), _undoStack: stack, _redoStack: redoStack, _currentLabel: entry.label })
       })
     },
 
@@ -68,7 +96,7 @@ export function createUndoStore(set, get, api) {
         const currentSnap = cloneTracked(s)
         // Push current state to undo with the label that created it
         const undoStack = [...s._undoStack, { label: s._currentLabel, state: currentSnap }]
-        set({ ...entry.state, _undoStack: undoStack, _redoStack: redoStack, _currentLabel: entry.label })
+        set({ ...entry.state, ...pruneSelection({ ...s, ...entry.state }), _undoStack: undoStack, _redoStack: redoStack, _currentLabel: entry.label })
       })
     },
 
@@ -109,7 +137,7 @@ export function createUndoStore(set, get, api) {
           currentLabel = entry.label
         }
 
-        set({ ...current, _undoStack: undoStack, _redoStack: redoStack, _currentLabel: currentLabel })
+        set({ ...current, ...pruneSelection({ ...s, ...current }), _undoStack: undoStack, _redoStack: redoStack, _currentLabel: currentLabel })
       })
     },
   }

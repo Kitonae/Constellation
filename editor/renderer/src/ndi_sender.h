@@ -30,7 +30,14 @@ public:
     // Record a copy command from the back buffer to the current staging texture.
     // Call this BEFORE the back buffer transitions to PRESENT state.
     // The back buffer must be in COPY_SOURCE or RENDER_TARGET state.
+    // A back buffer whose size does not match the sender's is skipped: copying
+    // it with a mismatched footprint produced garbage.
     void capture(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* backBuffer);
+
+    // Which screen feeds this sender. Only that screen is captured, so two
+    // open windows no longer interleave into one NDI stream.
+    void setSourceScreen(const std::string& screenId) { m_screenId = screenId; }
+    const std::string& sourceScreen() const { return m_screenId; }
 
     // Send the oldest ready frame to NDI asynchronously.
     // Call this AFTER the command list has been executed (post-Present is fine).
@@ -71,6 +78,13 @@ private:
     int m_frameRateN = 60000;
     int m_frameRateD = 1000;
 
-    // NDI frame buffer (CPU side, persistent for async send)
-    std::vector<uint8_t> m_ndiBuffer;
+    // NDI frame buffers (CPU side, persistent for async send).
+    //
+    // NDIlib_send_send_video_async_v2 keeps reading p_data until the *next*
+    // async call returns, so writing into the same buffer before that call
+    // tore the frame. Two buffers is exactly what the SDK's contract needs.
+    std::vector<uint8_t> m_ndiBuffers[2];
+    int m_ndiBufIdx = 0;
+
+    std::string m_screenId;
 };

@@ -4,34 +4,9 @@
  * Viewport2D.jsx, Timeline.jsx, and DisplayWindow.jsx.
  */
 
-/**
- * Converts a local file path to a file:// URI with properly encoded path parts.
- */
-export function toFileUri(p) {
-  let norm = p.replace(/\\/g, '/')
-  const parts = norm.split('/')
-  const encodedParts = parts.map(part => encodeURIComponent(part))
-  norm = encodedParts.join('/')
-  // Restore drive letter colon if it was encoded (e.g. "C%3A" -> "C:")
-  norm = norm.replace(/^([a-zA-Z])%3A/, '$1:')
-  if (/^[A-Za-z]:\//.test(norm)) return `file:///${norm}`
-  if (norm.startsWith('/')) return `file://${norm}`
-  return `file://${norm}`
-}
-
-/**
- * Converts a File object to a data URL via FileReader.
- */
-export async function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    try {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result)
-      reader.onerror = (e) => reject(e)
-      reader.readAsDataURL(file)
-    } catch (e) { reject(e) }
-  })
-}
+// `toFileUri` lives in media/uri.js, the single URI resolver. Re-exported here
+// only so existing importers (and their tests) keep working.
+export { toFileUri } from '../media/uri.js'
 
 /**
  * Detects overlapping clips in a media list.

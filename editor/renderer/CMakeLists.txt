@@ -22,6 +22,7 @@ add_executable(constellation-renderer
     src/render_pipeline.cpp
     src/texture_cache.cpp
     src/video_decoder.cpp
+    src/media_loader.cpp
     src/audio_player.cpp
     src/ndi_sender.cpp
     src/debug_text.cpp

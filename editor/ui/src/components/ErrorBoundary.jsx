@@ -13,7 +13,7 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, info) {
     const msg = `${error?.message || error}${info?.componentStack ? '\n' + info.componentStack : ''}`
-    try { useEditorStore.getState().addLog('error', msg) } catch {}
+    try { useEditorStore.getState().addLog({ level: 'error', message: msg }) } catch {}
   }
 
   render() {

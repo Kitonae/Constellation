@@ -1,5 +1,7 @@
 #include "app.h"
+#include "uri_util.h"
 #include <cstdio>
+#include <vector>
 #include <chrono>
 #include <objbase.h>
 #include <mfapi.h>
@@ -45,6 +47,12 @@ bool App::init(const AppConfig& config) {
     }
     printf("[App] D3D12 device created\n");
 
+#ifdef _DEBUG
+    if (SUCCEEDED(m_device.As(&m_infoQueue))) {
+        printf("[App] D3D12 debug layer message queue attached\n");
+    }
+#endif
+
     // Create command queue
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -53,11 +61,13 @@ bool App::init(const AppConfig& config) {
         return false;
     }
 
-    // Create a temporary command allocator for the shared command list
-    ComPtr<ID3D12CommandAllocator> tempAlloc;
-    m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tempAlloc));
-    m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, tempAlloc.Get(), nullptr, IID_PPV_ARGS(&m_cmdList));
-    m_cmdList->Close();
+    // Frame ring: one allocator per in-flight frame, plus the fence that
+    // retires them. Screens used to own an allocator and fence each, which
+    // left the texture cache's uploads outside any frame's synchronisation.
+    if (!createFrameResources()) {
+        fprintf(stderr, "[App] Failed to create frame resources\n");
+        return false;
+    }
 
     // Init COM for WIC and Media Foundation
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -137,11 +147,19 @@ bool App::init(const AppConfig& config) {
         m_nv12Active = false;
     }
 
+    // Shared fences let the decode thread and the render queue order their
+    // work against each other instead of relying on Flush() and single-queue
+    // luck. Non-fatal: without them the paths behave as they did before.
+    createSyncFences();
+
     // Init texture cache
     if (!m_textureCache.init(m_device.Get(), m_cmdQueue.Get())) {
         fprintf(stderr, "[App] Failed to init texture cache\n");
         return false;
     }
+
+    // Background loader for images and video decoders
+    m_mediaLoader.start();
 
     // Start SSE client
     m_sseClient = std::make_unique<SSEClient>(m_eventQueue, m_config.host, m_config.port, m_config.screenId);
@@ -158,8 +176,12 @@ bool App::init(const AppConfig& config) {
     // Initialize NDI sender
 #if HAS_NDI
     {
+        // One screen feeds NDI; capturing every screen interleaved two
+        // different images into a single stream.
+        if (m_config.ndiScreenId.empty()) m_config.ndiScreenId = m_config.screenId;
+        m_ndiSender.setSourceScreen(m_config.ndiScreenId);
         std::string ndiName = "Constellation";
-        if (!m_config.screenId.empty()) ndiName += " - " + m_config.screenId;
+        if (!m_config.ndiScreenId.empty()) ndiName += " - " + m_config.ndiScreenId;
         if (!m_ndiSender.init(m_device.Get(), m_cmdQueue.Get(), ndiName,
                               m_config.width, m_config.height, 60.0)) {
             printf("[App] NDI sender init failed (non-fatal)\n");
@@ -174,6 +196,7 @@ bool App::init(const AppConfig& config) {
 
 int App::run() {
     m_running = true;
+    m_exitCode = 0;
 
     while (m_running) {
         // Process Win32 messages for all windows
@@ -186,7 +209,7 @@ int App::run() {
             if (msg.message == WM_KEYDOWN) {
                 if (msg.wParam == 'V') {
                     m_config.verbose = !m_config.verbose;
-                    for (auto& [uri, dec] : m_videoDecoders) dec->setVerbose(m_config.verbose);
+                    for (auto& [key, dec] : m_videoDecoders) dec->setVerbose(m_config.verbose);
                     printf("[App] Verbose %s\n", m_config.verbose ? "ON" : "OFF");
                 }
                 if (msg.wParam == VK_F3) {
@@ -226,7 +249,7 @@ int App::run() {
         }
     }
 
-    return 0;
+    return m_exitCode;
 }
 
 void App::processEvents() {
@@ -235,6 +258,9 @@ void App::processEvents() {
     for (auto& event : events) {
         if (event.type == "snapshot") {
             m_scene.loadSnapshot(event.data);
+            // The snapshot lists every asset, so start loading them now
+            // instead of at the first frame each clip becomes active.
+            prefetchMedia();
             printf("[App] Snapshot loaded\n");
         } else if (event.type == "time") {
             m_currentTime = event.timeValue;
@@ -267,21 +293,49 @@ void App::processEvents() {
 
 void App::render() {
     auto cpuStart = std::chrono::steady_clock::now();
-    auto activeClips = m_scene.evaluate(m_currentTime);
 
-    // Audio sync: play/pause/seek audio players for active video clips
+    // The value the queue will be signalled with at the end of this frame.
+    // Frames displaced from a decoder are stamped with it so the decode
+    // thread knows when D3D12 has finished reading them.
+    const UINT64 thisFrameFence = m_nextFenceValue;
+
+    // Wait for the frame this slot last belonged to, then reclaim it. Every
+    // upload buffer and descriptor slot indexed by m_frameIndex is free again
+    // once this returns.
+    waitForFrame(m_frameIndex);
+
+    FrameContext& frame = m_frames[m_frameIndex];
+    m_cmdList->Reset(frame.alloc.Get(), nullptr);
+    m_textureCache.beginFrame(m_frameIndex, m_frameCounter, m_cmdList.Get(), &frame.garbage);
+
+    // Adopt anything the loader finished since last frame
+    drainLoader();
+
+    auto activeClips = m_scene.evaluate(m_currentTime);
+    for (const auto& ac : activeClips) {
+        // Only video clips own a decoder or audio player worth tracking.
+        if (ac.tm && ac.clip && isVideoFile(ac.clip->uri)) {
+            m_mediaLastUsed[ac.tm->id] = m_frameCounter;
+        }
+    }
+
+    // Audio sync: play/pause/seek audio players for active video clips.
+    //
+    // Players are keyed by timeline item, not by URI: two clips of the same
+    // file at different offsets need two players, and one shared player was
+    // asked for two different positions every frame.
     {
-        // Track which URIs are active this frame
-        std::unordered_set<std::string> activeAudioUris;
+        std::unordered_set<std::string> activeAudioKeys;
 
         for (const auto& ac : activeClips) {
             if (!ac.clip || ac.clip->uri.empty()) continue;
             const std::string& uri = ac.clip->uri;
             if (!isVideoFile(uri)) continue;
-            if (uri.substr(0, 5) == "blob:" || uri.substr(0, 5) == "http:") continue;
+            if (isRemoteUri(uri)) continue;   // https: used to slip through here
 
-            activeAudioUris.insert(uri);
-            AudioPlayer* audio = getAudioPlayer(uri);
+            const std::string& key = ac.tm->id;
+            activeAudioKeys.insert(key);
+            AudioPlayer* audio = getAudioPlayer(key, uri);
             if (!audio) continue;
 
             double timeInClip = m_currentTime - ac.tm->start;
@@ -291,26 +345,38 @@ void App::render() {
                 double drift = std::abs(audio->currentTime() - timeInClip);
                 if (drift > 0.2) {
                     audio->seek(timeInClip);
+                    m_lastAudioSeek[key] = timeInClip;
                 }
-                if (!audio->isPlaying()) audio->play();
+                // Re-issuing play() after end of stream restarted it every frame
+                if (!audio->isPlaying() && !audio->atEnd()) audio->play();
             } else {
                 if (audio->isPlaying()) audio->pause();
-                // Scrub: seek to current position when paused
-                if (!m_wasPlaying) {
+                // Scrub: seek only when the playhead actually moved. This used
+                // to fire every paused frame, and AudioPlayer::seek blocked on
+                // the mutex the audio thread holds across Stop/Reset.
+                auto lastIt = m_lastAudioSeek.find(key);
+                if (lastIt == m_lastAudioSeek.end() || std::abs(lastIt->second - timeInClip) > (1.0 / 60.0)) {
                     audio->seek(timeInClip);
+                    m_lastAudioSeek[key] = timeInClip;
                 }
             }
         }
 
         // Pause audio for clips no longer active
-        for (auto& [uri, player] : m_audioPlayers) {
-            if (player->isPlaying() && activeAudioUris.find(uri) == activeAudioUris.end()) {
+        for (auto& [key, player] : m_audioPlayers) {
+            if (player->isPlaying() && activeAudioKeys.find(key) == activeAudioKeys.end()) {
                 player->pause();
             }
         }
 
         m_wasPlaying = m_playing;
     }
+
+    // Highest decode-copy fence value among the frames displayed this frame.
+    // The render queue waits for it once, before executing.
+    UINT64 waitCopyFence = 0;
+    float renderMs = 0;
+    float videoMs = 0;
 
     for (auto& [id, screen] : m_screens) {
         if (!screen->isValid()) continue;
@@ -344,8 +410,8 @@ void App::render() {
 
             const std::string& uri = ac.clip->uri;
 
-            // Skip blob: and http: URIs — native renderer can't access these
-            if (uri.substr(0, 5) == "blob:" || uri.substr(0, 5) == "http:" || uri.substr(0, 6) == "https:") {
+            // Skip blob: and http(s): URIs — native renderer can't access these
+            if (isRemoteUri(uri)) {
                 static int blobWarn = 0;
                 if (blobWarn++ % 600 == 0)
                     printf("[App] Skipping blob/http URI: %.80s (use Add New button for native renderer)\n", uri.c_str());
@@ -355,51 +421,61 @@ void App::render() {
             const CachedTexture* tex = nullptr;
 
             if (isVideoFile(uri)) {
-                // Decode video frame at current timeline position within this clip
-                VideoDecoder* decoder = getVideoDecoder(uri);
+                // Decoders are keyed by timeline item so two clips of the same
+                // file at different offsets each get their own, and they are
+                // opened on the loader thread, never here.
+                VideoDecoder* decoder = findVideoDecoder(ac.tm->id);
                 if (!decoder) {
-                    static int vMiss = 0;
-                    if (vMiss++ % 300 == 0) printf("[App] No decoder for %.60s\n", uri.c_str());
+                    m_mediaLoader.requestVideo(ac.tm->id, uri, decoderParams());
                     continue;
                 }
 
                 double timeInClip = m_currentTime - ac.tm->start;
-                const VideoFrame* frame = decoder->getFrameAtTime(timeInClip);
-                if (!frame) {
+                const VideoFrame* frame2 = decoder->getFrameAtTime(timeInClip, thisFrameFence);
+                if (!frame2) {
                     static int fMiss = 0;
                     if (fMiss++ % 300 == 0) printf("[App] No frame for %s at t=%.3f\n", ac.tm->id.c_str(), timeInClip);
                     continue;
                 }
 
+                UINT64 pending = decoder->takePendingCopyFence();
+                if (pending > waitCopyFence) waitCopyFence = pending;
+
                 std::string texKey = "__video_" + ac.tm->id;
 
-                if (frame->nv12 && frame->hasGpuTexture()) {
+                if (frame2->nv12 && frame2->hasGpuTexture()) {
                     // NV12 zero-copy path: register NV12 texture with 2 SRVs (Y + UV)
-                    tex = m_textureCache.registerNV12(texKey, frame->d3d12Texture.Get(),
-                        frame->width, frame->height);
-                } else if (frame->hasGpuTexture()) {
+                    tex = m_textureCache.registerNV12(texKey, frame2->d3d12Texture.Get(),
+                        frame2->width, frame2->height);
+                } else if (frame2->hasGpuTexture()) {
                     // Phase 1 GPU shared path: register BGRA texture directly
-                    tex = m_textureCache.registerExternal(texKey, frame->d3d12Texture.Get(),
-                        frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM);
-                } else if (!frame->pixels.empty()) {
+                    tex = m_textureCache.registerExternal(texKey, frame2->d3d12Texture.Get(),
+                        frame2->width, frame2->height, DXGI_FORMAT_B8G8R8A8_UNORM);
+                } else if (!frame2->pixels.empty()) {
                     // CPU fallback path: upload pixel data
-                    tex = m_textureCache.uploadPixels(texKey, frame->pixels.data(),
-                        frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM);
+                    tex = m_textureCache.uploadPixels(texKey, frame2->pixels.data(),
+                        frame2->width, frame2->height, DXGI_FORMAT_B8G8R8A8_UNORM);
                 }
 
                 if (!tex) {
                     static int uMiss = 0;
-                    if (uMiss++ % 300 == 0) printf("[App] texture failed for %s (%ux%u)\n", texKey.c_str(), frame->width, frame->height);
+                    if (uMiss++ % 300 == 0) printf("[App] texture failed for %s (%ux%u)\n", texKey.c_str(), frame2->width, frame2->height);
                 }
             } else {
-                tex = m_textureCache.get(uri);
+                const std::string key = textureKeyFor(ac.clip->id, uri);
+                tex = m_textureCache.peek(key);
+                if (!tex) {
+                    if (TextureCache::isDataUri(uri)) {
+                        // Already in memory; decoding it here costs no I/O.
+                        tex = m_textureCache.get(key, uri);
+                    } else {
+                        m_mediaLoader.requestImage(uri);
+                        continue;
+                    }
+                }
             }
 
-            if (!tex) {
-                static int missCount = 0;
-                if (missCount++ % 300 == 0) printf("[App] Texture miss for %.60s...\n", uri.c_str());
-                continue;
-            }
+            if (!tex) continue;
 
             // Compute quad dimensions (scale 0 = natural size)
             float w = (ac.tm->scale.x > 0) ? (float)ac.tm->scale.x : (float)tex->width;
@@ -437,7 +513,15 @@ void App::render() {
             }
 
             if (tex->isNV12) {
-                m_pipeline.drawVideoQuad(m_cmdList.Get(), transform, effects,
+                ColorSpaceCB cs = {};
+                VideoDecoder* dec = findVideoDecoder(ac.tm->id);
+                if (dec) {
+                    const ColorSpaceParams& p = dec->colorSpace();
+                    cs.yOffset = p.yOffset; cs.yScale = p.yScale;
+                    cs.cOffset = p.cOffset; cs.cScale = p.cScale;
+                    cs.kr = p.kr; cs.kb = p.kb;
+                }
+                m_pipeline.drawVideoQuad(m_cmdList.Get(), transform, effects, cs,
                     tex->srvGpu, tex->srvGpuUV);
             } else {
                 m_pipeline.drawQuad(m_cmdList.Get(), transform, effects, tex->srvGpu);
@@ -447,41 +531,11 @@ void App::render() {
         // Record render time (clip drawing only, excluding debug overlay)
         {
             auto renderEnd = std::chrono::steady_clock::now();
-            float renderMs = (float)std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
-            m_renderTimes[m_perfHead % PERF_HISTORY] = renderMs;
-        }
-
-        // Record video decode time (sum of all active decoders' frame delivery latency)
-        {
-            float videoMs = 0;
-            for (const auto& ac : activeClips) {
-                if (!ac.clip) continue;
-                const std::string& auri = ac.clip->uri;
-                if (!isVideoFile(auri)) continue;
-                auto dit = m_videoDecoders.find(auri);
-                if (dit != m_videoDecoders.end() && dit->second->isOpen()) {
-                    // Use decoded frame count as a proxy — actual per-frame timing
-                    // would need instrumentation in the decode thread
-                    videoMs += (dit->second->isHardwareAccelerated() ? 0.5f : 4.0f);
-                }
-            }
-            m_videoDecodeTimes[m_perfHead % PERF_HISTORY] = videoMs;
+            renderMs += (float)std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
         }
 
         // Debug overlay
         if (m_showDebug) {
-            // Update FPS counter
-            m_frameCount++;
-            auto now = std::chrono::steady_clock::now();
-            double statElapsed = std::chrono::duration<double>(now - m_lastStatTime).count();
-            if (statElapsed >= 1.0) {
-                m_fps = m_frameCount / statElapsed;
-                printf("[App stats] fps=%.1f  events_processed=%d\n", m_fps, m_eventsProcessed);
-                m_frameCount = 0;
-                m_eventsProcessed = 0;
-                m_lastStatTime = now;
-            }
-
             if (m_debugText.width() != (uint32_t)sw || m_debugText.height() != (uint32_t)sh) {
                 m_debugText.init(sw, sh);
             }
@@ -505,16 +559,16 @@ void App::render() {
                 ndiStatus = m_ndiEnabled ? (ndiConns > 0 ? "streaming" : "ready") : "paused";
             }
 #endif
-            m_debugText.drawFormat(8, 20, 0, 255, 0, "playing=%s  clips=%zu  decoders=%zu  ndi=%s(%d)%s",
+            m_debugText.drawFormat(8, 20, 0, 255, 0, "playing=%s  clips=%zu  decoders=%zu  srv=%u  ndi=%s(%d)%s",
                 m_playing ? "yes" : "no", activeClips.size(), m_videoDecoders.size(),
-                ndiStatus, ndiConns,
+                m_textureCache.usedSlots(), ndiStatus, ndiConns,
                 m_config.verbose ? "  [V]ERBOSE" : "");
 
             int ty = 34;
             for (const auto& ac : activeClips) {
                 const char* name = ac.clip ? ac.clip->name.c_str() : "?";
                 const std::string& auri = ac.clip ? ac.clip->uri : "";
-                bool isBlob = auri.substr(0, 5) == "blob:" || auri.substr(0, 5) == "http:";
+                bool isBlob = isRemoteUri(auri);
                 bool isVid = ac.clip && isVideoFile(auri);
                 const char* tag = isBlob ? "[blob!]" : (isVid ? "[vid]" : "[img]");
                 uint8_t cr = isBlob ? (uint8_t)255 : (uint8_t)200;
@@ -528,7 +582,7 @@ void App::render() {
 
                 // Video decoder stats
                 if (isVid && !isBlob) {
-                    auto dit = m_videoDecoders.find(auri);
+                    auto dit = m_videoDecoders.find(ac.tm->id);
                     if (dit != m_videoDecoders.end() && dit->second->isOpen()) {
                         auto* dec = dit->second.get();
                         int shown = dec->displayedFrames();
@@ -540,8 +594,8 @@ void App::render() {
                         uint8_t dg = drops > 0 ? (uint8_t)180 : (uint8_t)200;
                         const char* decMode = dec->isHardwareAccelerated() ? "DXVA+GPU" : "SW";
                         m_debugText.drawFormat(18, ty, dr, dg, 120,
-                            "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %s %s]",
-                            shown, drops, decoded, buf, seeks, dec->fps(),
+                            "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %.1fms %s %s]",
+                            shown, drops, decoded, buf, seeks, dec->fps(), dec->decodeMs(),
                             dec->codecName(), decMode);
                         ty += 12;
                     }
@@ -553,7 +607,9 @@ void App::render() {
                 int gw = 200, gh = 40, gpad = 6;
                 int gx = sw - gw - 10;
                 int gy = sh - (gh + gpad) * 3 - 10;
-                int hi = m_perfHead % PERF_HISTORY;
+                // drawGraph labels with history[hi]; m_perfHead is the slot
+                // about to be written, so the newest sample is one behind it.
+                int hi = (m_perfHead + PERF_HISTORY - 1) % PERF_HISTORY;
 
                 m_debugText.drawGraph(gx, gy, gw, gh,
                     m_cpuFrameTimes, PERF_HISTORY, hi, 33.3f,
@@ -570,9 +626,13 @@ void App::render() {
                     255, 180, 0, "Video");
             }
 
+            // Upload only the rows the overlay actually touched. A full-screen
+            // RGBA upload per screen per frame is ~8 MB of memcpy at 1080p and
+            // inflated the frame times this overlay reports.
             std::string dbgKey = "__debug_" + id;
             const CachedTexture* dbgTex = m_textureCache.uploadRGBA(
-                dbgKey, m_debugText.pixels(), m_debugText.width(), m_debugText.height());
+                dbgKey, m_debugText.pixels(), m_debugText.width(), m_debugText.height(),
+                m_debugText.dirtyTop(), m_debugText.dirtyBottom());
             if (dbgTex) {
                 TransformCB dt = {};
                 dt.scale[0] = (float)sw;
@@ -590,29 +650,335 @@ void App::render() {
             }
         }
 
-        // NDI: capture back buffer before it transitions to PRESENT
+        // NDI: capture the designated screen's back buffer before it
+        // transitions to PRESENT
 #if HAS_NDI
-        if (m_ndiEnabled && m_ndiSender.isActive()) {
+        if (m_ndiEnabled && m_ndiSender.isActive() &&
+            (m_ndiSender.sourceScreen().empty() || m_ndiSender.sourceScreen() == id)) {
             m_ndiSender.capture(m_cmdList.Get(), screen->currentBackBuffer());
         }
 #endif
 
-        screen->endFrame(m_cmdList.Get(), m_cmdQueue.Get());
-
-        // NDI: signal fence and send the captured frame
-#if HAS_NDI
-        if (m_ndiEnabled && m_ndiSender.isActive()) {
-            m_cmdQueue->Signal(m_ndiSender.decodeFence(), m_ndiSender.currentFenceValue());
-            m_ndiSender.send();
-        }
-#endif
+        screen->endFrame(m_cmdList.Get());
     }
+
+    // Video decode cost, measured by the decode threads themselves
+    for (const auto& ac : activeClips) {
+        if (!ac.clip || !isVideoFile(ac.clip->uri)) continue;
+        auto dit = m_videoDecoders.find(ac.tm->id);
+        if (dit != m_videoDecoders.end() && dit->second->isOpen())
+            videoMs += (float)dit->second->decodeMs();
+    }
+    m_renderTimes[m_perfHead % PERF_HISTORY] = renderMs;
+    m_videoDecodeTimes[m_perfHead % PERF_HISTORY] = videoMs;
+
+    // One submit for every screen, then one present each.
+    m_cmdList->Close();
+
+    // Order the D3D11 decode copies before anything that samples them.
+    // Flush() only submits the copy; it does not wait for it.
+    if (waitCopyFence && m_copyFence) {
+        m_cmdQueue->Wait(m_copyFence.Get(), waitCopyFence);
+    }
+
+    ID3D12CommandList* lists[] = { m_cmdList.Get() };
+    m_cmdQueue->ExecuteCommandLists(1, lists);
+
+    // Present every screen. Only one waits for vsync: calling Present(1, 0)
+    // on each in turn serialised them, halving the frame rate with two windows.
+    bool syncTaken = false;
+    bool deviceLost = false;
+    for (auto& [id, screen] : m_screens) {
+        if (!screen->isValid()) continue;
+        bool primary = !syncTaken &&
+            (m_config.screenId.empty() || id == m_config.screenId || m_screens.size() == 1);
+        if (primary) syncTaken = true;
+        if (!screen->present(primary ? 1 : 0)) deviceLost = true;
+    }
+    // Nothing matched the configured primary; give vsync to whoever is first.
+    if (!syncTaken) {
+        for (auto& [id, screen] : m_screens) {
+            if (!screen->isValid()) continue;
+            if (!screen->present(1)) deviceLost = true;
+            break;
+        }
+    }
+
+#if HAS_NDI
+    if (m_ndiEnabled && m_ndiSender.isActive()) {
+        m_cmdQueue->Signal(m_ndiSender.decodeFence(), m_ndiSender.currentFenceValue());
+        m_ndiSender.send();
+    }
+#endif
+
+    // Close this frame: the fence value retires its allocator, its garbage and
+    // any decoder frame stamped with it.
+    m_cmdQueue->Signal(m_frameFence.Get(), thisFrameFence);
+    frame.fenceValue = thisFrameFence;
+    m_nextFenceValue++;
+
+    // Evict before advancing: anything retired here was still in use by the
+    // frame just submitted, so it must be held by *that* frame's garbage list.
+    evictUnusedMedia();
+
+    m_frameIndex = (m_frameIndex + 1) % FRAMES_IN_FLIGHT;
+    m_frameCounter++;
+    m_debugText.clearDirty();
+
+    if (deviceLost) {
+        // A sidecar process is cheap to relaunch; full device re-creation is
+        // not worth the complexity here.
+        HRESULT reason = m_device ? m_device->GetDeviceRemovedReason() : E_FAIL;
+        fprintf(stderr, "[App] Device removed (reason 0x%08x), exiting\n", reason);
+        if (m_statusReporter && !m_config.screenId.empty()) {
+            m_statusReporter->reportError(m_config.screenId, "GPU device removed");
+            m_statusReporter->flush();
+        }
+        m_exitCode = 2;
+        m_running = false;
+    }
+
+    // Frame stats: counted once per frame. Incrementing inside the screen
+    // loop made the reported FPS scale with the number of open screens.
+    m_frameCount++;
+    {
+        auto now = std::chrono::steady_clock::now();
+        double statElapsed = std::chrono::duration<double>(now - m_lastStatTime).count();
+        if (statElapsed >= 1.0) {
+            m_fps = m_frameCount / statElapsed;
+            printf("[App stats] fps=%.1f  events_processed=%d\n", m_fps, m_eventsProcessed);
+            m_frameCount = 0;
+            m_eventsProcessed = 0;
+            m_lastStatTime = now;
+        }
+    }
+
+    drainDebugMessages();
 
     // Record CPU frame time and advance ring buffer
     auto cpuEnd = std::chrono::steady_clock::now();
     float cpuMs = (float)std::chrono::duration<double, std::milli>(cpuEnd - cpuStart).count();
     m_cpuFrameTimes[m_perfHead % PERF_HISTORY] = cpuMs;
     m_perfHead++;
+}
+
+void App::drainDebugMessages() {
+    if (!m_infoQueue) return;
+    UINT64 count = m_infoQueue->GetNumStoredMessages();
+    for (UINT64 i = 0; i < count; i++) {
+        SIZE_T len = 0;
+        if (FAILED(m_infoQueue->GetMessage(i, nullptr, &len)) || len == 0) continue;
+        std::vector<char> buf(len);
+        auto* msg = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+        if (FAILED(m_infoQueue->GetMessage(i, msg, &len))) continue;
+        const char* sev =
+            msg->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION" :
+            msg->Severity == D3D12_MESSAGE_SEVERITY_ERROR ? "ERROR" :
+            msg->Severity == D3D12_MESSAGE_SEVERITY_WARNING ? "WARNING" : "INFO";
+        if (msg->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+            fprintf(stderr, "[D3D12 %s] %.*s\n", sev, (int)msg->DescriptionByteLength, msg->pDescription);
+        }
+    }
+    m_infoQueue->ClearStoredMessages();
+}
+
+// --- Frame lifecycle -----------------------------------------------------
+
+bool App::createFrameResources() {
+    for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        if (FAILED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(&m_frames[i].alloc)))) {
+            return false;
+        }
+    }
+    if (FAILED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+            m_frames[0].alloc.Get(), nullptr, IID_PPV_ARGS(&m_cmdList)))) {
+        return false;
+    }
+    m_cmdList->Close();
+
+    if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_frameFence)))) {
+        return false;
+    }
+    m_frameFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    return m_frameFenceEvent != nullptr;
+}
+
+void App::waitForFrame(int index) {
+    FrameContext& f = m_frames[index];
+    if (f.fenceValue != 0 && m_frameFence->GetCompletedValue() < f.fenceValue) {
+        m_frameFence->SetEventOnCompletion(f.fenceValue, m_frameFenceEvent);
+        WaitForSingleObject(m_frameFenceEvent, INFINITE);
+    }
+    // Safe now: nothing on the GPU still references this frame's work.
+    if (!f.garbage.srvSlots.empty()) {
+        m_textureCache.releaseSlots(f.garbage.srvSlots);
+    }
+    f.garbage.clear();
+    f.alloc->Reset();
+}
+
+void App::waitForGpuIdle() {
+    if (!m_cmdQueue || !m_frameFence || !m_frameFenceEvent) return;
+    UINT64 v = m_nextFenceValue++;
+    m_cmdQueue->Signal(m_frameFence.Get(), v);
+    if (m_frameFence->GetCompletedValue() < v) {
+        m_frameFence->SetEventOnCompletion(v, m_frameFenceEvent);
+        WaitForSingleObject(m_frameFenceEvent, 2000);
+    }
+    for (auto& f : m_frames) {
+        if (!f.garbage.srvSlots.empty()) m_textureCache.releaseSlots(f.garbage.srvSlots);
+        f.garbage.clear();
+    }
+}
+
+// Create the D3D12/D3D11 fence pairs used to order decode copies against
+// rendering. Requires ID3D11Device5 (Windows 10 1703+); when unavailable the
+// decoders simply run without them.
+bool App::createSyncFences() {
+    if (!m_device || !m_d3d11Device) return false;
+
+    ComPtr<ID3D11Device5> dev5;
+    if (FAILED(m_d3d11Device.As(&dev5))) {
+        printf("[App] ID3D11Device5 unavailable; decode/render fences disabled\n");
+        return false;
+    }
+
+    auto share = [&](ComPtr<ID3D12Fence>& d12, ComPtr<ID3D11Fence>& d11) {
+        if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&d12))))
+            return false;
+        HANDLE h = nullptr;
+        if (FAILED(m_device->CreateSharedHandle(d12.Get(), nullptr, GENERIC_ALL, nullptr, &h)))
+            return false;
+        HRESULT hr = dev5->OpenSharedFence(h, IID_PPV_ARGS(&d11));
+        CloseHandle(h);
+        return SUCCEEDED(hr);
+    };
+
+    // The frame fence is already created unshared for CPU waits; make a
+    // second, shared one that mirrors it for the D3D11 side.
+    ComPtr<ID3D12Fence> sharedFrameFence;
+    if (!share(sharedFrameFence, m_frameFence11)) {
+        printf("[App] Shared frame fence unavailable; decode/render fences disabled\n");
+        m_frameFence11.Reset();
+        return false;
+    }
+    // Replace the plain frame fence with the shared one so a single value
+    // means the same thing on both APIs.
+    m_frameFence = sharedFrameFence;
+
+    if (!share(m_copyFence, m_copyFence11)) {
+        printf("[App] Shared copy fence unavailable; decode copies fall back to Flush\n");
+        m_copyFence.Reset();
+        m_copyFence11.Reset();
+    }
+    printf("[App] Cross-API decode/render fences ready\n");
+    return true;
+}
+
+// --- Media loading and eviction -----------------------------------------
+
+DecoderParams App::decoderParams() const {
+    DecoderParams p;
+    p.d3d12Device = m_device.Get();
+    p.d3d11Device = m_d3d11Device.Get();
+    p.dxgiManager = m_dxgiManager.Get();
+    p.d3d11On12 = m_d3d11On12Device.Get();
+    p.d3d12Queue = m_cmdQueue.Get();
+    p.nv12Mode = m_nv12Active;
+    p.verbose = m_config.verbose;
+    return p;
+}
+
+// Ask the loader for everything the snapshot references. Images are cheap to
+// hold, so all of them are requested; decoders are not, so only clips near
+// the playhead are opened ahead of time. Either way nothing is decoded on the
+// render thread the moment a clip becomes active.
+void App::prefetchMedia() {
+    for (const auto& [id, clip] : m_scene.allMedia()) {
+        if (clip.uri.empty() || isRemoteUri(clip.uri)) continue;
+        if (TextureCache::isDataUri(clip.uri)) continue;   // decoded inline
+        if (!isVideoFile(clip.uri)) m_mediaLoader.requestImage(clip.uri);
+    }
+    prefetchNearbyVideos();
+}
+
+void App::prefetchNearbyVideos() {
+    static constexpr double PREFETCH_SECONDS = 30.0;
+    for (const auto& track : m_scene.tracks()) {
+        for (const auto& tm : track.media) {
+            if (tm.overlapping) continue;
+            double end = tm.start + tm.duration;
+            if (end < m_currentTime || tm.start > m_currentTime + PREFETCH_SECONDS) continue;
+            const MediaClip* clip = m_scene.getMedia(tm.clipId);
+            if (!clip || clip->uri.empty() || isRemoteUri(clip->uri)) continue;
+            if (!isVideoFile(clip->uri)) continue;
+            if (m_videoDecoders.count(tm.id)) continue;
+            m_mediaLoader.requestVideo(tm.id, clip->uri, decoderParams());
+        }
+    }
+}
+
+void App::drainLoader() {
+    prefetchNearbyVideos();
+
+    for (auto& ready : m_mediaLoader.drainReady()) {
+        if (ready.failed) {
+            fprintf(stderr, "[App] Failed to load %.80s\n", ready.uri.c_str());
+            continue;
+        }
+        if (ready.decoder) {
+            ready.decoder->setSyncFences(m_frameFence.Get(), m_frameFence11.Get(),
+                                         m_copyFence.Get(), m_copyFence11.Get(),
+                                         &m_copyFenceCounter);
+            m_videoDecoders[ready.key] = std::move(ready.decoder);
+            m_mediaLastUsed[ready.key] = m_frameCounter;
+        } else if (!ready.rgba.empty()) {
+            m_textureCache.uploadPixels(ready.key, ready.rgba.data(),
+                ready.width, ready.height, DXGI_FORMAT_R8G8B8A8_UNORM);
+        }
+    }
+}
+
+void App::evictUnusedMedia() {
+    // Roughly five seconds at 60 fps: long enough that scrubbing back and
+    // forth over a cut does not thrash, short enough to bound the SRV heap.
+    static constexpr uint64_t GRACE_FRAMES = 300;
+    if (m_frameCounter < GRACE_FRAMES) return;
+    if ((m_frameCounter % 60) != 0) return;   // once a second is plenty
+
+    FrameGarbage& garbage = m_frames[m_frameIndex].garbage;
+    std::vector<std::string> evicted;
+    m_textureCache.evictUnused(m_frameCounter, GRACE_FRAMES, garbage, &evicted);
+    for (const auto& key : evicted) m_mediaLoader.forget(key);
+
+    for (auto it = m_mediaLastUsed.begin(); it != m_mediaLastUsed.end(); ) {
+        if (it->second + GRACE_FRAMES >= m_frameCounter) { ++it; continue; }
+        const std::string key = it->first;
+        // Closing a decoder joins its thread and returns its GPU frames, so
+        // the render queue must be past every frame that sampled them.
+        auto dit = m_videoDecoders.find(key);
+        if (dit != m_videoDecoders.end()) {
+            waitForGpuIdle();
+            m_videoDecoders.erase(dit);
+        }
+        m_audioPlayers.erase(key);
+        m_lastAudioSeek.erase(key);
+        m_mediaLoader.forget(key);
+        it = m_mediaLastUsed.erase(it);
+    }
+}
+
+VideoDecoder* App::findVideoDecoder(const std::string& key) {
+    auto it = m_videoDecoders.find(key);
+    if (it == m_videoDecoders.end()) return nullptr;
+    return it->second->isOpen() ? it->second.get() : nullptr;
+}
+
+std::string App::textureKeyFor(const std::string& clipId, const std::string& uri) {
+    // A data: URI can be megabytes long; hashing it on every map lookup, and
+    // storing it as a key, is pure waste when the clip id already identifies it.
+    return TextureCache::isDataUri(uri) ? ("__img_" + clipId) : uri;
 }
 
 void App::handleScreenOpen(const std::string& screenId, int width, int height) {
@@ -634,6 +1000,8 @@ void App::handleScreenOpen(const std::string& screenId, int width, int height) {
 }
 
 void App::handleScreenClose(const std::string& screenId) {
+    // The GPU may still be presenting from this swap chain.
+    waitForGpuIdle();
     m_screens.erase(screenId);
     printf("[App] Closed screen %s\n", screenId.c_str());
 }
@@ -643,6 +1011,10 @@ void App::shutdown() {
     if (m_sseClient) {
         m_sseClient->stop();
     }
+    m_mediaLoader.stop();
+    // Everything below releases GPU resources, so drain the queue first.
+    waitForGpuIdle();
+    if (m_frameFenceEvent) { CloseHandle(m_frameFenceEvent); m_frameFenceEvent = nullptr; }
     m_screens.clear();
 #if HAS_NDI
     m_ndiSender.shutdown();
@@ -655,6 +1027,12 @@ void App::shutdown() {
     m_d3d11Context.Reset();
     m_d3d11Device.Reset();
     m_nv12Active = false;
+    m_frameFence11.Reset();
+    m_copyFence11.Reset();
+    m_copyFence.Reset();
+    m_frameFence.Reset();
+    for (auto& f : m_frames) { f.garbage.clear(); f.alloc.Reset(); }
+    m_cmdList.Reset();
     MFShutdown();
     CoUninitialize();
     printf("[App] Shutdown complete\n");
@@ -670,85 +1048,22 @@ bool App::isVideoFile(const std::string& uri) {
            ext == "hevc" || ext == "h265" || ext == "265" || ext == "ts" || ext == "mts";
 }
 
-VideoDecoder* App::getVideoDecoder(const std::string& uri) {
-    auto it = m_videoDecoders.find(uri);
-    if (it != m_videoDecoders.end()) {
-        return it->second->isOpen() ? it->second.get() : nullptr;
-    }
-
-    // Resolve file path from URI
-    std::string path;
-    if (uri.substr(0, 8) == "file:///") {
-        path = uri.substr(8);
-        std::string decoded;
-        for (size_t i = 0; i < path.size(); i++) {
-            if (path[i] == '%' && i + 2 < path.size()) {
-                char hex[3] = { path[i + 1], path[i + 2], 0 };
-                decoded += (char)strtol(hex, nullptr, 16);
-                i += 2;
-            } else if (path[i] == '/') {
-                decoded += '\\';
-            } else {
-                decoded += path[i];
-            }
-        }
-        path = decoded;
-    } else if (uri.size() > 2 && uri[1] == ':') {
-        path = uri;
-    } else {
-        return nullptr;
-    }
-
-    auto decoder = std::make_unique<VideoDecoder>();
-    decoder->setVerbose(m_config.verbose);
-    if (!decoder->open(path, m_device.Get(), m_d3d11Device.Get(), m_dxgiManager.Get(),
-                       m_d3d11On12Device.Get(), m_cmdQueue.Get(), m_nv12Active)) {
-        fprintf(stderr, "[App] Failed to open video: %s\n", path.c_str());
-        m_videoDecoders[uri] = std::move(decoder); // cache failure to avoid retries
-        return nullptr;
-    }
-
-    VideoDecoder* ptr = decoder.get();
-    m_videoDecoders[uri] = std::move(decoder);
-    return ptr;
-}
-
-AudioPlayer* App::getAudioPlayer(const std::string& uri) {
-    auto it = m_audioPlayers.find(uri);
+AudioPlayer* App::getAudioPlayer(const std::string& key, const std::string& uri) {
+    auto it = m_audioPlayers.find(key);
     if (it != m_audioPlayers.end()) {
         return it->second->isOpen() ? it->second.get() : nullptr;
     }
 
-    // Resolve file path from URI (same logic as getVideoDecoder)
-    std::string path;
-    if (uri.substr(0, 8) == "file:///") {
-        path = uri.substr(8);
-        std::string decoded;
-        for (size_t i = 0; i < path.size(); i++) {
-            if (path[i] == '%' && i + 2 < path.size()) {
-                char hex[3] = { path[i + 1], path[i + 2], 0 };
-                decoded += (char)strtol(hex, nullptr, 16);
-                i += 2;
-            } else if (path[i] == '/') {
-                decoded += '\\';
-            } else {
-                decoded += path[i];
-            }
-        }
-        path = decoded;
-    } else if (uri.size() > 2 && uri[1] == ':') {
-        path = uri;
-    } else {
-        return nullptr;
-    }
+    std::string path = uriToPath(uri);
+    if (path.empty()) return nullptr;
 
     auto player = std::make_unique<AudioPlayer>();
     if (!player->open(path)) {
-        m_audioPlayers[uri] = std::move(player); // cache failure
+        m_audioPlayers[key] = std::move(player); // cache failure
         return nullptr;
     }
 
     AudioPlayer* ptr = player.get();
-    m_audioPlayers[uri] = std::move(player);
+    m_audioPlayers[key] = std::move(player);
     return ptr;
 }

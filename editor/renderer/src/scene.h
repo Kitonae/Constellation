@@ -34,6 +34,9 @@ struct TimelineClip {
     double fadeOut = 0;
     double blur = 0;  // legacy
     std::unordered_map<std::string, EffectParams> effects;
+    // Overlaps only change when the snapshot changes, so they are resolved in
+    // loadSnapshot instead of being recomputed quadratically every frame.
+    bool overlapping = false;
 };
 
 struct TimelineTrack {
@@ -61,12 +64,16 @@ public:
     std::vector<ActiveClip> evaluate(double time) const;
 
     const MediaClip* getMedia(const std::string& id) const;
+    const std::unordered_map<std::string, MediaClip>& allMedia() const { return m_media; }
+    const std::vector<TimelineTrack>& tracks() const { return m_tracks; }
 
     // Screen nodes from the scene tree
     const ScreenNode* getScreen(const std::string& id) const;
     const std::unordered_map<std::string, ScreenNode>& screens() const { return m_screens; }
 
 private:
+    static void markOverlaps(TimelineTrack& track);
+
     std::unordered_map<std::string, MediaClip> m_media;
     std::vector<TimelineTrack> m_tracks;
     std::unordered_map<std::string, ScreenNode> m_screens;

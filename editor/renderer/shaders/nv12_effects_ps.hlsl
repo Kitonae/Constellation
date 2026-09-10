@@ -3,7 +3,9 @@
 
 cbuffer EffectsCB : register(b1) {
     float opacity;          // pre-multiplied with fade
-    float blur_radius;      // Gaussian blur radius (pixels)
+    float blur_radius;      // NOT IMPLEMENTED: a real Gaussian needs a
+                            // separable two-pass offscreen target; the
+                            // web preview applies CSS blur, this does not.
     float brightness;       // multiply RGB (1 = normal)
     float contrast;         // (c - 0.5) * contrast + 0.5
     float saturate_amount;  // lerp(luminance, color, amount) (1 = normal)
@@ -12,6 +14,19 @@ cbuffer EffectsCB : register(b1) {
     float hue_rotate_deg;   // rotate hue in degrees
     float invert;           // lerp(color, 1-color, amount)
     float3 _pad;
+};
+
+// Conversion parameters supplied by the decoder from the stream's
+// MF_MT_VIDEO_NOMINAL_RANGE and MF_MT_YUV_MATRIX. Hard-coding BT.709 limited
+// range made SD (BT.601) and full-range content come out wrong.
+cbuffer ColorSpaceCB : register(b2) {
+    float yOffset;   // black level, normalised
+    float yScale;    // 255/219 for limited range, 1 for full
+    float cOffset;   // 128/255
+    float cScale;    // 255/224 for limited range, 1 for full
+    float kr;        // luma coefficients (BT.601 / 709 / 2020)
+    float kb;
+    float2 _cs_pad;
 };
 
 // NV12 planes: Y is full resolution, UV is half resolution (4:2:0)
@@ -44,15 +59,16 @@ float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     float  y_val  = texY.Sample(samp, uv);
     float2 uv_val = texUV.Sample(samp, uv);  // bilinear upsampling of chroma
 
-    // BT.709 YCbCr → RGB (limited range: Y [16..235], UV [16..240])
-    float y  = (y_val   - 16.0  / 255.0) * (255.0 / 219.0);
-    float cb = (uv_val.x - 128.0 / 255.0) * (255.0 / 224.0);
-    float cr = (uv_val.y - 128.0 / 255.0) * (255.0 / 224.0);
+    // YCbCr to RGB using the stream's own range and matrix
+    float y  = (y_val    - yOffset) * yScale;
+    float cb = (uv_val.x - cOffset) * cScale;
+    float cr = (uv_val.y - cOffset) * cScale;
 
+    float kg = 1.0 - kr - kb;
     float3 rgb;
-    rgb.r = y + 1.5748 * cr;
-    rgb.g = y - 0.1873 * cb - 0.4681 * cr;
-    rgb.b = y + 1.8556 * cb;
+    rgb.r = y + 2.0 * (1.0 - kr) * cr;
+    rgb.g = y - (2.0 * kb * (1.0 - kb) / kg) * cb - (2.0 * kr * (1.0 - kr) / kg) * cr;
+    rgb.b = y + 2.0 * (1.0 - kb) * cb;
 
     float4 color = float4(saturate(rgb), 1.0);
 

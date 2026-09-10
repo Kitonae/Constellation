@@ -30,7 +30,9 @@ static void initLogFile(const char* screenId) {
 }
 
 static void printUsage() {
-    printf("Usage: constellation-renderer --port <port> --screen <screenId> --width <w> --height <h> [--host <host>]\n");
+    printf("Usage: constellation-renderer --port <port> --screen <screenId> --width <w> --height <h>\n");
+    printf("       [--host <host>] [--ndi-screen <screenId>] [--verbose] [--console]\n");
+    printf("  --ndi-screen  which screen feeds the NDI output (default: --screen)\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -49,6 +51,8 @@ int main(int argc, char* argv[]) {
             config.height = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             config.host = argv[++i];
+        } else if (strcmp(argv[i], "--ndi-screen") == 0 && i + 1 < argc) {
+            config.ndiScreenId = argv[++i];
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             config.verbose = true;
         } else if (strcmp(argv[i], "--console") == 0) {

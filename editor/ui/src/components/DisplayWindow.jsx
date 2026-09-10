@@ -8,8 +8,12 @@ export default function DisplayWindow() {
   const screenId = params.get('screenId') || ''
   const width = parseInt(params.get('w') || `${window.innerWidth}`, 10)
   const height = parseInt(params.get('h') || `${window.innerHeight}`, 10)
+  // ?debug=1 turns the overlay on; it used to be unconditional, so every
+  // output window shipped a debug HUD to the audience.
+  const showDebug = params.get('debug') === '1'
   const [snapshot, setSnapshot] = useState(null)
   const [playTime, setPlayTime] = useState(0)
+  const [playing, setPlaying] = useState(false)
   const [imageMeta, setImageMeta] = useState({})
   const videoRefs = React.useRef(new Map())
   const getVideoRef = (id) => {
@@ -19,6 +23,10 @@ export default function DisplayWindow() {
 
   useEffect(() => {
     const handleMessage = (ev) => {
+      // Only the editor that opened this window may drive it. Comparing the
+      // source window rather than the origin is what works here: the editor
+      // runs on the Wails origin while this page is served by the sidecar.
+      if (window.opener && ev.source !== window.opener) return
       const { event, payload } = ev.data || {}
       if (event === 'display:snapshot') {
         const p = payload || {}
@@ -39,8 +47,10 @@ export default function DisplayWindow() {
           return newSnap
         })
         setPlayTime(Number(p.time || 0))
+        if (p.playing !== undefined) setPlaying(!!p.playing)
       } else if (event === 'display:time') {
         setPlayTime(Number((payload && payload.time) || 0))
+        if (payload?.playing !== undefined) setPlaying(!!payload.playing)
       } else if (event === 'display:close') {
         const sid = payload && payload.screenId
         if (!sid || sid === screenId) {
@@ -49,6 +59,9 @@ export default function DisplayWindow() {
       }
     }
     window.addEventListener('message', handleMessage)
+    // Tell the editor we are listening. It answers with a snapshot; without
+    // this the opener had to guess with a 500 ms timer.
+    try { window.opener?.postMessage({ event: 'display:ready', payload: { screenId } }, '*') } catch { }
     return () => window.removeEventListener('message', handleMessage)
   }, [screenId])
 
@@ -58,7 +71,11 @@ export default function DisplayWindow() {
     return computeRenderList(snapshot.project.timeline, snapshot.project.media, playTime)
   }, [snapshot, playTime])
 
-  // Sync video elements to playback time using sourceTime from render list
+  // Sync video elements to playback time using sourceTime from render list.
+  //
+  // While playing, let the element play and only correct real drift: setting
+  // currentTime on every 20 Hz update meant the video was scrubbed 20 times a
+  // second and never actually played.
   useEffect(() => {
     videoRefs.current.forEach((ref, id) => {
       const vid = ref.current
@@ -66,9 +83,17 @@ export default function DisplayWindow() {
       const item = renderItems.find(r => r.clipId === id)
       if (!item) return
       const st = item.sourceTime || 0
-      try { if (Math.abs((vid.currentTime || 0) - st) > 0.03) vid.currentTime = st } catch { }
+      try {
+        if (playing) {
+          if (vid.paused) vid.play().catch(() => { })
+          if (Math.abs((vid.currentTime || 0) - st) > 0.25) vid.currentTime = st
+        } else {
+          if (!vid.paused) vid.pause()
+          if (Math.abs((vid.currentTime || 0) - st) > 0.03) vid.currentTime = st
+        }
+      } catch { }
     })
-  }, [playTime, renderItems])
+  }, [playTime, playing, renderItems])
 
   useEffect(() => {
     let cancelled = false
@@ -122,7 +147,7 @@ export default function DisplayWindow() {
           </div>
         )
       })}
-      <DebugOverlay items={renderItems} imageMeta={imageMeta} container={{ width, height }} time={playTime || 0} />
+      {showDebug && <DebugOverlay items={renderItems} imageMeta={imageMeta} container={{ width, height }} time={playTime || 0} />}
     </div>
   )
 }

@@ -1,20 +1,22 @@
 import React from 'react'
 import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
-import { getVideoMetadata } from '../utils/videoUtils.js'
-import { toFileUri, fileToDataUrl } from '../utils/mediaUtils.js'
+import { importEntries } from '../utils/importMedia.js'
 import MediaThumb from './MediaThumb.jsx'
-import { isMediaFile } from '../media/index.js'
+import { isModelName } from '../media/index.js'
 
+// Reads the playhead only when clicked. Subscribing to `time` here made every
+// row in the bin re-render at the clock rate just to keep a tooltip current.
 function AddClipButton({ clipId }) {
-  const time = useEditorStore((s) => s.time)
-  const addClipToTimeline = useEditorStore((s) => s.addClipToTimeline)
-
   return (
     <button
-      onClick={() => addClipToTimeline({ clipId, startAt: time })}
-      title={`Insert at ${time.toFixed(2)}s`}
-      aria-label={`Insert at ${time.toFixed(2)} seconds`}
+      onClick={() => {
+        const st = useEditorStore.getState()
+        const id = st.addClipToTimeline({ clipId, startAt: st.time })
+        if (id) st.setSelectedClip(id)
+      }}
+      title="Insert at playhead"
+      aria-label="Insert at playhead"
       style={{ width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}
     >
       +
@@ -24,81 +26,16 @@ function AddClipButton({ clipId }) {
 
 export default React.memo(function MediaBin() {
   const media = useEditorStore((s) => s.project?.media || [])
-  const addMediaClip = useEditorStore((s) => s.addMediaClip)
-  const startImport = useEditorStore((s) => s.startImport)
-  const updateImportProgress = useEditorStore((s) => s.updateImportProgress)
-  const finishImport = useEditorStore((s) => s.finishImport)
   const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
   const addModelNode = useEditorStore((s) => s.addModelNode)
   const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
 
-  const processEntries = async (entries) => {
-    if (!entries || !entries.length) return
-    startImport(entries.length)
-    try {
-      let i = 0
-      for (const { file, path } of entries) {
-        if (useEditorStore.getState().importProgress?.cancelled) break
-
-        const name = String(path || file?.name || 'media').split(/[\\\/]/).pop()
-        updateImportProgress(i, name)
-
-        // Yield to allow UI updates
-        await new Promise(r => setTimeout(r, 0))
-
-        // Filter out non-media files if folder import picked up junk
-        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) {
-          i++
-          continue
-        }
-
-        const id = `clip-${Math.random().toString(36).slice(2, 8)}`
-        let initialUri = null
-        
-        // Prefer path if available and absolute (Wails/Electron)
-        // Check for POSIX root '/' or Windows drive 'C:\' or 'C:/'
-        const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path));
-
-        if (isAbsolute) {
-            initialUri = toFileUri(path)
-        } else if (file) {
-             // Fallback for web: use object URL (lightweight reference, not a full copy)
-             initialUri = URL.createObjectURL(file)
-        }
-        
-        if (!initialUri) {
-          initialUri = toFileUri(String(path || file?.name || 'media'))
-        }
-
-        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
-        if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
-          try {
-            const meta = await getVideoMetadata(file || initialUri)
-            if (meta?.duration) duration = meta.duration
-          } catch (e) {
-            console.warn('Failed to get video metadata', e)
-          }
-        }
-
-        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
-        i++
-      }
-    } catch (e) {
-      console.error(e)
-      alert('Import failed: ' + e)
-    } finally {
-      finishImport()
-    }
-  }
-
   const onImportFiles = async () => {
-    const entries = await openMediaFiles()
-    await processEntries(entries)
+    await importEntries(await openMediaFiles())
   }
 
   const onImportFolder = async () => {
-    const entries = await openMediaFolder()
-    await processEntries(entries)
+    await importEntries(await openMediaFolder())
   }
 
   React.useEffect(() => {
@@ -177,8 +114,7 @@ export default React.memo(function MediaBin() {
 function isModelClip(clipId, media) {
   const clip = media.find(m => m.id === clipId)
   if (!clip) return false
-  const name = String(clip.name || clip.uri || '')
-  return /\.(gltf|glb|obj)$/i.test(name)
+  return isModelName(clip.name || clip.uri || '')
 }
 
 function MenuItem({ label, onClick }) {

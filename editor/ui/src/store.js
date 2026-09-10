@@ -1,23 +1,26 @@
 import { create } from 'zustand'
 import { parseProject } from './utils/parseProject.js'
 import { setFileServerBaseUrl } from './utils/videoUtils.js'
-import { toFileUri } from './utils/mediaUtils.js'
-import { setFileServerBase, toFileUri as mfToFileUri } from './media/uri.js'
+import { setFileServerBase, toFileUri } from './media/uri.js'
 import { createMediaSession } from './media/session.js'
+import { buildProjectWrapper } from './utils/projectSerialize.js'
 import { createUndoStore, withUndo } from './undo.js'
 
-// Initialize file server base URL if in Wails environment
+// Initialize the file server base URL if running under Wails. This is the only
+// place it happens — App.jsx used to repeat it on mount.
 if (window.go?.main?.App?.GetFileServerPort) {
   window.go.main.App.GetFileServerPort().then(port => {
     if (port > 0) {
-      console.log('Using sidecar file server at port', port)
       setFileServerBaseUrl(`http://localhost:${port}`)
       // Store port for model URL resolution
       useEditorStore.setState({ _fileServerPort: port })
       // Also set the Media Foundation URI resolver's base
       setFileServerBase(`http://localhost:${port}`)
+      queueLog('info', `Video sidecar active on port ${port}`)
     }
-  }).catch(err => console.warn('Failed to get file server port', err))
+  }).catch(err => queueLog('error', `Sidecar error: ${err}`))
+} else {
+  queueLog('warn', 'Wails API not available')
 }
 
 export const useEditorStore = create(withUndo((set, get, api) => ({
@@ -31,8 +34,6 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   importingMediaCountUpdatedAt: 0,
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
-  remoteAddr: 'localhost:9090',
-  setRemoteAddr: (addr) => set({ remoteAddr: addr }),
   selectedId: null,
   selectedClipId: null, // primary selected timeline item id
   selectedClipIds: [], // multi-select support for stage/timeline
@@ -52,12 +53,6 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     // keep last 500 entries
     const pruned = next.length > 500 ? next.slice(next.length - 500) : next
     return { logs: pruned }
-  }),
-  // Update media clip fields by id (used to update URI after caching)
-  setMediaUri: (id, uri) => set((s) => {
-    if (!s.project?.media) return {}
-    const media = s.project.media.map((m) => m.id === id ? { ...m, uri } : m)
-    return { project: { ...s.project, media } }
   }),
   clearLogs: () => set({ logs: [] }),
   beginImport: () => set((s) => {
@@ -150,23 +145,26 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     const tracks = [...(tl.tracks || []), { media: [] }]
     return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Add Track' }
   }),
-  // Insert an existing clip onto the timeline
-  addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale, trackIndex }) => set((s) => {
-    if (!s.project) return {}
+  // Insert an existing clip onto the timeline.
+  // Returns the new *timeline item* id so callers (e.g. Timeline's drop
+  // handler) can select the thing they just created rather than the asset id.
+  addClipToTimeline: ({ clipId, startAt, duration, targetNodeId, position, scale, trackIndex }) => {
+    const s = get()
+    if (!s.project) return null
     const clip = (s.project.media || []).find((m) => m.id === clipId)
-    if (!clip) return {}
-    const dur = duration ?? clip.duration_seconds ?? 10
+    if (!clip) return null
+    const dur = numOr(duration, numOr(clip.duration_seconds, 10))
+    const startTime = numOr(startAt, currentTime(s))
     // No per-screen association; leave target empty
-    const target = ''
     const tm = {
       id: `tl-${Math.random().toString(36).slice(2, 9)}`,
-      target_node_id: target,
+      target_node_id: '',
       clip_id: clipId,
       in_seconds: 0,
       out_seconds: dur,
-      start_at_seconds: startAt ?? (s.time || 0),
+      start_at_seconds: startTime,
       // new fields
-      start: startAt ?? (s.time || 0),
+      start: startTime,
       duration: dur,
       position: position ? { x: toInt(position.x, 0), y: toInt(position.y, 0) } : { x: 0, y: 0 },
       // 0 means use natural dimensions; renderer falls back to image width/height
@@ -174,7 +172,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       fade_in: 0,
       fade_out: 0,
     }
-    const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + dur) }
+    const nextTimeline = s.project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, startTime + dur) }
     let tracks = [...(nextTimeline.tracks ?? [])]
 
     let finalTrackIndex = -1
@@ -190,13 +188,11 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       const start = tm.start
       const end = start + tm.duration
       for (let i = 0; i < tracks.length; i++) {
-        const t = tracks[i]
-        const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+        const mediaList = trackMedia(tracks[i])
         let hasOverlap = false
         for (const m of mediaList) {
-          const s2 = m.start ?? m.start_at_seconds ?? 0
-          const d2 = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-          const e2 = s2 + d2
+          const s2 = clipStart(m)
+          const e2 = s2 + clipDuration(m)
           if (start < e2 && s2 < end) {
             hasOverlap = true
             break
@@ -211,9 +207,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
 
     if (finalTrackIndex >= 0 && finalTrackIndex < tracks.length) {
       // Add to existing track
-      const existing = tracks[finalTrackIndex].media || []
-      const mediaList = Array.isArray(existing) ? existing : (existing ? [existing] : [])
-      tracks[finalTrackIndex] = { ...tracks[finalTrackIndex], media: [...mediaList, tm] }
+      tracks[finalTrackIndex] = { ...tracks[finalTrackIndex], media: [...trackMedia(tracks[finalTrackIndex]), tm] }
     } else {
       // Append new track (or insert at specific index if provided but out of bounds)
       if (finalTrackIndex >= 0) {
@@ -223,10 +217,11 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       }
     }
 
-    const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? dur))
-    queueLog('info', `Inserted clip '${clip.name}' at ${tm.start_at_seconds.toFixed(2)}s`)
-    return { project: { ...s.project, timeline: { ...(nextTimeline ?? {}), tracks, duration_seconds } }, _undoLabel: `Add ${clip.name} to Timeline` }
-  }),
+    const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, tm.start + tm.duration)
+    queueLog('info', `Inserted clip '${clip.name}' at ${tm.start.toFixed(2)}s`)
+    set({ project: { ...s.project, timeline: { ...nextTimeline, tracks, duration_seconds } }, _undoLabel: `Add ${clip.name} to Timeline` })
+    return tm.id
+  },
   // Add an image media clip and a timeline track targeting a screen
   // Accepts either a raw filePath (OS path) or a fully-resolved file URI.
   addImageToShow: ({ filePath, uri, name, duration = 10 }) => set((s) => {
@@ -252,9 +247,9 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       fade_in: 0,
       fade_out: 0,
     }
-    const nextTimeline = baseProj.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, (s.time || 0) + duration) }
+    const nextTimeline = baseProj.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: Math.max(60, clipStart(tm) + duration) }
     const tracks = [...(nextTimeline.tracks ?? []), { media: [tm] }]
-    const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, (tm.start ?? tm.start_at_seconds) + (tm.duration ?? duration))
+    const duration_seconds = Math.max(nextTimeline.duration_seconds ?? 0, clipStart(tm) + clipDuration(tm))
     queueLog('info', `Added image '${clip.name}' targeting ${tm.target_node_id || 'scene'} at ${tm.start_at_seconds.toFixed(2)}s`)
     const nextProj = {
       ...baseProj,
@@ -279,18 +274,20 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
         const nextScale = scale
           ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
           : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
+        // Every numeric field goes through numOr: a half-typed value from an
+        // Inspector field must never land NaN in the document.
         const nextOpacity = (opacity !== undefined)
-          ? Math.max(0, Math.min(1, parseFloat(opacity)))
-          : (m.opacity ?? 1)
+          ? Math.max(0, Math.min(1, numOr(opacity, m.opacity ?? 1)))
+          : numOr(m.opacity, 1)
         const nextBlur = (blur !== undefined)
-          ? Math.max(0, parseFloat(blur))
-          : (m.blur ?? 0)
+          ? Math.max(0, numOr(blur, m.blur ?? 0))
+          : numOr(m.blur, 0)
         const nextFadeIn = (fade_in !== undefined)
-          ? Math.max(0, parseFloat(fade_in))
-          : (m.fade_in ?? 0)
+          ? Math.max(0, numOr(fade_in, m.fade_in ?? 0))
+          : numOr(m.fade_in, 0)
         const nextFadeOut = (fade_out !== undefined)
-          ? Math.max(0, parseFloat(fade_out))
-          : (m.fade_out ?? 0)
+          ? Math.max(0, numOr(fade_out, m.fade_out ?? 0))
+          : numOr(m.fade_out, 0)
         return { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur, fade_in: nextFadeIn, fade_out: nextFadeOut }
       })
       return { ...t, media: nextMediaList }
@@ -307,8 +304,8 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
         const prevEffects = m.effects || {}
         const prevEffect = prevEffects[effect] || {}
         const nextEffect = {
-          value: value !== undefined ? value : (prevEffect.value ?? 0),
-          enabled: enabled !== undefined ? enabled : (prevEffect.enabled ?? false)
+          value: value !== undefined ? numOr(value, prevEffect.value ?? 0) : numOr(prevEffect.value, 0),
+          enabled: enabled !== undefined ? !!enabled : (prevEffect.enabled ?? false)
         }
         return { ...m, effects: { ...prevEffects, [effect]: nextEffect } }
       })
@@ -316,103 +313,95 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     })
     return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } }, _undoLabel: `Change ${effect}` }
   }),
-  // Update timing for a clip (e.g., when dragging on timeline)
+  // Update timing for a clip (e.g., when dragging on timeline).
+  // Only clamped to >= 0: the timeline renders well past `duration_seconds`,
+  // so clamping to it used to make clips undraggable past 60 s.
   updateClipStart: ({ clipId, timelineId, startAt }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tl = s.project.timeline
-    const duration = Math.max(0, tl.duration_seconds ?? 0)
-    const tracks = (tl.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-        if (!m || !match) return m
-        const nextStart = Math.max(0, Math.min(duration, startAt ?? m.start ?? m.start_at_seconds ?? 0))
+    const tracks = (tl.tracks || []).map((t) => ({
+      ...t,
+      media: trackMedia(t).map((m) => {
+        if (!m || !matchesClip(m, timelineId, clipId)) return m
+        const nextStart = Math.max(0, numOr(startAt, clipStart(m)))
         return { ...m, start_at_seconds: nextStart, start: nextStart }
-      })
-      return { ...t, media: nextMediaList }
-    })
-    return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Move Clip on Timeline' }
+      }),
+    }))
+    return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } }, _undoLabel: 'Move Clip on Timeline' }
   }),
   // Update explicit duration for a clip (and legacy out_seconds)
   updateClipDuration: ({ clipId, timelineId, duration }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tl = s.project.timeline
-    const nextDur = Math.max(0, duration ?? 0)
-    const tracks = (tl.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-        if (!m || !match) return m
-        return { ...m, duration: nextDur, out_seconds: (m.in_seconds || 0) + nextDur }
-      })
-      return { ...t, media: nextMediaList }
-    })
-    // Recompute timeline duration_seconds as max end
-    const duration_seconds = tracks.reduce((acc, t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      return mediaList.reduce((acc2, m) => {
-        if (!m) return acc2
-        const st = m.start ?? m.start_at_seconds ?? 0
-        const dur = m.duration ?? ((m.out_seconds - m.in_seconds) || 0)
-        return Math.max(acc2, st + dur)
-      }, acc)
-    }, tl.duration_seconds || 0)
-    return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds } }, _undoLabel: 'Resize Clip Duration' }
+    const nextDur = Math.max(0, numOr(duration, 0))
+    const tracks = (tl.tracks || []).map((t) => ({
+      ...t,
+      media: trackMedia(t).map((m) => {
+        if (!m || !matchesClip(m, timelineId, clipId)) return m
+        return { ...m, duration: nextDur, out_seconds: numOr(m.in_seconds, 0) + nextDur }
+      }),
+    }))
+    return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } }, _undoLabel: 'Resize Clip Duration' }
   }),
-  reorderClip: (clipId, newIndex) => set((s) => {
+  /**
+   * Move a clip horizontally and/or between tracks in a single commit.
+   *
+   * A timeline reorder drag changes both at once; issuing updateClipStart and
+   * reorderClip separately produced two undo entries for one gesture.
+   */
+  moveClip: (timelineId, { start, trackIndex } = {}) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
     const tl = s.project.timeline
-    const tracks = [...tl.tracks]
-
-    // Find and remove the clip from its current track
-    let movedClip = null
-    const nextTracks = tracks.map(t => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const idx = mediaList.findIndex(m => m.id === clipId)
-      if (idx !== -1) {
-        movedClip = mediaList[idx]
-        const newMedia = [...mediaList]
-        newMedia.splice(idx, 1)
-        return { ...t, media: newMedia }
-      }
-      return t
+    let moved = null
+    let fromIndex = -1
+    let tracks = (tl.tracks || []).map((t, i) => {
+      const list = trackMedia(t)
+      const idx = list.findIndex((m) => m?.id === timelineId)
+      if (idx === -1) return t
+      fromIndex = i
+      moved = list[idx]
+      const next = [...list]
+      next.splice(idx, 1)
+      return { ...t, media: next }
     })
+    if (!moved) return {}
 
-    if (!movedClip) return {}
+    if (start !== undefined) {
+      const nextStart = Math.max(0, numOr(start, clipStart(moved)))
+      moved = { ...moved, start: nextStart, start_at_seconds: nextStart }
+    }
 
-    // Clamp target track index
-    const targetIndex = Math.max(0, Math.min(nextTracks.length - 1, newIndex))
+    const targetIndex = (trackIndex === undefined)
+      ? fromIndex
+      : Math.max(0, Math.min(tracks.length - 1, Math.round(numOr(trackIndex, fromIndex))))
+    tracks[targetIndex] = { ...tracks[targetIndex], media: [...trackMedia(tracks[targetIndex]), moved] }
 
-    // Add to target track
-    const targetTrack = nextTracks[targetIndex]
-    const targetMedia = Array.isArray(targetTrack.media) ? targetTrack.media : (targetTrack.media ? [targetTrack.media] : [])
-    nextTracks[targetIndex] = { ...targetTrack, media: [...targetMedia, movedClip] }
-
-    return { project: { ...s.project, timeline: { ...tl, tracks: nextTracks } }, _undoLabel: 'Reorder Clip' }
+    return {
+      project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } },
+      _undoLabel: targetIndex === fromIndex ? 'Move Clip on Timeline' : 'Move Clip to Track',
+    }
   }),
-  tick: (dt) => {
-    if (!get().playing) return
-    set((s) => ({ time: s.time + dt }))
-  },
+  reorderClip: (clipId, newIndex) => get().moveClip(clipId, { trackIndex: newIndex }),
+  // Transport is owned by the MediaSession / PresentationClock. These actions
+  // only forward; `playing` and `time` are mirrored back by the subscription
+  // installed in getMediaSession() below.
   play: () => {
     queueLog('info', 'Local: play')
-    set({ playing: true })
-    // Sync to Media Session if available
-    try { getMediaSession().play() } catch {}
+    try { getMediaSession().play() } catch { set({ playing: true }) }
   },
   pause: () => {
     queueLog('info', 'Local: pause')
-    set({ playing: false })
-    try { getMediaSession().pause() } catch {}
+    try { getMediaSession().pause() } catch { set({ playing: false }) }
   },
   stop: () => {
     queueLog('info', 'Local: stop')
-    set({ playing: false, time: 0 })
-    try { getMediaSession().stop() } catch {}
+    try { getMediaSession().stop() } catch { set({ playing: false, time: 0 }) }
+    set({ time: 0 })
   },
   seek: (t) => {
-    set({ time: t })
-    try { getMediaSession().seek(t) } catch {}
+    const next = Math.max(0, numOr(t, 0))
+    set({ time: next })
+    try { getMediaSession().seek(next) } catch {}
   },
   setSelected: (id) => set({ selectedId: id }),
   setSelectedClip: (clipId) => set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] }),
@@ -541,6 +530,58 @@ function queueLog(level, message) {
   } catch { }
 }
 
+// --- shared coercion / legacy-shape helpers ---
+
+/** Finite number or fallback. Guards every reducer against NaN from an input. */
+function numOr(val, fallback = 0) {
+  const n = Number(val)
+  return Number.isFinite(n) ? n : fallback
+}
+
+/** A track's clips, tolerating the single-object legacy shape. */
+function trackMedia(t) {
+  if (!t) return []
+  return Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+}
+
+function clipStart(m) {
+  return numOr(m?.start ?? m?.start_at_seconds, 0)
+}
+
+function clipDuration(m) {
+  if (m?.duration !== undefined) return numOr(m.duration, 0)
+  return Math.max(0, numOr(m?.out_seconds, 0) - numOr(m?.in_seconds, 0))
+}
+
+/** Does this timeline item match the requested selector? */
+function matchesClip(m, timelineId, clipId) {
+  if (timelineId) return m?.id === timelineId
+  if (clipId) return m?.clip_id === clipId
+  return false
+}
+
+/** Timeline length = the furthest clip end, never shrinking below the stored value. */
+function timelineEnd(tracks, tl) {
+  let end = numOr(tl?.duration_seconds, 0)
+  for (const t of tracks) {
+    for (const m of trackMedia(t)) {
+      if (m) end = Math.max(end, clipStart(m) + clipDuration(m))
+    }
+  }
+  return end
+}
+
+/**
+ * The playhead position to use for "insert here" actions.
+ *
+ * `state.time` is only a ~10 Hz mirror of the PresentationClock, so read the
+ * clock directly when it exists and fall back to the mirror otherwise.
+ */
+function currentTime(state) {
+  try { return numOr(getMediaSession().getTime(), numOr(state?.time, 0)) } catch { }
+  return numOr(state?.time, 0)
+}
+
 // Integer coercion helper for pixel-based values
 function toInt(val, fallback = 0) {
   const n = Number(val)
@@ -563,23 +604,6 @@ function updateNode(node, id, fn) {
   if (node.id === id) return fn(node)
   if (!node.children?.length) return node
   return { ...node, children: node.children.map((c) => updateNode(c, id, fn)) }
-}
-
-function pickScreenTarget(scene, selectedId) {
-  if (!scene) return null
-  // if selected is a screen, use it
-  if (selectedId) {
-    const n = findNode(scene.roots || [], selectedId)
-    if (n && n.kind?.type === 'screen') return n.id
-  }
-  // otherwise first screen found
-  const q = [...(scene.roots || [])]
-  while (q.length) {
-    const n = q.shift()
-    if (n?.kind?.type === 'screen') return n.id
-    if (n?.children?.length) q.push(...n.children)
-  }
-  return null
 }
 
 function findNode(nodes, id) {
@@ -606,30 +630,41 @@ let _mediaSession = null
 export function getMediaSession() {
   if (!_mediaSession) {
     _mediaSession = createMediaSession({
-      getStore: () => useEditorStore.getState(),
-      broadcastFn: async (event, payload) => {
-        try {
-          const { broadcastToDisplays } = await import('./display/displayManager.js')
-          broadcastToDisplays(event, payload)
-        } catch { }
+      // The single source of truth handed to every sink.
+      getSnapshot: () => {
+        const s = useEditorStore.getState()
+        if (!s.project || !s.scene) return null
+        return {
+          project: s.project,
+          scene: s.scene,
+          time: _mediaSession ? _mediaSession.getTime() : (s.time || 0),
+          playing: s.playing,
+        }
       },
       uiUpdateInterval: 100,
     })
 
-    // Sync session time updates back into zustand
+    // Mirror clock time into zustand at the session's UI rate. Components that
+    // need per-frame time subscribe to the clock directly instead.
     _mediaSession.subscribe({
       onTimeUpdate(time) {
-        // Only update store if session is authoritative (playing)
-        const s = useEditorStore.getState()
-        if (s.playing) {
-          useEditorStore.setState({ time })
-        }
+        useEditorStore.setState({ time })
       },
       onStateChange(newState) {
-        const playing = newState === 'playing'
-        useEditorStore.setState({ playing })
+        const patch = { playing: newState === 'playing' }
+        if (newState === 'stopped') patch.time = 0
+        useEditorStore.setState(patch)
       },
     })
   }
   return _mediaSession
+}
+
+/**
+ * Serialize the current document the way the native renderer expects it.
+ * Used as the NativeSink's `serialize` hook.
+ */
+export function serializeForNative(snapshot) {
+  if (!snapshot?.project || !snapshot?.scene) return null
+  return JSON.stringify(buildProjectWrapper(snapshot.project, snapshot.scene))
 }

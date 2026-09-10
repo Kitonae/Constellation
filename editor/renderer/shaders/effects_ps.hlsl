@@ -2,7 +2,9 @@
 
 cbuffer EffectsCB : register(b1) {
     float opacity;          // pre-multiplied with fade
-    float blur_radius;      // Gaussian blur radius (pixels)
+    float blur_radius;      // NOT IMPLEMENTED: a real Gaussian needs a
+                            // separable two-pass offscreen target; the
+                            // web preview applies CSS blur, this does not.
     float brightness;       // multiply RGB (1 = normal)
     float contrast;         // (c - 0.5) * contrast + 0.5
     float saturate_amount;  // lerp(luminance, color, amount) (1 = normal)

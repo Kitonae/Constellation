@@ -67,6 +67,7 @@ void Scene::loadSnapshot(const json& data) {
                     track.media.push_back(parseTimelineClip(m));
                 }
             }
+            markOverlaps(track);
             m_tracks.push_back(std::move(track));
         }
     }
@@ -119,6 +120,24 @@ TimelineClip Scene::parseTimelineClip(const json& j) {
     return c;
 }
 
+// Flag clips that share time with another clip on the same track. Same
+// algorithm as DisplayWindow.jsx, but run once per snapshot rather than
+// O(n^2) per frame.
+void Scene::markOverlaps(TimelineTrack& track) {
+    auto& list = track.media;
+    for (auto& m : list) m.overlapping = false;
+    for (size_t j = 0; j < list.size(); j++) {
+        for (size_t k = j + 1; k < list.size(); k++) {
+            double e1 = list[j].start + list[j].duration;
+            double e2 = list[k].start + list[k].duration;
+            if (list[j].start < e2 && list[k].start < e1) {
+                list[j].overlapping = true;
+                list[k].overlapping = true;
+            }
+        }
+    }
+}
+
 std::vector<ActiveClip> Scene::evaluate(double time) const {
     std::vector<ActiveClip> result;
 
@@ -129,24 +148,9 @@ std::vector<ActiveClip> Scene::evaluate(double time) const {
     for (const auto& track : m_tracks) {
         const auto& mediaList = track.media;
 
-        // Overlap detection (same algorithm as DisplayWindow.jsx)
-        std::unordered_set<std::string> overlaps;
-        for (size_t j = 0; j < mediaList.size(); j++) {
-            for (size_t k = j + 1; k < mediaList.size(); k++) {
-                const auto& m1 = mediaList[j];
-                const auto& m2 = mediaList[k];
-                double e1 = m1.start + m1.duration;
-                double e2 = m2.start + m2.duration;
-                if (m1.start < e2 && m2.start < e1) {
-                    overlaps.insert(m1.id);
-                    overlaps.insert(m2.id);
-                }
-            }
-        }
-
-        // Active clip resolution
+        // Active clip resolution (overlaps were resolved in loadSnapshot)
         for (const auto& m : mediaList) {
-            if (overlaps.count(m.id)) {
+            if (m.overlapping) {
                 if (verbose) printf("[Scene]   clip %s: OVERLAPPING, skipped\n", m.id.c_str());
                 continue;
             }

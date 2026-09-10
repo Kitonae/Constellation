@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 #pragma comment(lib, "propsys.lib")
@@ -130,111 +131,44 @@ bool VideoDecoder::open(const std::string& filePath,
     m_d3d12Device = d3d12Device;
     m_d3d12Queue = d3d12Queue;
     m_d3d11On12 = d3d11On12Device;
-    m_nv12Mode = nv12Mode && d3d11On12Device && d3d12Queue;
+    m_sharesRenderQueue = (d3d11On12Device != nullptr);
 
     int wlen = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0);
-    std::vector<wchar_t> wpath(wlen);
-    MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, wpath.data(), wlen);
+    std::vector<wchar_t> wbuf(wlen);
+    MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, wbuf.data(), wlen);
+    std::wstring wpath(wbuf.data());
 
-    // Use shared DXVA resources if provided, otherwise create our own
-    bool dxvaOk = false;
+    // Attach DXVA resources up front; tryOpen decides whether to use them.
     if (sharedDevice && sharedManager) {
         m_d3d11Device = sharedDevice;
         sharedDevice->GetImmediateContext(&m_d3d11Ctx);
         m_dxgiManager = sharedManager;
         m_ownsD3D11 = false;
-        dxvaOk = true;
-        printf("[VideoDecoder] Using shared D3D11 device for DXVA\n");
+        m_dxvaAvailable = true;
     } else {
-        dxvaOk = initDXVA(nullptr);
-        m_ownsD3D11 = dxvaOk;
+        m_dxvaAvailable = initDXVA(nullptr);
+        m_ownsD3D11 = m_dxvaAvailable;
     }
 
-    ComPtr<IMFAttributes> attrs;
-    MFCreateAttributes(&attrs, 4);
-
-    if (dxvaOk) {
-        // DXVA path: provide D3D device manager to Source Reader
-        attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, m_dxgiManager.Get());
-        attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-        attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
-    } else {
-        // Software fallback
-        attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+    // Decide the decode path once, here. Each attempt fully configures the
+    // reader and validates it; on failure the reader is torn down and the next
+    // mode is tried from scratch. The decode thread never changes mode.
+    bool opened = false;
+    if (nv12Mode && d3d11On12Device && d3d12Queue && m_dxvaAvailable) {
+        opened = tryOpen(wpath, Mode::NV12);
+        if (!opened) printf("[VideoDecoder] NV12 path unavailable, trying BGRA\n");
     }
-
-    HRESULT hr = MFCreateSourceReaderFromURL(wpath.data(), attrs.Get(), &m_reader);
-    if (FAILED(hr)) {
-        fprintf(stderr, "[VideoDecoder] Failed to open %s: 0x%08x\n", filePath.c_str(), hr);
+    if (!opened && m_dxvaAvailable) {
+        opened = tryOpen(wpath, Mode::DxvaRgb32);
+        if (!opened) printf("[VideoDecoder] DXVA path unavailable, trying software\n");
+    }
+    if (!opened) {
+        opened = tryOpen(wpath, Mode::Software);
+    }
+    if (!opened) {
+        fprintf(stderr, "[VideoDecoder] Failed to open %s in any mode\n", filePath.c_str());
+        close();
         return false;
-    }
-
-    m_dxvaActive = dxvaOk;
-
-    if (!configureDecoder()) {
-        // If DXVA config failed, retry with software
-        if (m_dxvaActive) {
-            printf("[VideoDecoder] DXVA config failed, falling back to software decode\n");
-            m_reader.Reset();
-            m_dxvaActive = false;
-            m_dxgiManager.Reset();
-            m_d3d11Device.Reset();
-            m_d3d11Ctx.Reset();
-
-            ComPtr<IMFAttributes> swAttrs;
-            MFCreateAttributes(&swAttrs, 1);
-            swAttrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-
-            hr = MFCreateSourceReaderFromURL(wpath.data(), swAttrs.Get(), &m_reader);
-            if (FAILED(hr)) return false;
-            if (!configureDecoder()) { close(); return false; }
-        } else {
-            close();
-            return false;
-        }
-    }
-
-    m_frameDuration = (m_fps > 0) ? (1.0 / m_fps) : (1.0 / 30.0);
-
-    // Allocate frame pool based on active decode path
-    m_gpuSharing = false;
-    if (m_nv12Mode) {
-        // NV12 zero-copy: frames get their D3D11 textures created on first decode
-        for (int i = 0; i < POOL_SIZE; i++) {
-            VideoFrame f;
-            f.width = m_width;
-            f.height = m_height;
-            m_writeable.push_back(std::move(f));
-        }
-        printf("[VideoDecoder] NV12 zero-copy frame pool created (%d pool)\n", POOL_SIZE);
-    } else if (m_dxvaActive && m_d3d12Device) {
-        // Phase 1: shared DXGI textures (BGRA)
-        bool allOk = true;
-        for (int i = 0; i < POOL_SIZE; i++) {
-            VideoFrame f;
-            if (!createSharedTexture(f)) { allOk = false; break; }
-            m_writeable.push_back(std::move(f));
-        }
-        if (allOk) {
-            m_gpuSharing = true;
-            printf("[VideoDecoder] GPU shared textures created (%d pool)\n", POOL_SIZE);
-        } else {
-            for (auto& f : m_writeable) {
-                if (f.sharedHandle) { CloseHandle(f.sharedHandle); f.sharedHandle = nullptr; }
-            }
-            m_writeable.clear();
-            printf("[VideoDecoder] Shared texture creation failed, falling back to CPU readback\n");
-        }
-    }
-
-    // Fallback: allocate CPU pixel buffers
-    if (!m_nv12Mode && !m_gpuSharing) {
-        size_t sz = (size_t)m_width * m_height * 4;
-        for (int i = 0; i < POOL_SIZE; i++) {
-            VideoFrame f;
-            f.pixels.resize(sz);
-            m_writeable.push_back(std::move(f));
-        }
     }
 
     m_running = true;
@@ -249,6 +183,165 @@ bool VideoDecoder::open(const std::string& filePath,
     return true;
 }
 
+// Configure the reader for one decode mode and validate it end to end.
+// Returns false with the reader released so the caller can try the next mode.
+bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
+    m_reader.Reset();
+    m_staging.Reset();
+    m_writeable.clear();
+    m_readable.clear();
+    m_display = VideoFrame{};
+    m_nv12Mode = false;
+    m_gpuSharing = false;
+    m_dxvaActive = false;
+
+    const bool wantDxva = (mode != Mode::Software) && m_dxvaAvailable;
+
+    ComPtr<IMFAttributes> attrs;
+    MFCreateAttributes(&attrs, 4);
+    if (wantDxva) {
+        attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, m_dxgiManager.Get());
+        attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+        attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+    } else {
+        attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+    }
+
+    HRESULT hr = MFCreateSourceReaderFromURL(wpath.c_str(), attrs.Get(), &m_reader);
+    if (FAILED(hr)) {
+        m_reader.Reset();
+        return false;
+    }
+
+    m_dxvaActive = wantDxva;
+    m_nv12Mode = (mode == Mode::NV12);
+
+    if (!configureDecoder(mode)) {
+        m_reader.Reset();
+        m_nv12Mode = false;
+        m_dxvaActive = false;
+        return false;
+    }
+
+    m_frameDuration = (m_fps > 0) ? (1.0 / m_fps) : (1.0 / 30.0);
+
+    // NV12 has to be proved, not assumed: the hardware may hand back P010
+    // (VP9/AV1 10-bit), which our R8/R8G8 plane views cannot describe, and
+    // UnwrapUnderlyingResource may fail outright.
+    if (mode == Mode::NV12 && !probeNV12()) {
+        m_reader.Reset();
+        m_nv12Mode = false;
+        m_dxvaActive = false;
+        return false;
+    }
+
+    // Allocate the frame pool for the chosen mode.
+    if (mode == Mode::NV12) {
+        for (int i = 0; i < POOL_SIZE; i++) {
+            VideoFrame f;
+            f.width = m_width;
+            f.height = m_height;
+            m_writeable.push_back(std::move(f));
+        }
+        printf("[VideoDecoder] NV12 zero-copy frame pool created (%d pool)\n", POOL_SIZE);
+    } else if (mode == Mode::DxvaRgb32 && m_d3d12Device) {
+        bool allOk = true;
+        for (int i = 0; i < POOL_SIZE; i++) {
+            VideoFrame f;
+            if (!createSharedTexture(f)) { allOk = false; break; }
+            m_writeable.push_back(std::move(f));
+        }
+        if (allOk) {
+            m_gpuSharing = true;
+            printf("[VideoDecoder] GPU shared textures created (%d pool)\n", POOL_SIZE);
+        } else {
+            m_writeable.clear();   // ~VideoFrame closes the handles
+            printf("[VideoDecoder] Shared texture creation failed, using CPU readback\n");
+        }
+    }
+
+    if (!m_nv12Mode && !m_gpuSharing) {
+        size_t sz = (size_t)m_width * m_height * 4;
+        for (int i = 0; i < POOL_SIZE; i++) {
+            VideoFrame f;
+            f.pixels.resize(sz);
+            m_writeable.push_back(std::move(f));
+        }
+    }
+
+    m_mode = mode;
+    return true;
+}
+
+// Decode one sample synchronously and confirm the whole NV12 chain works:
+// the hardware really produced NV12, a matching copy texture can be created,
+// and D3D11On12 can unwrap it into a D3D12 resource.
+bool VideoDecoder::probeNV12() {
+    if (!m_d3d11On12 || !m_d3d12Queue) return false;
+
+    for (int attempt = 0; attempt < 30; attempt++) {
+        DWORD streamIndex = 0, flags = 0;
+        LONGLONG timestamp = 0;
+        ComPtr<IMFSample> sample;
+        HRESULT hr = m_reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+                                          &streamIndex, &flags, &timestamp, &sample);
+        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) return false;
+        if (!sample) continue;
+
+        ComPtr<IMFMediaBuffer> buffer;
+        if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) return false;
+
+        ComPtr<IMFDXGIBuffer> dxgiBuf;
+        if (FAILED(buffer->QueryInterface(IID_PPV_ARGS(&dxgiBuf)))) {
+            printf("[VideoDecoder] NV12 probe: decoder is not producing GPU buffers\n");
+            return false;
+        }
+
+        ComPtr<ID3D11Texture2D> tex;
+        if (FAILED(dxgiBuf->GetResource(IID_PPV_ARGS(&tex)))) return false;
+
+        D3D11_TEXTURE2D_DESC desc = {};
+        tex->GetDesc(&desc);
+        if (desc.Format != DXGI_FORMAT_NV12) {
+            // P010 and friends need 16-bit plane views and a 10-bit shader
+            // variant; until those exist, reject rather than misread them.
+            printf("[VideoDecoder] NV12 probe: source format %u is not NV12\n", desc.Format);
+            return false;
+        }
+
+        // Prove the unwrap path before committing to it.
+        D3D11_TEXTURE2D_DESC copyDesc = {};
+        copyDesc.Width = m_width;
+        copyDesc.Height = m_height;
+        copyDesc.MipLevels = 1;
+        copyDesc.ArraySize = 1;
+        copyDesc.Format = DXGI_FORMAT_NV12;
+        copyDesc.SampleDesc.Count = 1;
+        copyDesc.Usage = D3D11_USAGE_DEFAULT;
+        copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ComPtr<ID3D11Texture2D> probeTex;
+        if (FAILED(m_d3d11Device->CreateTexture2D(&copyDesc, nullptr, &probeTex))) {
+            printf("[VideoDecoder] NV12 probe: copy texture creation failed\n");
+            return false;
+        }
+        ComPtr<ID3D12Resource> probeRes;
+        hr = m_d3d11On12->UnwrapUnderlyingResource(probeTex.Get(), m_d3d12Queue, IID_PPV_ARGS(&probeRes));
+        if (FAILED(hr)) {
+            printf("[VideoDecoder] NV12 probe: UnwrapUnderlyingResource failed: 0x%08x\n", hr);
+            return false;
+        }
+        m_d3d11On12->ReturnUnderlyingResource(probeTex.Get(), 0, nullptr, nullptr);
+
+        // Rewind; the decode thread starts from zero.
+        PROPVARIANT p; PropVariantInit(&p);
+        p.vt = VT_I8; p.hVal.QuadPart = 0;
+        m_reader->SetCurrentPosition(GUID_NULL, p);
+        PropVariantClear(&p);
+        return true;
+    }
+    return false;
+}
+
 void VideoDecoder::close() {
     if (m_running) {
         m_running = false;
@@ -258,13 +351,13 @@ void VideoDecoder::close() {
     m_reader.Reset();
     m_staging.Reset();
 
-    // Return unwrapped NV12 resources and close shared handles
+    // Return unwrapped NV12 resources. The NT shared handle is closed by
+    // ~VideoFrame, so it no longer leaks for frames dropped outside close().
     auto cleanupFrame = [this](VideoFrame& f) {
         if (f.d3d11Source && m_d3d11On12) {
             m_d3d11On12->ReturnUnderlyingResource(f.d3d11Source.Get(), 0, nullptr, nullptr);
             f.d3d11Source.Reset();
         }
-        if (f.sharedHandle) { CloseHandle(f.sharedHandle); f.sharedHandle = nullptr; }
     };
     for (auto& f : m_writeable) cleanupFrame(f);
     for (auto& f : m_readable) cleanupFrame(f);
@@ -283,19 +376,28 @@ void VideoDecoder::close() {
     m_dxvaActive = false;
     m_gpuSharing = false;
     m_nv12Mode = false;
+    m_sharesRenderQueue = false;
     m_d3d12Device = nullptr;
     m_d3d12Queue = nullptr;
     m_d3d11On12 = nullptr;
     m_writeable.clear();
     m_readable.clear();
-    m_display = {};
+    m_display = VideoFrame{};
+    m_dxvaAvailable = false;
+    m_mode = Mode::Software;
+    m_frameFence = nullptr;
+    m_copyFence = nullptr;
+    m_frameFence11.Reset();
+    m_copyFence11.Reset();
+    m_copyFenceCounter = nullptr;
+    m_pendingCopyFence.store(0);
     m_width = m_height = 0;
     m_duration = 0; m_fps = 30.0;
 }
 
 // --- Configure decoder ---
 
-bool VideoDecoder::configureDecoder() {
+bool VideoDecoder::configureDecoder(Mode mode) {
     ComPtr<IMFMediaType> nativeType;
     HRESULT hr = m_reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &nativeType);
     if (FAILED(hr)) return false;
@@ -335,25 +437,70 @@ bool VideoDecoder::configureDecoder() {
     }
     PropVariantClear(&var);
 
+    readColorSpace(nativeType.Get());
+
     // Set output format
     ComPtr<IMFMediaType> outputType;
     MFCreateMediaType(&outputType);
     outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (m_nv12Mode) {
-        outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    } else {
-        outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-    }
+    outputType->SetGUID(MF_MT_SUBTYPE,
+        (mode == Mode::NV12) ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
     outputType->SetUINT64(MF_MT_FRAME_SIZE, ((UINT64)m_width << 32) | m_height);
 
     hr = m_reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, outputType.Get());
     if (FAILED(hr)) {
-        fprintf(stderr, "[VideoDecoder] Failed to set RGB32 output: 0x%08x\n", hr);
+        fprintf(stderr, "[VideoDecoder] Failed to set %s output: 0x%08x\n",
+            (mode == Mode::NV12) ? "NV12" : "RGB32", hr);
         return false;
+    }
+
+    // The output type may refine the colour metadata; prefer it when present.
+    ComPtr<IMFMediaType> actualType;
+    if (SUCCEEDED(m_reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &actualType)) && actualType) {
+        readColorSpace(actualType.Get());
     }
 
     m_reader->SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, FALSE);
     return m_width > 0 && m_height > 0;
+}
+
+// Fill m_colorSpace from the stream's nominal range and YUV matrix. Without
+// this the NV12 shader assumed BT.709 limited range for everything, so SD
+// (BT.601) and full-range content came out with wrong colours.
+void VideoDecoder::readColorSpace(IMFMediaType* type) {
+    if (!type) return;
+
+    UINT32 range = 0;
+    if (SUCCEEDED(type->GetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, &range))
+        && range == MFNominalRange_0_255) {
+        m_colorSpace.yOffset = 0.0f;
+        m_colorSpace.yScale = 1.0f;
+        m_colorSpace.cOffset = 128.0f / 255.0f;
+        m_colorSpace.cScale = 1.0f;
+    } else {
+        // Studio/limited range (the default for camera and broadcast content)
+        m_colorSpace.yOffset = 16.0f / 255.0f;
+        m_colorSpace.yScale = 255.0f / 219.0f;
+        m_colorSpace.cOffset = 128.0f / 255.0f;
+        m_colorSpace.cScale = 255.0f / 224.0f;
+    }
+
+    UINT32 matrix = 0;
+    if (FAILED(type->GetUINT32(MF_MT_YUV_MATRIX, &matrix))) {
+        // No metadata: SD resolutions are BT.601, HD and up are BT.709.
+        matrix = (m_height > 0 && m_height <= 576)
+            ? MFVideoTransferMatrix_BT601 : MFVideoTransferMatrix_BT709;
+    }
+    switch (matrix) {
+    case MFVideoTransferMatrix_BT601:
+        m_colorSpace.kr = 0.299f;  m_colorSpace.kb = 0.114f;  break;
+    case MFVideoTransferMatrix_BT2020_10:
+    case MFVideoTransferMatrix_BT2020_12:
+        m_colorSpace.kr = 0.2627f; m_colorSpace.kb = 0.0593f; break;
+    case MFVideoTransferMatrix_BT709:
+    default:
+        m_colorSpace.kr = 0.2126f; m_colorSpace.kb = 0.0722f; break;
+    }
 }
 
 int VideoDecoder::readableCount() const {
@@ -363,7 +510,7 @@ int VideoDecoder::readableCount() const {
 
 // ---- Render thread ----
 
-const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds) {
+const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds, UINT64 currentFrameFence) {
     timeSeconds = std::max(0.0, timeSeconds);
     if (m_duration > 0 && timeSeconds >= m_duration)
         timeSeconds = m_duration - m_frameDuration;
@@ -385,6 +532,7 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds) {
         }
     }
 
+    bool returned = false;
     {
         std::lock_guard<std::mutex> lk(m_dealerMu);
 
@@ -404,6 +552,7 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds) {
                 while (!m_readable.empty() && m_readable.front().timestamp < dispTs) {
                     m_writeable.push_back(std::move(m_readable.front()));
                     m_readable.pop_front();
+                    returned = true;
                 }
                 bestIdx = -1;
             }
@@ -423,7 +572,13 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds) {
             }
 
             if (m_display.width > 0) {
+                // The frame leaving the screen may still be referenced by the
+                // command list being built, so record the fence value that
+                // will retire it. The decode thread waits on this before
+                // writing into the frame again.
+                m_display.releaseFenceValue = currentFrameFence;
                 m_writeable.push_back(std::move(m_display));
+                returned = true;
             }
             m_display = std::move(m_readable[bestIdx]);
             m_readable.erase(m_readable.begin() + bestIdx);
@@ -432,6 +587,7 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds) {
             while (!m_readable.empty() && m_readable.front().timestamp < m_display.timestamp) {
                 m_writeable.push_back(std::move(m_readable.front()));
                 m_readable.pop_front();
+                returned = true;
             }
 
             if (m_verbose) printf("[VD:get] DISPLAY t=%.3f readable=%d writeable=%d\n",
@@ -439,8 +595,49 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds) {
         }
     }
 
+    // Waking the decode thread on returned frames is what lets it block on a
+    // condition variable instead of polling m_writeable every 2 ms.
+    if (returned) m_writeableCv.notify_one();
     if (timeChanged) m_seekCv.notify_one();
-    return m_display.width > 0 ? &m_display : nullptr;
+
+    if (m_display.width > 0) {
+        // Publish the copy-fence value so App can make the render queue wait
+        // for the D3D11 copy that produced this frame.
+        UINT64 want = m_display.copyFenceValue;
+        UINT64 cur = m_pendingCopyFence.load();
+        while (want > cur && !m_pendingCopyFence.compare_exchange_weak(cur, want)) {}
+        return &m_display;
+    }
+    return nullptr;
+}
+
+void VideoDecoder::setSyncFences(ID3D12Fence* frameFence, ID3D11Fence* frameFence11,
+                                 ID3D12Fence* copyFence, ID3D11Fence* copyFence11,
+                                 std::atomic<UINT64>* copyFenceCounter) {
+    m_frameFence = frameFence;
+    m_frameFence11 = frameFence11;
+    m_copyFence = copyFence;
+    m_copyFence11 = copyFence11;
+    m_copyFenceCounter = copyFenceCounter;
+}
+
+// Take a frame out of the writeable pool, waiting until one is returned.
+// The pool is bounded, so seeks must borrow instead of allocating: both seek
+// paths used to build a fresh VideoFrame and push it into the readable deque,
+// growing the pool by one full-resolution texture on every scrub.
+bool VideoDecoder::borrowFrame(VideoFrame& out) {
+    std::unique_lock<std::mutex> lk(m_dealerMu);
+    m_writeableCv.wait_for(lk, std::chrono::milliseconds(50),
+        [this] { return !m_writeable.empty() || !m_running; });
+    if (!m_running || m_writeable.empty()) return false;
+    out = std::move(m_writeable.back());
+    m_writeable.pop_back();
+    return true;
+}
+
+void VideoDecoder::recycle(VideoFrame&& f) {
+    std::lock_guard<std::mutex> lk(m_dealerMu);
+    m_writeable.push_back(std::move(f));
 }
 
 // ---- Background decode thread ----
@@ -484,22 +681,22 @@ void VideoDecoder::decodeThread() {
                     }
                 }
 
+                // Borrow from the pool rather than allocating: an allocated
+                // frame ends up circulating in the pool forever, so every
+                // scrub leaked a full-resolution texture and an NT handle.
                 VideoFrame temp;
-                if (m_nv12Mode) {
-                    temp.width = m_width; temp.height = m_height;
-                } else if (m_gpuSharing) {
-                    createSharedTexture(temp);
-                } else {
-                    temp.pixels.resize((size_t)m_width * m_height * 4);
-                }
+                if (!borrowFrame(temp)) continue;
+                bool placed = false;
                 for (int i = 0; i < 300 && m_running; i++) {
                     if (!readOneFrame(temp)) { eof = true; break; }
                     if (temp.timestamp >= seekT - m_frameDuration * 0.5) {
                         std::lock_guard<std::mutex> dlk(m_dealerMu);
                         m_readable.push_back(std::move(temp));
+                        placed = true;
                         break;
                     }
                 }
+                if (!placed) recycle(std::move(temp));
                 continue;
             }
         }
@@ -510,26 +707,22 @@ void VideoDecoder::decodeThread() {
             continue;
         }
 
-        // Borrow writeable frame
+        // Borrow a writeable frame, blocking on the pool's condition variable
+        // rather than spinning at 2 ms while it is full.
         VideoFrame frame;
-        bool haveFrame = false;
-        {
-            std::lock_guard<std::mutex> lk(m_dealerMu);
-            if (!m_writeable.empty()) {
-                frame = std::move(m_writeable.back());
-                m_writeable.pop_back();
-                haveFrame = true;
-            }
-        }
-
-        if (!haveFrame) {
-            std::unique_lock<std::mutex> lk(m_seekMu);
-            m_seekCv.wait_for(lk, std::chrono::milliseconds(2));
-            continue;
-        }
+        if (!borrowFrame(frame)) continue;
 
         // Decode
-        if (!readOneFrame(frame)) {
+        auto decStart = std::chrono::steady_clock::now();
+        bool decoded = readOneFrame(frame);
+        {
+            double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - decStart).count();
+            // Exponential moving average so the perf graph has a real signal
+            double prevMs = m_decodeMs.load();
+            m_decodeMs.store(prevMs <= 0.0 ? ms : prevMs * 0.9 + ms * 0.1);
+        }
+        if (!decoded) {
             eof = true;
             if (m_verbose) printf("[VD:dec] EOF\n");
             std::lock_guard<std::mutex> lk(m_dealerMu);
@@ -561,21 +754,18 @@ void VideoDecoder::decodeThread() {
             m_seekCount.fetch_add(1);
 
             VideoFrame temp;
-            if (m_nv12Mode) {
-                temp.width = m_width; temp.height = m_height;
-            } else if (m_gpuSharing) {
-                createSharedTexture(temp);
-            } else {
-                temp.pixels.resize((size_t)m_width * m_height * 4);
-            }
+            if (!borrowFrame(temp)) continue;
+            bool placed = false;
             for (int i = 0; i < 300 && m_running; i++) {
                 if (!readOneFrame(temp)) { eof = true; break; }
                 if (temp.timestamp >= target - m_frameDuration * 0.5) {
                     std::lock_guard<std::mutex> dlk(m_dealerMu);
                     m_readable.push_back(std::move(temp));
+                    placed = true;
                     break;
                 }
             }
+            if (!placed) recycle(std::move(temp));
             continue;
         }
 
@@ -622,77 +812,19 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
         dest.timestamp = (double)timestamp / 10000000.0;
         m_decodedFrames.fetch_add(1);
 
-        // NV12 zero-copy path: unwrap the D3D11On12 texture to get D3D12 resource directly
-        if (m_nv12Mode && m_d3d11On12) {
-            // Check actual source format — VP9/AV1 may output P010 (10-bit) instead of NV12
-            D3D11_TEXTURE2D_DESC srcDesc;
-            tex->GetDesc(&srcDesc);
-            DXGI_FORMAT nv12Fmt = srcDesc.Format;
-
-            // Only NV12 and P010 are supported as planar YUV for our shader
-            if (nv12Fmt != DXGI_FORMAT_NV12 && nv12Fmt != DXGI_FORMAT_P010) {
-                printf("[VideoDecoder] NV12 path: unsupported source format %u, falling back to BGRA\n", nv12Fmt);
-                m_nv12Mode = false;
-                goto bgra_fallback;
-            }
-
-            // Return previously unwrapped texture if any
-            if (dest.d3d11Source) {
-                m_d3d11On12->ReturnUnderlyingResource(dest.d3d11Source.Get(), 0, nullptr, nullptr);
-                dest.d3d11Source.Reset();
-                dest.d3d12Texture.Reset();
-            }
-
-            // Create a standalone texture matching the source format (NV12 or P010)
-            if (!dest.d3d11Shared) {
-                D3D11_TEXTURE2D_DESC copyDesc = {};
-                copyDesc.Width = m_width;
-                copyDesc.Height = m_height;
-                copyDesc.MipLevels = 1;
-                copyDesc.ArraySize = 1;
-                copyDesc.Format = nv12Fmt;
-                copyDesc.SampleDesc.Count = 1;
-                copyDesc.Usage = D3D11_USAGE_DEFAULT;
-                copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                hr = m_d3d11Device->CreateTexture2D(&copyDesc, nullptr, &dest.d3d11Shared);
-                if (FAILED(hr)) {
-                    printf("[VideoDecoder] NV12 copy texture creation failed (fmt=%u): 0x%08x\n", nv12Fmt, hr);
-                    m_nv12Mode = false;
-                    dest.d3d11Shared.Reset();
-                    goto bgra_fallback;
-                }
-            }
-
-            // GPU-to-GPU copy from texture array slice to standalone texture
-            m_d3d11Ctx->CopySubresourceRegion(
-                dest.d3d11Shared.Get(), 0, 0, 0, 0,
-                tex.Get(), subIdx, nullptr);
-            m_d3d11Ctx->Flush();
-
-            // Unwrap the standalone texture to get D3D12 resource
-            ComPtr<ID3D12Resource> d3d12Res;
-            hr = m_d3d11On12->UnwrapUnderlyingResource(
-                dest.d3d11Shared.Get(), m_d3d12Queue, IID_PPV_ARGS(&d3d12Res));
-            if (SUCCEEDED(hr)) {
-                dest.d3d12Texture = d3d12Res;
-                dest.d3d11Source = dest.d3d11Shared;
-                dest.nv12 = true;
-                return true;
-            } else {
-                printf("[VideoDecoder] UnwrapUnderlyingResource failed: 0x%08x\n", hr);
-                m_nv12Mode = false;
-                dest.d3d11Shared.Reset();
-                goto bgra_fallback;
-            }
+        // The mode was settled in open(); no path here can change it, so the
+        // reader's output format and the code consuming it can never disagree.
+        if (m_mode == Mode::NV12) {
+            return writeNV12Frame(dest, tex.Get(), subIdx);
         }
 
-        bgra_fallback:
-        // GPU shared path (Phase 1): copy decoded texture to shared BGRA DXGI texture
-        if (m_gpuSharing && dest.d3d11Shared && !dest.nv12) {
+        if (m_gpuSharing && dest.d3d11Shared) {
+            // D3D12 may still be sampling the frame we are about to overwrite.
+            waitForRenderRelease(dest);
             m_d3d11Ctx->CopySubresourceRegion(
                 dest.d3d11Shared.Get(), 0, 0, 0, 0,  // dest: shared texture
                 tex.Get(), subIdx, nullptr);           // src: MF's decoded texture
-            m_d3d11Ctx->Flush();  // ensure copy is submitted to GPU
+            signalCopyDone(dest);
             return true;
         }
 
@@ -774,5 +906,104 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
     for (size_t i = 0; i < count; i++) px[i] |= 0xFF000000;
 
     buffer->Unlock();
+    return true;
+}
+
+
+// --- Cross-API synchronisation helpers ---
+//
+// The decode thread writes into pooled textures that D3D12 may still be
+// sampling, and D3D12 samples textures the D3D11 copy may not have finished.
+// Flush() only submits work, it does not wait, so both directions need a
+// shared fence. When App has not supplied fences these are no-ops and the
+// paths behave as before.
+
+void VideoDecoder::waitForRenderRelease(VideoFrame& frame) {
+    // Only meaningful across queues. On a shared queue the copy is already
+    // ordered behind the draws that read the frame, and a wait here would sit
+    // in front of the Signal that would release it.
+    if (m_sharesRenderQueue) return;
+    if (!m_frameFence11 || frame.releaseFenceValue == 0) return;
+    ComPtr<ID3D11DeviceContext4> ctx4;
+    if (FAILED(m_d3d11Ctx.As(&ctx4))) return;
+    ctx4->Wait(m_frameFence11.Get(), frame.releaseFenceValue);
+}
+
+void VideoDecoder::signalCopyDone(VideoFrame& frame) {
+    // Same-queue: the copy is already ordered before anything the render
+    // queue submits afterwards, so there is nothing for D3D12 to wait on.
+    if (m_sharesRenderQueue || !m_copyFence11 || !m_copyFenceCounter) {
+        m_d3d11Ctx->Flush();
+        return;
+    }
+    ComPtr<ID3D11DeviceContext4> ctx4;
+    if (FAILED(m_d3d11Ctx.As(&ctx4))) {
+        m_d3d11Ctx->Flush();
+        return;
+    }
+    UINT64 v = m_copyFenceCounter->fetch_add(1) + 1;
+    ctx4->Signal(m_copyFence11.Get(), v);
+    m_d3d11Ctx->Flush();
+    frame.copyFenceValue = v;
+}
+
+// NV12 zero-copy: copy the decoder's array slice into a standalone NV12
+// texture and unwrap it as a D3D12 resource. open() already proved every step
+// of this works for this stream, so a failure here is a hard error for the
+// frame rather than a mid-stream format change.
+bool VideoDecoder::writeNV12Frame(VideoFrame& dest, ID3D11Texture2D* src, UINT subIdx) {
+    HRESULT hr = S_OK;
+
+    // Hand the previous unwrap back.
+    //
+    // No fences are passed, and that is deliberate. The D3D11On12 device was
+    // created against the renderer's own DIRECT queue, so the copy below is
+    // submitted to that queue and in-order execution already places it after
+    // every draw that sampled this frame. Passing the frame fence here would
+    // enqueue a GPU wait for a value the *same* queue only signals at the end
+    // of the frame, deadlocking it. If the 11On12 device is ever created
+    // against a separate queue, this must pass (1, &releaseFenceValue,
+    // &frameFence) instead.
+    if (dest.d3d11Source) {
+        m_d3d11On12->ReturnUnderlyingResource(dest.d3d11Source.Get(), 0, nullptr, nullptr);
+        dest.d3d11Source.Reset();
+        dest.d3d12Texture.Reset();
+    }
+
+    if (!dest.d3d11Shared) {
+        D3D11_TEXTURE2D_DESC copyDesc = {};
+        copyDesc.Width = m_width;
+        copyDesc.Height = m_height;
+        copyDesc.MipLevels = 1;
+        copyDesc.ArraySize = 1;
+        copyDesc.Format = DXGI_FORMAT_NV12;
+        copyDesc.SampleDesc.Count = 1;
+        copyDesc.Usage = D3D11_USAGE_DEFAULT;
+        copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        hr = m_d3d11Device->CreateTexture2D(&copyDesc, nullptr, &dest.d3d11Shared);
+        if (FAILED(hr)) {
+            printf("[VideoDecoder] NV12 copy texture creation failed: 0x%08x\n", hr);
+            return false;
+        }
+    }
+
+    m_d3d11Ctx->CopySubresourceRegion(dest.d3d11Shared.Get(), 0, 0, 0, 0, src, subIdx, nullptr);
+    m_d3d11Ctx->Flush();
+
+    ComPtr<ID3D12Resource> d3d12Res;
+    hr = m_d3d11On12->UnwrapUnderlyingResource(
+        dest.d3d11Shared.Get(), m_d3d12Queue, IID_PPV_ARGS(&d3d12Res));
+    if (FAILED(hr)) {
+        printf("[VideoDecoder] UnwrapUnderlyingResource failed: 0x%08x\n", hr);
+        dest.d3d11Shared.Reset();
+        return false;
+    }
+
+    dest.d3d12Texture = d3d12Res;
+    dest.d3d11Source = dest.d3d11Shared;
+    dest.nv12 = true;
+    // D3D11On12 submits the copy to the same DIRECT queue the renderer uses,
+    // so in-order execution already orders it before the sampling draw.
+    dest.copyFenceValue = 0;
     return true;
 }

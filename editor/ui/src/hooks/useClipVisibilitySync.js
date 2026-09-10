@@ -1,36 +1,50 @@
-import { useEffect } from 'react'
-import { useEditorStore } from '../store.js'
+import { useEffect, useMemo } from 'react'
+import { getMediaSession } from '../store.js'
 
 /**
- * Subscribes to store time changes and updates clip DOM visibility + video sync
- * at 60fps without triggering React re-renders. This is the hot-path animation code.
+ * Drives clip visibility (and the throttled timecode readout) straight from
+ * the PresentationClock, writing to the DOM without re-rendering React.
  *
- * @param {React.MutableRefObject<Map>} clipRefs - Map of clip ID -> React ref to DOM element
- * @param {React.MutableRefObject<Map>} videoRefs - Map of clip ID -> React ref to video element
+ * Previously this subscribed to the whole zustand store, so it also fired on
+ * unrelated changes such as log entries, and did a linear `find` per clip on
+ * every tick. Now it only sees clock ticks and looks clips up in a Map built
+ * once per timeline change.
+ *
+ * @param {React.MutableRefObject<Map>} clipRefs - clip id -> React ref to DOM element
+ * @param {React.MutableRefObject<Map>} videoRefs - clip id -> React ref to video element
  * @param {Array} allTimelineItems - All non-overlapping timeline items
  * @param {Function} setTimeDisplay - Throttled state setter for UI timecode display
  * @param {React.MutableRefObject<number>} lastTimeUiRef - Last UI update timestamp
  */
 export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems, setTimeDisplay, lastTimeUiRef) {
+  const spans = useMemo(() => {
+    const map = new Map()
+    for (const m of allTimelineItems) {
+      if (!m?.id) continue
+      const start = Number(m.start ?? m.start_at_seconds) || 0
+      const dur = Math.max(0, Number(m.duration ?? ((m.out_seconds - m.in_seconds) || 0)) || 0)
+      map.set(m.id, { start, end: start + dur })
+    }
+    return map
+  }, [allTimelineItems])
+
   useEffect(() => {
-    const unsub = useEditorStore.subscribe((state) => {
-      const t = state.time || 0
+    const apply = (t = 0) => {
       const now = performance.now()
       if (now - lastTimeUiRef.current > 125) { lastTimeUiRef.current = now; setTimeDisplay(t) }
-      // Update clip visibility via direct DOM
       clipRefs.current.forEach((ref, id) => {
         const el = ref.current
         if (!el) return
-        const m = allTimelineItems.find(mm => mm.id === id)
-        if (!m) return
-        const start = (m.start ?? m.start_at_seconds) || 0
-        const dur = Math.max(0, (m.duration ?? ((m.out_seconds - m.in_seconds) || 0)))
-        const active = t >= start && t <= start + dur
-        el.style.display = active ? 'flex' : 'none'
+        const span = spans.get(id)
+        if (!span) return
+        el.style.display = (t >= span.start && t <= span.end) ? 'flex' : 'none'
       })
-      // Video playback in viewport removed — native renderer handles video.
-      // videoRefs kept for API compatibility but no longer synced.
-    })
+      // Video playback in the viewport is the native renderer's job;
+      // videoRefs is kept for API compatibility but not synced here.
+    }
+    const clock = getMediaSession().getClock()
+    const unsub = clock.subscribe({ onTick: apply, onSeek: apply, onStop: () => apply(0) })
+    apply(clock.getTime())
     return () => { try { unsub() } catch { } }
-  }, [allTimelineItems, clipRefs, videoRefs, setTimeDisplay, lastTimeUiRef])
+  }, [spans, clipRefs, videoRefs, setTimeDisplay, lastTimeUiRef])
 }

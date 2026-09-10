@@ -54,7 +54,8 @@ bool RenderPipeline::init(ID3D12Device* device) {
     rsDesc.pParameters = rootParams;
     rsDesc.NumStaticSamplers = 1;
     rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    // No vertex buffers are bound; the quad is generated from SV_VertexID.
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
     ComPtr<ID3DBlob> sigBlob, errBlob;
     HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
@@ -133,7 +134,7 @@ bool RenderPipeline::init(ID3D12Device* device) {
 
     // --- NV12 Video Root Signature (2 SRVs: Y plane t0, UV plane t1) ---
     {
-        D3D12_ROOT_PARAMETER videoParams[4] = {};
+        D3D12_ROOT_PARAMETER videoParams[5] = {};
 
         // Transform constants (b0)
         videoParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -167,12 +168,18 @@ bool RenderPipeline::init(ID3D12Device* device) {
         videoParams[3].DescriptorTable.pDescriptorRanges = &uvRange;
         videoParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        // Colour space constants (b2)
+        videoParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        videoParams[4].Constants.ShaderRegister = 2;
+        videoParams[4].Constants.Num32BitValues = sizeof(ColorSpaceCB) / 4;
+        videoParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
         D3D12_ROOT_SIGNATURE_DESC videoRsDesc = {};
-        videoRsDesc.NumParameters = 4;
+        videoRsDesc.NumParameters = 5;
         videoRsDesc.pParameters = videoParams;
         videoRsDesc.NumStaticSamplers = 1;
         videoRsDesc.pStaticSamplers = &sampler;  // reuse same linear/clamp sampler
-        videoRsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        videoRsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
         ComPtr<ID3DBlob> videoSigBlob, videoErrBlob;
         hr = D3D12SerializeRootSignature(&videoRsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
@@ -225,10 +232,21 @@ void RenderPipeline::clearScreen(ID3D12GraphicsCommandList* cmdList,
 void RenderPipeline::bindHeap(ID3D12GraphicsCommandList* cmdList, ID3D12DescriptorHeap* srvHeap) {
     if (!m_initialized) return;
     m_boundHeap = srvHeap;
-    cmdList->SetPipelineState(m_pso.Get());
-    cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
     ID3D12DescriptorHeap* heaps[] = { srvHeap };
     cmdList->SetDescriptorHeaps(1, heaps);
+    m_videoBound = true;          // force the bind below to take effect
+    bindPipeline(cmdList, false);
+}
+
+void RenderPipeline::bindPipeline(ID3D12GraphicsCommandList* cmdList, bool video) {
+    if (m_videoBound == video) return;
+    m_videoBound = video;
+    cmdList->SetPipelineState(video ? m_videoPso.Get() : m_pso.Get());
+    cmdList->SetGraphicsRootSignature(video ? m_videoRootSignature.Get() : m_rootSignature.Get());
+    if (m_boundHeap) {
+        ID3D12DescriptorHeap* heaps[] = { m_boundHeap };
+        cmdList->SetDescriptorHeaps(1, heaps);
+    }
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 }
 
@@ -237,6 +255,7 @@ void RenderPipeline::drawQuad(ID3D12GraphicsCommandList* cmdList,
                                const EffectsCB& effects,
                                D3D12_GPU_DESCRIPTOR_HANDLE textureSrv) {
     if (!m_initialized) return;
+    bindPipeline(cmdList, false);
     cmdList->SetGraphicsRoot32BitConstants(0, sizeof(TransformCB) / 4, &transform, 0);
     cmdList->SetGraphicsRoot32BitConstants(1, sizeof(EffectsCB) / 4, &effects, 0);
     cmdList->SetGraphicsRootDescriptorTable(2, textureSrv);
@@ -246,31 +265,18 @@ void RenderPipeline::drawQuad(ID3D12GraphicsCommandList* cmdList,
 void RenderPipeline::drawVideoQuad(ID3D12GraphicsCommandList* cmdList,
                                     const TransformCB& transform,
                                     const EffectsCB& effects,
+                                    const ColorSpaceCB& colorSpace,
                                     D3D12_GPU_DESCRIPTOR_HANDLE ySrv,
                                     D3D12_GPU_DESCRIPTOR_HANDLE uvSrv) {
     if (!m_videoPso) return;
 
-    // Switch to NV12 pipeline
-    cmdList->SetPipelineState(m_videoPso.Get());
-    cmdList->SetGraphicsRootSignature(m_videoRootSignature.Get());
-    if (m_boundHeap) {
-        ID3D12DescriptorHeap* heaps[] = { m_boundHeap };
-        cmdList->SetDescriptorHeaps(1, heaps);
-    }
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-
+    bindPipeline(cmdList, true);
     cmdList->SetGraphicsRoot32BitConstants(0, sizeof(TransformCB) / 4, &transform, 0);
     cmdList->SetGraphicsRoot32BitConstants(1, sizeof(EffectsCB) / 4, &effects, 0);
     cmdList->SetGraphicsRootDescriptorTable(2, ySrv);
     cmdList->SetGraphicsRootDescriptorTable(3, uvSrv);
+    cmdList->SetGraphicsRoot32BitConstants(4, sizeof(ColorSpaceCB) / 4, &colorSpace, 0);
     cmdList->DrawInstanced(4, 1, 0, 0);
-
-    // Restore BGRA pipeline for subsequent draws
-    cmdList->SetPipelineState(m_pso.Get());
-    cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
-    if (m_boundHeap) {
-        ID3D12DescriptorHeap* heaps[] = { m_boundHeap };
-        cmdList->SetDescriptorHeaps(1, heaps);
-    }
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    // The BGRA pipeline is rebound lazily by the next drawQuad, so a run of
+    // video quads costs one state change instead of two per draw.
 }

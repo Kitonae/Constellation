@@ -62,6 +62,12 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
+		// The WebView2 File object has no .path, so an HTML drop yields a
+		// blob: URI the native renderer cannot open. The Wails drag-and-drop
+		// runtime hands the frontend absolute paths instead.
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop: true,
+		},
 		Bind: []interface{}{
 			app,
 		},

@@ -1,22 +1,21 @@
 // Converts editor JSON (examples/scene.example.json) into a simplified runtime model
-
-import { migrateAsset } from '../media/asset.js'
-import { migrateTimeline } from '../media/timeline.js'
+//
+// NOTE ON THE DATA MODEL: the editor (store, Timeline, Viewport2D, Inspector)
+// and the native renderer both consume the *legacy* timeline shape
+// (`tracks[].media[]`, `duration_seconds`, `media[].duration_seconds`).
+// The newer Track/Clip model lives in `media/timeline.js` and is applied
+// on the fly by `computeRenderList`. Migrating here would orphan every clip,
+// so `parseProject` deliberately passes media and timeline through unchanged.
 
 export function parseProject(json) {
   const project = json.project ?? json
   const scene = project.scene
-  // Migrate media assets from legacy flat format to typed MediaAsset
-  const rawMedia = project.media ?? []
-  const media = rawMedia.map(m => migrateAsset(m)).filter(Boolean)
-  // Migrate timeline to new Track/Clip model
-  const timeline = project.timeline ? migrateTimeline(project.timeline) : null
   return {
     id: project.id,
     name: project.name,
     scene: parseScene(scene),
-    media,
-    timeline,
+    media: project.media ?? [],
+    timeline: project.timeline ?? null,
   }
 }
 

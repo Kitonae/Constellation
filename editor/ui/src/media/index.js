@@ -25,18 +25,19 @@ export {
   extFromUri,
   mediaTypeFromExt,
   isMediaFile,
+  isVideoName,
+  isImageName,
+  isAudioName,
+  isModelName,
+  isImportableFile,
   isImage,
   isVideo,
   isAudio,
   isColor,
   isText,
   createAsset,
-  probeAsset,
   migrateAsset,
   getAssetDuration,
-  createPresentationDescriptor,
-  selectStream,
-  getSelectedStreams,
 } from './asset.js'
 
 // --- Pipeline ---

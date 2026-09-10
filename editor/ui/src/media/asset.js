@@ -11,6 +11,8 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'])
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg', 'hevc', 'h265', '265', 'ts', 'mts'])
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'])
 
+const MODEL_EXTS = new Set(['gltf', 'glb', 'obj'])
+
 const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS])
 
 // --- Type detection ---
@@ -23,6 +25,9 @@ const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS])
 export function extFromUri(uriOrName) {
   try {
     const u = String(uriOrName || '')
+    // blob: and data: URLs carry no meaningful extension, and a base64 body
+    // is full of characters that would fool the split below.
+    if (u.startsWith('blob:') || u.startsWith('data:')) return ''
     const clean = u.split('?')[0].split('#')[0]
     const parts = clean.split('.')
     if (parts.length < 2) return ''
@@ -50,6 +55,20 @@ export function mediaTypeFromExt(ext) {
 export function isMediaFile(name) {
   return MEDIA_EXTS.has(extFromUri(name))
 }
+
+// --- Name/URI predicates ---
+//
+// These are the single source of truth for "is this a video?" and friends.
+// Ad-hoc regexes scattered across the UI disagreed with each other: a `.ts`
+// file passed isMediaFile but was treated as an image by the thumbnail and
+// never probed for duration.
+
+export function isVideoName(name) { return VIDEO_EXTS.has(extFromUri(name)) }
+export function isImageName(name) { return IMAGE_EXTS.has(extFromUri(name)) }
+export function isAudioName(name) { return AUDIO_EXTS.has(extFromUri(name)) }
+export function isModelName(name) { return MODEL_EXTS.has(extFromUri(name)) }
+/** Anything the media bin accepts: playable media plus 3D models. */
+export function isImportableFile(name) { return isMediaFile(name) || isModelName(name) }
 
 // --- Type guards ---
 
@@ -130,50 +149,6 @@ export function createAsset(type, props = {}) {
 
 // --- Probing ---
 
-/**
- * Probe a file or URI to determine its type and extract metadata.
- * This is the async equivalent of MF's source resolver — it inspects the media
- * and populates width, height, duration, frameRate, etc.
- *
- * @param {File|string} fileOrUri - File object or URI string
- * @param {string} [nameHint] - optional filename hint (for blob/data URIs)
- * @returns {Promise<object>} Populated MediaAsset
- */
-export async function probeAsset(fileOrUri, nameHint) {
-  const isFile = fileOrUri instanceof File
-  const name = nameHint || (isFile ? fileOrUri.name : String(fileOrUri).split(/[\\\/]/).pop()) || 'media'
-  const uri = isFile ? null : String(fileOrUri)
-  const ext = extFromUri(name) || extFromUri(uri || '')
-  const type = mediaTypeFromExt(ext)
-
-  // Resolve to a playable URL for probing
-  let playableUrl = null
-  if (isFile) {
-    playableUrl = URL.createObjectURL(fileOrUri)
-  } else if (uri) {
-    playableUrl = await resolveUri(uri)
-  }
-
-  try {
-    switch (type) {
-      case 'image':
-        return await _probeImage(name, uri || '', playableUrl, ext)
-      case 'video':
-        return await _probeVideo(name, uri || '', playableUrl, ext)
-      case 'audio':
-        return await _probeAudio(name, uri || '', playableUrl, ext)
-      default:
-        // Unknown type — create a basic asset
-        return createAsset('image', { name, uri: uri || '', format: ext })
-    }
-  } finally {
-    // Clean up object URL if we created one from a File
-    if (isFile && playableUrl) {
-      // Don't revoke immediately — caller may need it. Revoke after a delay.
-      setTimeout(() => { try { URL.revokeObjectURL(playableUrl) } catch {} }, 60000)
-    }
-  }
-}
 
 async function _probeImage(name, uri, playableUrl, ext) {
   const asset = createAsset('image', { name, uri, format: ext })
@@ -339,113 +314,5 @@ export function getAssetDuration(asset) {
 
 let _streamIdCounter = 0
 
-/**
- * Create a presentation descriptor for a media asset.
- *
- * Inspects the asset type and creates appropriate stream descriptors.
- * Video assets get both a video and an audio stream (if hasAudio is true).
- * Image assets get a single video (still frame) stream.
- * Audio assets get a single audio stream.
- *
- * @param {object} asset - MediaAsset
- * @returns {PresentationDescriptor}
- */
-export function createPresentationDescriptor(asset) {
-  if (!asset) return { assetId: '', streams: [], duration: 0 }
 
-  const streams = []
-  const duration = getAssetDuration(asset)
 
-  switch (asset.type) {
-    case 'video':
-      streams.push({
-        id: `stream-${(++_streamIdCounter).toString(36)}`,
-        streamType: 'video',
-        mediaType: {
-          width: asset.width || 0,
-          height: asset.height || 0,
-          frameRate: asset.frameRate || 0,
-          format: asset.format || '',
-        },
-        selected: true,
-      })
-      if (asset.hasAudio) {
-        streams.push({
-          id: `stream-${(++_streamIdCounter).toString(36)}`,
-          streamType: 'audio',
-          mediaType: {
-            sampleRate: 0,  // not probed yet
-            channels: 0,
-          },
-          selected: true,
-        })
-      }
-      break
-
-    case 'audio':
-      streams.push({
-        id: `stream-${(++_streamIdCounter).toString(36)}`,
-        streamType: 'audio',
-        mediaType: {
-          sampleRate: asset.sampleRate || 0,
-          channels: asset.channels || 0,
-        },
-        selected: true,
-      })
-      break
-
-    case 'image':
-    case 'color':
-    case 'text':
-    default:
-      streams.push({
-        id: `stream-${(++_streamIdCounter).toString(36)}`,
-        streamType: 'video',
-        mediaType: {
-          width: asset.width || 0,
-          height: asset.height || 0,
-          frameRate: 0,
-          format: asset.format || '',
-        },
-        selected: true,
-      })
-      break
-  }
-
-  return {
-    assetId: asset.id,
-    streams,
-    duration,
-  }
-}
-
-/**
- * Select or deselect a stream in a presentation descriptor.
- *
- * @param {PresentationDescriptor} pd
- * @param {string} streamId
- * @param {boolean} selected
- * @returns {PresentationDescriptor} new descriptor with updated selection
- */
-export function selectStream(pd, streamId, selected) {
-  return {
-    ...pd,
-    streams: pd.streams.map(s =>
-      s.id === streamId ? { ...s, selected } : s
-    ),
-  }
-}
-
-/**
- * Get selected streams of a given type from a presentation descriptor.
- *
- * @param {PresentationDescriptor} pd
- * @param {'video'|'audio'} [streamType] - filter by type (omit for all selected)
- * @returns {StreamDescriptor[]}
- */
-export function getSelectedStreams(pd, streamType) {
-  if (!pd?.streams) return []
-  return pd.streams.filter(s =>
-    s.selected && (!streamType || s.streamType === streamType)
-  )
-}

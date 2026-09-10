@@ -13,6 +13,18 @@ struct TransformCB {
     float _pad[2];
 };
 
+// YUV -> RGB conversion parameters for the NV12 shader. Read from the
+// stream's nominal range and matrix instead of assuming BT.709 limited range.
+struct ColorSpaceCB {
+    float yOffset = 16.0f / 255.0f;
+    float yScale = 255.0f / 219.0f;
+    float cOffset = 128.0f / 255.0f;
+    float cScale = 255.0f / 224.0f;
+    float kr = 0.2126f;
+    float kb = 0.0722f;
+    float _pad[2] = {};
+};
+
 struct EffectsCB {
     float opacity;
     float blur_radius;
@@ -50,6 +62,7 @@ public:
     void drawVideoQuad(ID3D12GraphicsCommandList* cmdList,
                        const TransformCB& transform,
                        const EffectsCB& effects,
+                       const ColorSpaceCB& colorSpace,
                        D3D12_GPU_DESCRIPTOR_HANDLE ySrv,
                        D3D12_GPU_DESCRIPTOR_HANDLE uvSrv);
 
@@ -67,5 +80,12 @@ private:
     ComPtr<ID3D12PipelineState> m_videoPso;
 
     ID3D12DescriptorHeap* m_boundHeap = nullptr;
+    // Which PSO/root signature the command list currently has bound. Every
+    // video quad used to switch to the NV12 pipeline and back again, so a run
+    // of video clips paid two redundant state changes per draw. Draw order
+    // cannot be sorted (alpha blending depends on it), so switch lazily
+    // instead and only when the next draw actually needs the other pipeline.
     bool m_initialized = false;
+    bool m_videoBound = false;
+    void bindPipeline(ID3D12GraphicsCommandList* cmdList, bool video);
 };

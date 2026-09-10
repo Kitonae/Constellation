@@ -1,26 +1,50 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { useEditorStore } from './store.js'
-import { toFileUri, fileToDataUrl } from './utils/mediaUtils.js'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEditorStore, getMediaSession, serializeForNative } from './store.js'
 import Viewport3D from './components/Viewport.jsx'
 import DisplaysPanel from './components/DisplaysPanel.jsx'
 import Viewport2D from './components/Viewport2D.jsx'
 import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
 import Inspector from './components/Inspector.jsx'
-import { openImageDialog } from './utils/fileDialogs.js'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
-import GlobalTicker from './components/GlobalTicker.jsx'
 import MenuBar from './components/MenuBar.jsx'
-import { openDisplayWindow, closeDisplayWindow, broadcastToDisplays } from './display/displayManager.js'
+import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
+import { createDisplaySink, createNativeSink } from './media/sink.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
 import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
-import { setFileServerBaseUrl, getVideoMetadata } from './utils/videoUtils.js'
-import { setFileServerBase, isMediaFile } from './media/index.js'
+import { buildProjectWrapper } from './utils/projectSerialize.js'
+import { useShortcuts } from './hooks/useShortcuts.js'
+import { viewportActions } from './viewportActions.js'
+import { importPaths, importFiles } from './utils/importMedia.js'
+
+/** Sink id for a web display window, so open/close can address it. */
+const sinkIdFor = (screenId) => `screen-${screenId}`
+
+/**
+ * The Go bridge fans PushTime/PushSnapshot out to every connected renderer
+ * itself, so all renderer screens share one sink. Registering one per screen
+ * would push the same time and the same project JSON N times per tick.
+ */
+const NATIVE_SINK_ID = 'native-renderers'
+
+/**
+ * Everything about a screen that requires re-opening its output window.
+ * Position and rotation are deliberately absent: moving a screen on the stage
+ * must not tear down (and re-focus) its display window.
+ */
+function screenKey(n) {
+  const k = n.kind || {}
+  return `${k.screenType || 'web'}|${k.enabled ?? true}|${k.pixels?.[0] | 0}|${k.pixels?.[1] | 0}`
+}
 
 export default function App() {
   const fileRef = useRef(null)
-  const { loadProject, playing, play, pause, time, selectedId, setSelected, gizmoMode, setGizmoMode, project, scene, addImageToShow, toggleConsole, addLog, viewMode, setViewMode, showOutputOverlay, toggleOutputOverlay, addScreenNode, newProject, addMediaClip } = useEditorStore()
+  // Narrow selectors only. Subscribing to the whole store re-rendered the
+  // entire tree on every clock tick and every log line.
+  const project = useEditorStore((s) => s.project)
+  const scene = useEditorStore((s) => s.scene)
+  const viewMode = useEditorStore((s) => s.viewMode)
   const [fileName, setFileName] = useState('')
   const [status, setStatus] = useState('')
   // Resizable left pane (Media Bin)
@@ -34,193 +58,170 @@ export default function App() {
   const [timelineHeight, setTimelineHeight] = useState(350)
   const footerDragRef = useRef(null) // { startY, startH }
   const [showSaveDialog, setShowSaveDialog] = useState(false)
+  // Bumped by "Reopen Displays" to force the screen effect to rebuild every
+  // output even though the scene itself has not changed.
+  const [reopenNonce, setReopenNonce] = useState(0)
 
   // Initialize default project on startup
   useEffect(() => {
     if (!useEditorStore.getState().project) {
-      newProject()
+      useEditorStore.getState().newProject()
     }
   }, [])
 
-  // Global drag and drop handler for importing media
+  // --- Media import -------------------------------------------------------
+
+  // Under Wails the WebView2 File object carries no `.path`, so an HTML drop
+  // produced a blob: URI the native renderer refuses to open. Use the Wails
+  // drag-and-drop runtime, which hands us absolute paths, and keep the HTML
+  // handler only for plain-browser development.
   useEffect(() => {
-    const onDragOver = (e) => {
+    if (!window.runtime?.OnFileDrop) return
+    window.runtime.OnFileDrop((x, y, paths) => { importPaths(paths) }, true)
+    return () => { try { window.runtime.OnFileDropOff?.() } catch { } }
+  }, [])
+
+  useEffect(() => {
+    if (window.runtime?.OnFileDrop) return  // native drop is active
+    const onDragOver = (e) => { e.preventDefault(); e.stopPropagation() }
+    const onDrop = (e) => {
       e.preventDefault()
       e.stopPropagation()
+      importFiles(e.dataTransfer?.files)
     }
-    const onDrop = async (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const files = Array.from(e.dataTransfer.files || [])
-      if (!files.length) return
-
-      for (const file of files) {
-        const name = file.name
-        // Filter for media types
-        if (!isMediaFile(name) && !/\.(gltf|glb|obj)$/i.test(name)) continue
-
-        const id = `clip-${Math.random().toString(36).slice(2, 8)}`
-        let initialUri = null
-
-        // Check for path property (Electron/WebView2)
-        const path = file.path
-        const isAbsolute = path && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path))
-
-        if (isAbsolute) {
-            initialUri = toFileUri(path)
-        } else if (file) {
-             // Fallback for web: use object URL (lightweight reference, not a full copy)
-             initialUri = URL.createObjectURL(file)
-        }
-        
-        let duration = /\.(gltf|glb|obj)$/i.test(name) ? 0 : 10
-        if (/\.(mp4|mov|webm|mkv|avi|m4v|mpg|mpeg)$/i.test(name)) {
-          try {
-            const meta = await getVideoMetadata(file || initialUri)
-            if (meta?.duration) duration = meta.duration
-          } catch (e) {
-            console.warn('Failed to get video metadata', e)
-          }
-        }
-
-        addMediaClip({ id, name, uri: initialUri, duration_seconds: duration })
-      }
-    }
-
     window.addEventListener('dragover', onDragOver)
     window.addEventListener('drop', onDrop)
     return () => {
       window.removeEventListener('dragover', onDragOver)
       window.removeEventListener('drop', onDrop)
     }
-  }, [addMediaClip])
-
-  // Initialize sidecar file server for video support in dev mode
-  useEffect(() => {
-    if (window.go?.main?.App?.GetFileServerPort) {
-      window.go.main.App.GetFileServerPort().then(port => {
-        if (port > 0) {
-          console.log('Using sidecar file server at port', port)
-          setFileServerBaseUrl(`http://localhost:${port}`)
-          useEditorStore.setState({ _fileServerPort: port })
-          setFileServerBase(`http://localhost:${port}`)
-          useEditorStore.getState().addLog({ level: 'info', message: `Video sidecar active on port ${port}` })
-        }
-      }).catch(err => {
-        console.warn('Failed to get file server port', err)
-        useEditorStore.getState().addLog({ level: 'error', message: `Sidecar error: ${err}` })
-      })
-    } else {
-      useEditorStore.getState().addLog({ level: 'warn', message: 'Wails API not available' })
-    }
   }, [])
 
-  useEffect(() => {
-    const onKey = (e) => {
-      // Undo/Redo
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        useEditorStore.getState().undo()
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-        e.preventDefault()
-        useEditorStore.getState().redo()
-      }
-      // Toggle console on backquote/tilde key
-      if (e.code === 'Backquote') {
-        const t = e.target
-        // ignore when typing in inputs/textareas/contenteditable
-        const tag = (t?.tagName || '').toLowerCase()
-        const isEditable = t?.isContentEditable || tag === 'input' || tag === 'textarea'
-        if (isEditable) return
-        e.preventDefault()
-        toggleConsole()
-      }
-      // Delete selected timeline clip with Delete key
-      if (e.key === 'Delete') {
-        const t = e.target
-        const tag = (t?.tagName || '').toLowerCase()
-        const isEditable = t?.isContentEditable || tag === 'input' || tag === 'textarea'
-        if (isEditable) return
-        const { selectedClipId, removeClip } = useEditorStore.getState()
-        if (selectedClipId) {
-          e.preventDefault()
-          removeClip(selectedClipId)
-        }
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [toggleConsole])
+  // --- Keyboard -----------------------------------------------------------
 
-  // Open/close display windows based on enabled screens
-  const prevScreensRef = useRef(new Map()) // id → { screenType }
-  useEffect(() => {
-    const roots = scene?.roots || []
-    const currentScreens = new Map()
-
-    for (const n of roots) {
-      if (n.kind?.type === 'screen') {
-        const enabled = (n.kind?.enabled ?? true)
-        const screenType = n.kind?.screenType || 'web'
-        const px = n.kind?.pixels?.[0] || 0
-        const py = n.kind?.pixels?.[1] || 0
-        currentScreens.set(n.id, { screenType })
-        if (enabled && px > 0 && py > 0) {
-          if (screenType === 'web') {
-            openDisplayWindow(n.id, px, py)
-          } else if (screenType === 'renderer') {
-            window.go?.main?.App?.OpenRendererScreen(n.id, px, py)
-              ?.catch(e => { console.error('Failed to open renderer screen:', e); addLog({ level: 'error', message: `Renderer launch failed: ${e}` }) })
-          }
-        } else {
-          if (screenType === 'web') {
-            closeDisplayWindow(n.id)
-          } else if (screenType === 'renderer') {
-            window.go?.main?.App?.CloseRendererScreen(n.id)?.catch(e => console.warn('CloseRendererScreen:', e))
-          }
+  // One shortcut layer for the whole app. Every binding is skipped while a
+  // text field has focus, so typing a space or pressing Delete in the
+  // Inspector no longer reaches these handlers.
+  const shortcuts = useMemo(() => [
+    {
+      match: (e) => (e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey,
+      run: () => useEditorStore.getState().undo(),
+      allowInEditable: false,
+    },
+    {
+      match: (e) => (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey)),
+      run: () => useEditorStore.getState().redo(),
+    },
+    {
+      match: (e) => e.code === 'Backquote' && !e.ctrlKey && !e.metaKey,
+      run: () => useEditorStore.getState().toggleConsole(),
+    },
+    {
+      match: (e) => e.key === 'Delete' || e.key === 'Backspace',
+      run: () => {
+        const st = useEditorStore.getState()
+        // A selected screen node wins over a selected clip, matching the
+        // behaviour the 2D viewport used to implement on its own.
+        if (st.selectedId && findNodeById(st.scene?.roots, st.selectedId)?.kind?.type === 'screen') {
+          st.removeScreenNode(st.selectedId)
+        } else if (st.selectedClipId) {
+          st.removeClip(st.selectedClipId)
         }
+      },
+    },
+    {
+      match: (e) => (e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey,
+      run: () => viewportActions.frameAll?.(),
+    },
+  ], [])
+  useShortcuts(shortcuts)
+
+  // --- Output screens and sinks ------------------------------------------
+
+  // Every output (web display window or native renderer screen) is a sink on
+  // the MediaSession. Registering them here is what makes the session the one
+  // owner of transport fan-out; nothing else in the app pushes time or
+  // snapshots any more.
+  const prevScreensRef = useRef(new Map()) // screenId → screenKey
+  const rendererScreens = useRef(new Set()) // open native renderer screen ids
+  useEffect(() => {
+    const session = getMediaSession()
+    const prev = prevScreensRef.current
+    const next = new Map()
+    const screens = (scene?.roots || []).filter((n) => n.kind?.type === 'screen')
+
+    const closeScreen = (id, key) => {
+      const type = String(key || '').split('|')[0]
+      if (type === 'renderer') {
+        rendererScreens.current.delete(id)
+        if (rendererScreens.current.size === 0) session.removeSink(NATIVE_SINK_ID)
+        window.go?.main?.App?.CloseRendererScreen(id)?.catch((e) => console.warn('CloseRendererScreen:', e))
+      } else {
+        session.removeSink(sinkIdFor(id))
+        closeDisplayWindow(id)
       }
     }
 
-    // Close screens that were removed from the scene
-    for (const [id, prev] of prevScreensRef.current) {
-      if (!currentScreens.has(id)) {
-        if (prev.screenType === 'web') {
-          closeDisplayWindow(id)
-        } else if (prev.screenType === 'renderer') {
-          window.go?.main?.App?.CloseRendererScreen(id)?.catch(e => console.warn('CloseRendererScreen:', e))
+    const openScreen = async (n) => {
+      const k = n.kind || {}
+      const px = k.pixels?.[0] | 0
+      const py = k.pixels?.[1] | 0
+      if (!(k.enabled ?? true) || px <= 0 || py <= 0) return
+      if (k.screenType === 'renderer') {
+        try {
+          await window.go?.main?.App?.OpenRendererScreen(n.id, px, py)
+        } catch (e) {
+          console.error('Failed to open renderer screen:', e)
+          useEditorStore.getState().addLog({ level: 'error', message: `Renderer launch failed: ${e}` })
+          return
         }
+        rendererScreens.current.add(n.id)
+        if (!session.getSinks().some((sk) => sk.id === NATIVE_SINK_ID)) {
+          session.addSink(createNativeSink({
+            id: NATIVE_SINK_ID,
+            serialize: serializeForNative,
+          }))
+        }
+      } else {
+        const win = await openDisplayWindow(n.id, px, py)
+        if (!win) return
+        // The window may still be loading; it announces itself with
+        // `display:ready` and we answer with a snapshot (see below).
+        session.addSink(createDisplaySink(win, { id: sinkIdFor(n.id), screenId: n.id }))
       }
     }
-    prevScreensRef.current = currentScreens
-    // Emit a snapshot once on scene change to update paused display windows
-    try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
-    // Update Go-side cached snapshot so newly connecting renderers get current state
-    try { if (project) window.go?.main?.App?.PushSnapshot(JSON.stringify(buildProjectWrapper(project, scene))) } catch { }
-  }, [scene])
 
-  // Emit snapshot once when project changes
-  const prevMediaRef = useRef(null)
+    for (const n of screens) {
+      const k = screenKey(n)
+      next.set(n.id, k)
+      if (prev.get(n.id) === k) continue      // moving a screen touches nothing
+      if (prev.has(n.id)) closeScreen(n.id, prev.get(n.id))
+      openScreen(n)
+    }
+    for (const [id, k] of prev) {
+      if (!next.has(id)) closeScreen(id, k)
+    }
+    prevScreensRef.current = next
+  }, [scene, reopenNonce])
+
+  // A freshly opened display window tells us when its message listener is up.
   useEffect(() => {
-    try {
-      let projToSend = project
-      // Optimization: if media array reference hasn't changed, don't resend it.
-      // This prevents serializing/sending large data URIs on every timeline update (e.g. dragging).
-      if (project && project.media === prevMediaRef.current) {
-        projToSend = { ...project, media: undefined }
-      }
-      prevMediaRef.current = project?.media
-      broadcastToDisplays('display:snapshot', { project: projToSend, scene, time })
-    } catch { }
-    // Push full snapshot to native renderers via Go SSE
-    try {
-      if (project) {
-        const wrapper = buildProjectWrapper(project, scene)
-        window.go?.main?.App?.PushSnapshot(JSON.stringify(wrapper))
-      }
-    } catch { }
-  }, [project])
+    const onMessage = (ev) => {
+      if (ev.data?.event !== 'display:ready') return
+      getMediaSession().notifySnapshot()
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [])
+
+  // The single snapshot trigger: the document changed. Debounced so a burst of
+  // Inspector keystrokes coalesces into one serialization instead of one per
+  // character.
+  useEffect(() => {
+    if (!project || !scene) return
+    const id = setTimeout(() => { getMediaSession().notifySnapshot() }, 50)
+    return () => clearTimeout(id)
+  }, [project, scene])
 
   const onFile = async (e) => {
     const f = e.target.files?.[0]
@@ -228,12 +229,10 @@ export default function App() {
     setFileName(f.name)
     const text = await f.text()
     try {
-      const data = JSON.parse(text)
-      // If running in Tauri, import any external media into local cache and relink
-      // (Tauri support removed)
-      loadProject(data)
+      useEditorStore.getState().loadProject(JSON.parse(text))
     } catch (err) {
-      alert('Invalid JSON: ' + err)
+      useEditorStore.getState().addLog({ level: 'error', message: `Invalid project JSON: ${err}` })
+      setStatus('Invalid JSON: ' + err)
     }
   }
 
@@ -241,27 +240,14 @@ export default function App() {
     <div className="layout">
       <header>
         <MenuBar
-          onNewShow={() => { if (confirm('Create new show? Unsaved changes will be lost.')) newProject() }}
+          onNewShow={() => { if (confirm('Create new show? Unsaved changes will be lost.')) useEditorStore.getState().newProject() }}
           onOpenProject={() => fileRef.current?.click()}
           onSaveShow={() => setShowSaveDialog(true)}
-          onReopenDisplays={async () => {
-            const roots = scene?.roots || []
-            for (const n of roots) {
-              if (n.kind?.type === 'screen') {
-                const enabled = (n.kind?.enabled ?? true)
-                const screenType = n.kind?.screenType || 'web'
-                const px = n.kind?.pixels?.[0] || 0
-                const py = n.kind?.pixels?.[1] || 0
-                if (enabled && px > 0 && py > 0) {
-                  if (screenType === 'web') {
-                    try { await openDisplayWindow(n.id, px, py) } catch { }
-                  } else if (screenType === 'renderer') {
-                    try { await window.go?.main?.App?.OpenRendererScreen(n.id, px, py) } catch (e) { console.error('Reopen renderer failed:', e) }
-                  }
-                }
-              }
-            }
-            try { broadcastToDisplays('display:snapshot', { project, scene, time }) } catch { }
+          onReopenDisplays={() => {
+            // Forget what we think is open; the screen effect then treats
+            // every screen as new and re-opens it with a fresh sink.
+            prevScreensRef.current = new Map()
+            setReopenNonce((n) => n + 1)
           }}
         />
         <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />
@@ -344,7 +330,6 @@ export default function App() {
       </footer>
       <TopConsoleDrawer />
       <LoadingOverlay />
-      <GlobalTicker />
       <SaveShowDialog
         open={showSaveDialog}
         onClose={() => setShowSaveDialog(false)}
@@ -363,10 +348,10 @@ export default function App() {
             a.click()
             URL.revokeObjectURL(url)
             setStatus('Show saved as ' + name)
-            addLog({ level: 'info', message: 'Show saved as ' + name })
+            useEditorStore.getState().addLog({ level: 'info', message: 'Show saved as ' + name })
           } catch (e) {
             setStatus('Save failed: ' + e)
-            addLog({ level: 'error', message: 'Save failed: ' + e })
+            useEditorStore.getState().addLog({ level: 'error', message: 'Save failed: ' + e })
           }
         }}
       />
@@ -374,29 +359,14 @@ export default function App() {
   )
 }
 
-function buildProjectWrapper(project, scene) {
-  if (!project || !scene) { throw new Error('No project loaded') }
-  // Reconstruct a JSON payload similar to examples/scene.example.json
-  return {
-    project: {
-      id: project.id,
-      name: project.name,
-      scene: scene,
-      media: project.media ?? [],
-      timeline: project.timeline ?? { id: 'tl', name: 'Timeline', tracks: [], events: [], duration_seconds: 60 }
-    }
+/** Depth-first lookup used by the Delete shortcut. */
+function findNodeById(roots, id) {
+  const stack = [...(roots || [])]
+  while (stack.length) {
+    const n = stack.pop()
+    if (!n) continue
+    if (n.id === id) return n
+    if (n.children?.length) stack.push(...n.children)
   }
+  return null
 }
-
-async function onAddImage() {
-  // Use Tauri dialog to get a file path for the image
-  const filePath = await openImageDialog()
-  if (!filePath) return
-  // Infer name from path
-  const name = String(filePath).split(/[\\\/]/).pop()
-  // Fast path: skip caching
-  useEditorStore.getState().addImageToShow({ filePath, name, duration: 10 })
-  useEditorStore.getState().addLog({ level: 'info', message: `Added image: ${name}` })
-  return
-}
-

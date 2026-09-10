@@ -1,14 +1,40 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditorStore } from '../store.js'
-import { resolveImageSrc, inlineFromUri } from './MediaThumb.jsx'
+import { resolveImageSrc } from './MediaThumb.jsx'
 
-function NumberInput({ value, onChange, step = 0.1, style }) {
+/**
+ * A number field that edits a local draft string and commits on blur or Enter.
+ *
+ * The previous fully-controlled version called parseFloat on every keystroke,
+ * so clearing the field or typing a lone minus sign wrote NaN straight into
+ * the document: a clip start became NaN and the clip vanished, and a
+ * resolution field transiently became 0, which closed the output window. It
+ * also produced one undo entry and one snapshot push per character.
+ *
+ * Escape reverts the draft, and the field never fights the user while focused.
+ */
+function NumberInput({ value, onChange, step = 0.1, min, max, style }) {
+  const [text, setText] = useState(() => String(value ?? 0))
+  const focused = useRef(false)
+
+  useEffect(() => {
+    if (!focused.current) setText(String(value ?? 0))
+  }, [value])
+
+  const commit = () => {
+    const n = parseFloat(text)
+    if (!Number.isFinite(n)) { setText(String(value ?? 0)); return }
+    const clamped = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n))
+    setText(String(clamped))
+    if (clamped !== value) onChange(clamped)
+  }
+
   return (
     <input
       type="number"
       step={step}
-      value={value}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
       style={{
         width: '100%',
         background: '#0f1115',
@@ -22,8 +48,12 @@ function NumberInput({ value, onChange, step = 0.1, style }) {
         transition: 'border-color 0.2s',
         ...style
       }}
-      onFocus={(e) => e.target.style.borderColor = '#4a5568'}
-      onBlur={(e) => e.target.style.borderColor = '#232636'}
+      onFocus={(e) => { focused.current = true; e.target.style.borderColor = '#4a5568' }}
+      onBlur={(e) => { focused.current = false; e.target.style.borderColor = '#232636'; commit() }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { e.currentTarget.blur() }
+        else if (e.key === 'Escape') { setText(String(value ?? 0)); e.currentTarget.blur() }
+      }}
     />
   )
 }
@@ -82,7 +112,7 @@ function PropertyRow({ label, children, style }) {
   )
 }
 
-export default function Inspector() {
+function Inspector() {
   const [tab, setTab] = useState('properties') // 'properties' | 'history'
   const scene = useEditorStore((s) => s.scene)
   const selectedId = useEditorStore((s) => s.selectedId)
@@ -123,6 +153,11 @@ export default function Inspector() {
     return (project?.media || []).find((m) => m.id === selectedMedia.clip_id) || null
   }, [project, selectedMedia])
 
+  // A stored scale of 0 means "use the natural size", so the Size fields and
+  // the aspect lock must resolve through naturalSize before doing any maths.
+  const effectiveW = (selectedMedia?.scale?.x > 0) ? selectedMedia.scale.x : (naturalSize?.w ?? 0)
+  const effectiveH = (selectedMedia?.scale?.y > 0) ? selectedMedia.scale.y : (naturalSize?.h ?? 0)
+
   useEffect(() => {
     let cancelled = false
     async function loadMeta() {
@@ -132,19 +167,7 @@ export default function Inspector() {
       await new Promise((resolve) => {
         const img = new Image()
         img.onload = () => { if (!cancelled) setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }); resolve() }
-        img.onerror = async () => {
-          try {
-            const inlined = await inlineFromUri(selectedClip.uri)
-            if (inlined) {
-              const probe = new Image()
-              probe.onload = () => { if (!cancelled) setNaturalSize({ w: probe.naturalWidth, h: probe.naturalHeight }); resolve() }
-              probe.onerror = () => resolve()
-              probe.src = inlined
-              return
-            }
-          } catch { }
-          resolve()
-        }
+        img.onerror = () => resolve()
         img.src = src
       })
     }
@@ -224,8 +247,8 @@ export default function Inspector() {
             </label>
           </div>
           <PropertyRow label="Resolution (W x H)">
-            <NumberInput value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
-            <NumberInput value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
+            <NumberInput step={1} min={1} value={selectedNode.kind?.pixels?.[0] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [v, selectedNode.kind?.pixels?.[1] || 0])} />
+            <NumberInput step={1} min={1} value={selectedNode.kind?.pixels?.[1] || 0} onChange={(v) => updateScreenPixels(selectedNode.id, [selectedNode.kind?.pixels?.[0] || 0, v])} />
           </PropertyRow>
           {(selectedNode.kind?.screenType || 'web') === 'renderer' && (
             <RendererStatusRow screenId={selectedNode.id} />
@@ -240,34 +263,35 @@ export default function Inspector() {
               <NumberInput step={1} value={selectedMedia.position?.x ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, position: { x: Math.round(v) } })} />
               <NumberInput step={1} value={selectedMedia.position?.y ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, position: { y: Math.round(v) } })} />
             </PropertyRow>
+            {/* A stored scale of 0 means "use the natural size of the media",
+                so it has to fall through to naturalSize rather than display as
+                0 and hand the aspect lock a 0/0 ratio. */}
             <PropertyRow label="Size (W, H)">
               <NumberInput
                 step={1}
-                value={selectedMedia.scale?.x ?? (naturalSize?.w ?? 0)}
+                min={1}
+                value={effectiveW}
                 onChange={(v) => {
+                  const w = Math.max(1, Math.round(v))
                   if (keepAR) {
-                    const baseW = selectedMedia.scale?.x ?? naturalSize?.w ?? 0
-                    const baseH = selectedMedia.scale?.y ?? naturalSize?.h ?? 0
-                    const ratio = baseW > 0 ? (baseH / baseW) : 1
-                    const newH = Math.max(1, Math.round(v * ratio))
-                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: Math.round(v), y: newH } })
+                    const ratio = effectiveW > 0 ? (effectiveH / effectiveW) : 1
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: w, y: Math.max(1, Math.round(w * ratio)) } })
                   } else {
-                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: Math.round(v) } })
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: w } })
                   }
                 }}
               />
               <NumberInput
                 step={1}
-                value={selectedMedia.scale?.y ?? (naturalSize?.h ?? 0)}
+                min={1}
+                value={effectiveH}
                 onChange={(v) => {
+                  const h = Math.max(1, Math.round(v))
                   if (keepAR) {
-                    const baseW = selectedMedia.scale?.x ?? naturalSize?.w ?? 0
-                    const baseH = selectedMedia.scale?.y ?? naturalSize?.h ?? 0
-                    const ratio = baseH > 0 ? (baseW / baseH) : 1
-                    const newW = Math.max(1, Math.round(v * ratio))
-                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: newW, y: Math.round(v) } })
+                    const ratio = effectiveH > 0 ? (effectiveW / effectiveH) : 1
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { x: Math.max(1, Math.round(h * ratio)), y: h } })
                   } else {
-                    updateClipTransform({ timelineId: selectedMedia.id, scale: { y: Math.round(v) } })
+                    updateClipTransform({ timelineId: selectedMedia.id, scale: { y: h } })
                   }
                 }}
               />
@@ -312,18 +336,18 @@ export default function Inspector() {
 
           <Category title="Timing">
             <PropertyRow label="Start / Duration (s)">
-              <NumberInput step={0.01} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: Math.max(0, v) })} />
-              <NumberInput step={0.01} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: Math.max(0, v) })} />
+              <NumberInput step={0.01} min={0} value={selectedMedia.start ?? selectedMedia.start_at_seconds ?? 0} onChange={(v) => useEditorStore.getState().updateClipStart({ timelineId: selectedMedia.id, startAt: v })} />
+              <NumberInput step={0.01} min={0} value={selectedMedia.duration ?? Math.max(0, (selectedMedia.out_seconds - selectedMedia.in_seconds) || 0)} onChange={(v) => useEditorStore.getState().updateClipDuration({ timelineId: selectedMedia.id, duration: v })} />
             </PropertyRow>
             <PropertyRow label="Fade In / Out (s)">
-              <NumberInput step={0.1} value={selectedMedia.fade_in ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_in: v })} />
-              <NumberInput step={0.1} value={selectedMedia.fade_out ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_out: v })} />
+              <NumberInput step={0.1} min={0} value={selectedMedia.fade_in ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_in: v })} />
+              <NumberInput step={0.1} min={0} value={selectedMedia.fade_out ?? 0} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, fade_out: v })} />
             </PropertyRow>
           </Category>
 
           <Category title="Appearance">
             <PropertyRow label="Opacity">
-              <NumberInput step={0.1} value={selectedMedia.opacity ?? 1} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, opacity: v })} />
+              <NumberInput step={0.1} min={0} max={1} value={selectedMedia.opacity ?? 1} onChange={(v) => updateClipTransform({ timelineId: selectedMedia.id, opacity: v })} />
             </PropertyRow>
           </Category>
 
@@ -573,3 +597,6 @@ function EffectControl({ label, effect, defaultValue, step, media, hasValue = tr
     </div>
   )
 }
+
+// Memoized: the Inspector is expensive and App re-renders on panel resize.
+export default React.memo(Inspector)
