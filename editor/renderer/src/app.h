@@ -72,11 +72,12 @@ private:
     void drainDebugMessages();
 
     // Media
-    DecoderParams decoderParams() const;
+    DecoderParams decoderParams();
     void prefetchMedia();
     void prefetchNearbyVideos();
     void drainLoader();
     void evictUnusedMedia();
+    void reconcileMedia();
     // Already-open decoder for a timeline item, or nullptr. Never blocks:
     // opening happens on the loader thread.
     VideoDecoder* findVideoDecoder(const std::string& key);
@@ -105,13 +106,12 @@ private:
     int m_frameIndex = 0;
     uint64_t m_frameCounter = 0;
 
-    // Cross-API fences shared with the video decoders (see A4 in the review):
-    //   m_frameFence / m_frameFence11 — D3D12 finished sampling a frame
-    //   m_copyFence  / m_copyFence11  — D3D11 finished a decode copy
-    ComPtr<ID3D11Fence> m_frameFence11;
+    // D3D11 copy completion is shared with the render queue. Decoders check
+    // m_frameFence on the CPU before reusing a texture sampled by D3D12.
     ComPtr<ID3D12Fence> m_copyFence;
     ComPtr<ID3D11Fence> m_copyFence11;
     std::atomic<UINT64> m_copyFenceCounter{0};
+    std::mutex m_copySignalMutex;
 
     // Shared D3D11 device for DXVA video decode (all decoders share this)
     // When D3D11On12 is active, this wraps the DX12 device for zero-copy video decode.
@@ -136,6 +136,7 @@ private:
 
     // Video decoders: keyed by timeline item id
     std::unordered_map<std::string, std::unique_ptr<VideoDecoder>> m_videoDecoders;
+    std::unordered_map<std::string, std::string> m_videoUris;
 
     // Audio players: keyed by timeline item id (for videos with audio)
     std::unordered_map<std::string, std::unique_ptr<AudioPlayer>> m_audioPlayers;

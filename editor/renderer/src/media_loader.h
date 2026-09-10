@@ -17,7 +17,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 struct DecoderParams {
@@ -28,6 +28,7 @@ struct DecoderParams {
     ID3D12CommandQueue* d3d12Queue = nullptr;
     bool nv12Mode = false;
     bool verbose = false;
+    DecoderSync sync;
 };
 
 class MediaLoader {
@@ -40,6 +41,7 @@ public:
         uint32_t height = 0;
         std::unique_ptr<VideoDecoder> decoder;  // videos: an opened decoder
         bool failed = false;
+        uint64_t generation = 0;
     };
 
     ~MediaLoader();
@@ -60,12 +62,17 @@ public:
     void forget(const std::string& key);
 
 private:
+    friend struct RendererTestAccess;
     struct Request {
         bool isVideo = false;
         std::string key;
         std::string uri;
         DecoderParams params;
+        uint64_t generation = 0;
     };
+
+    void request(Request req);
+    bool isCurrent(const std::string& key, uint64_t generation) const;
 
     void threadMain();
     bool decodeImageFile(const std::string& uri, Ready& out);
@@ -76,5 +83,7 @@ private:
     std::condition_variable m_cv;
     std::deque<Request> m_queue;
     std::vector<Ready> m_ready;
-    std::unordered_set<std::string> m_known;   // queued, in flight or delivered
+    struct Identity { std::string uri; uint64_t generation; };
+    std::unordered_map<std::string, Identity> m_known;
+    uint64_t m_nextGeneration = 0;
 };

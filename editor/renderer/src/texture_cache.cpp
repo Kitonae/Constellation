@@ -649,6 +649,21 @@ const CachedTexture* TextureCache::registerNV12(const std::string& key,
 
 // --- Eviction ------------------------------------------------------------
 
+void TextureCache::invalidate(const std::string& key, FrameGarbage& garbage) {
+    auto it = m_cache.find(key);
+    if (it == m_cache.end()) return;
+    const auto& t = it->second;
+    if (t.ready) {
+        for (int r = 0; r < t.ringCount; ++r)
+            for (int p = 0; p < t.planes; ++p)
+                garbage.srvSlots.push_back(t.srvSlots[r][p]);
+    }
+    if (t.resource) garbage.resources.push_back(t.resource);
+    for (const auto& upload : t.uploadBuffers)
+        if (upload) garbage.resources.push_back(upload);
+    m_cache.erase(it);
+}
+
 void TextureCache::evictUnused(uint64_t frameCounter, uint64_t graceFrames,
                                FrameGarbage& garbage,
                                std::vector<std::string>* evictedKeys) {

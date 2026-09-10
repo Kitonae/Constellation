@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "video_decoder.h"
+#include "video_buffer.h"
 #include <mferror.h>
 #include <propvarutil.h>
 #include <cstdio>
@@ -125,8 +126,9 @@ bool VideoDecoder::open(const std::string& filePath,
                         IMFDXGIDeviceManager* sharedManager,
                         ID3D11On12Device2* d3d11On12Device,
                         ID3D12CommandQueue* d3d12Queue,
-                        bool nv12Mode) {
+                        bool nv12Mode, const DecoderSync& sync) {
     close();
+    m_sync = sync;
 
     m_d3d12Device = d3d12Device;
     m_d3d12Queue = d3d12Queue;
@@ -244,7 +246,9 @@ bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
             m_writeable.push_back(std::move(f));
         }
         printf("[VideoDecoder] NV12 zero-copy frame pool created (%d pool)\n", POOL_SIZE);
-    } else if (mode == Mode::DxvaRgb32 && m_d3d12Device) {
+    } else if (mode == Mode::DxvaRgb32 && m_d3d12Device &&
+               (m_sharesRenderQueue || (m_sync.frameFence && m_sync.copyFence11 &&
+                m_sync.copyFenceCounter && m_sync.copySignalMutex))) {
         bool allOk = true;
         for (int i = 0; i < POOL_SIZE; i++) {
             VideoFrame f;
@@ -346,6 +350,7 @@ void VideoDecoder::close() {
     if (m_running) {
         m_running = false;
         m_seekCv.notify_all();
+        m_writeableCv.notify_all();
         if (m_thread.joinable()) m_thread.join();
     }
     m_reader.Reset();
@@ -385,13 +390,10 @@ void VideoDecoder::close() {
     m_display = VideoFrame{};
     m_dxvaAvailable = false;
     m_mode = Mode::Software;
-    m_frameFence = nullptr;
-    m_copyFence = nullptr;
-    m_frameFence11.Reset();
-    m_copyFence11.Reset();
-    m_copyFenceCounter = nullptr;
+    m_sync = {};
     m_pendingCopyFence.store(0);
     m_width = m_height = 0;
+    m_defaultStride = 0;
     m_duration = 0; m_fps = 30.0;
 }
 
@@ -458,6 +460,11 @@ bool VideoDecoder::configureDecoder(Mode mode) {
     ComPtr<IMFMediaType> actualType;
     if (SUCCEEDED(m_reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &actualType)) && actualType) {
         readColorSpace(actualType.Get());
+        UINT32 stride = 0;
+        if (SUCCEEDED(actualType->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride)))
+            m_defaultStride = static_cast<LONG>(stride);
+        else if (mode != Mode::NV12)
+            MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, m_width, &m_defaultStride);
     }
 
     m_reader->SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, FALSE);
@@ -611,27 +618,31 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds, UINT64 curren
     return nullptr;
 }
 
-void VideoDecoder::setSyncFences(ID3D12Fence* frameFence, ID3D11Fence* frameFence11,
-                                 ID3D12Fence* copyFence, ID3D11Fence* copyFence11,
-                                 std::atomic<UINT64>* copyFenceCounter) {
-    m_frameFence = frameFence;
-    m_frameFence11 = frameFence11;
-    m_copyFence = copyFence;
-    m_copyFence11 = copyFence11;
-    m_copyFenceCounter = copyFenceCounter;
-}
-
 // Take a frame out of the writeable pool, waiting until one is returned.
 // The pool is bounded, so seeks must borrow instead of allocating: both seek
 // paths used to build a fresh VideoFrame and push it into the readable deque,
 // growing the pool by one full-resolution texture on every scrub.
 bool VideoDecoder::borrowFrame(VideoFrame& out) {
     std::unique_lock<std::mutex> lk(m_dealerMu);
-    m_writeableCv.wait_for(lk, std::chrono::milliseconds(50),
-        [this] { return !m_writeable.empty() || !m_running; });
-    if (!m_running || m_writeable.empty()) return false;
-    out = std::move(m_writeable.back());
-    m_writeable.pop_back();
+    auto available = [this] {
+        const UINT64 completed = m_sync.frameFence ? m_sync.frameFence->GetCompletedValue() : 0;
+        return std::find_if(m_writeable.begin(), m_writeable.end(), [completed](const VideoFrame& f) {
+            return f.releaseFenceValue == 0 ||
+                (completed != UINT64_MAX && completed >= f.releaseFenceValue);
+        });
+    };
+    // Never enqueue a GPU wait for the frame App is still recording: that
+    // would block copies from every decoder sharing the D3D11 context, and
+    // App may need one of those copies before it can signal this frame.
+    // Poll retirement on this worker, leaving both GPU queues free to run.
+    m_writeableCv.wait_for(lk, std::chrono::milliseconds(5),
+        [&] { return !m_running || available() != m_writeable.end(); });
+    if (!m_running) return false;
+    auto it = available();
+    if (it == m_writeable.end()) return false;
+    out = std::move(*it);
+    m_writeable.erase(it);
+    out.releaseFenceValue = 0;
     return true;
 }
 
@@ -819,8 +830,7 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
         }
 
         if (m_gpuSharing && dest.d3d11Shared) {
-            // D3D12 may still be sampling the frame we are about to overwrite.
-            waitForRenderRelease(dest);
+            // borrowFrame has already retired any D3D12 reads of this texture.
             m_d3d11Ctx->CopySubresourceRegion(
                 dest.d3d11Shared.Get(), 0, 0, 0, 0,  // dest: shared texture
                 tex.Get(), subIdx, nullptr);           // src: MF's decoded texture
@@ -869,43 +879,13 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
         return true;
     }
 
-    // Software path — lock buffer directly
-    ComPtr<IMF2DBuffer> buffer2d;
-    LONG stride = 0;
-    if (SUCCEEDED(buffer->QueryInterface(IID_PPV_ARGS(&buffer2d)))) {
-        BYTE* s = nullptr; buffer2d->Lock2D(&s, &stride); buffer2d->Unlock2D();
-    }
-    if (stride == 0) stride = (LONG)(m_width * 4);
-
-    BYTE* data = nullptr; DWORD maxLen = 0, curLen = 0;
-    hr = buffer->Lock(&data, &maxLen, &curLen);
-    if (FAILED(hr) || !data) return false;
-
-    uint32_t rowBytes = m_width * 4;
+    // Use the pointer and stride from the same lock, including negative pitch.
+    if (!copyVideoBuffer(buffer.Get(), m_width, m_height, m_defaultStride, dest.pixels))
+        return false;
     dest.width = m_width;
     dest.height = m_height;
     dest.timestamp = (double)timestamp / 10000000.0;
-    if (dest.pixels.size() != (size_t)rowBytes * m_height)
-        dest.pixels.resize((size_t)rowBytes * m_height);
     m_decodedFrames.fetch_add(1);
-
-    LONG absStride = std::abs(stride);
-    bool bottomUp = (stride < 0);
-    const BYTE* start = bottomUp ? (data + (m_height - 1) * absStride) : data;
-    LONG rowStep = bottomUp ? -(LONG)absStride : (LONG)absStride;
-
-    if (!bottomUp && absStride == (LONG)rowBytes) {
-        memcpy(dest.pixels.data(), data, (size_t)rowBytes * m_height);
-    } else {
-        for (uint32_t y = 0; y < m_height; y++)
-            memcpy(dest.pixels.data() + y * rowBytes, start + y * rowStep, rowBytes);
-    }
-
-    uint32_t* px = (uint32_t*)dest.pixels.data();
-    size_t count = (size_t)m_width * m_height;
-    for (size_t i = 0; i < count; i++) px[i] |= 0xFF000000;
-
-    buffer->Unlock();
     return true;
 }
 
@@ -914,25 +894,13 @@ bool VideoDecoder::readOneFrame(VideoFrame& dest) {
 //
 // The decode thread writes into pooled textures that D3D12 may still be
 // sampling, and D3D12 samples textures the D3D11 copy may not have finished.
-// Flush() only submits work, it does not wait, so both directions need a
-// shared fence. When App has not supplied fences these are no-ops and the
-// paths behave as before.
-
-void VideoDecoder::waitForRenderRelease(VideoFrame& frame) {
-    // Only meaningful across queues. On a shared queue the copy is already
-    // ordered behind the draws that read the frame, and a wait here would sit
-    // in front of the Signal that would release it.
-    if (m_sharesRenderQueue) return;
-    if (!m_frameFence11 || frame.releaseFenceValue == 0) return;
-    ComPtr<ID3D11DeviceContext4> ctx4;
-    if (FAILED(m_d3d11Ctx.As(&ctx4))) return;
-    ctx4->Wait(m_frameFence11.Get(), frame.releaseFenceValue);
-}
+// Flush() only submits work. Standalone D3D11 copies signal a shared fence;
+// borrowFrame checks the render fence on the CPU before reusing a texture.
 
 void VideoDecoder::signalCopyDone(VideoFrame& frame) {
     // Same-queue: the copy is already ordered before anything the render
     // queue submits afterwards, so there is nothing for D3D12 to wait on.
-    if (m_sharesRenderQueue || !m_copyFence11 || !m_copyFenceCounter) {
+    if (m_sharesRenderQueue || !m_sync.copyFence11 || !m_sync.copyFenceCounter) {
         m_d3d11Ctx->Flush();
         return;
     }
@@ -941,8 +909,11 @@ void VideoDecoder::signalCopyDone(VideoFrame& frame) {
         m_d3d11Ctx->Flush();
         return;
     }
-    UINT64 v = m_copyFenceCounter->fetch_add(1) + 1;
-    ctx4->Signal(m_copyFence11.Get(), v);
+    // All decoders share this fence. Keep reservation and submission ordered
+    // so concurrent workers cannot signal a smaller value after a larger one.
+    std::lock_guard<std::mutex> lk(*m_sync.copySignalMutex);
+    UINT64 v = m_sync.copyFenceCounter->fetch_add(1) + 1;
+    ctx4->Signal(m_sync.copyFence11.Get(), v);
     m_d3d11Ctx->Flush();
     frame.copyFenceValue = v;
 }
@@ -956,14 +927,8 @@ bool VideoDecoder::writeNV12Frame(VideoFrame& dest, ID3D11Texture2D* src, UINT s
 
     // Hand the previous unwrap back.
     //
-    // No fences are passed, and that is deliberate. The D3D11On12 device was
-    // created against the renderer's own DIRECT queue, so the copy below is
-    // submitted to that queue and in-order execution already places it after
-    // every draw that sampled this frame. Passing the frame fence here would
-    // enqueue a GPU wait for a value the *same* queue only signals at the end
-    // of the frame, deadlocking it. If the 11On12 device is ever created
-    // against a separate queue, this must pass (1, &releaseFenceValue,
-    // &frameFence) instead.
+    // borrowFrame has already observed completion of every render using this
+    // texture. No deferred GPU waits are needed to return it to D3D11On12.
     if (dest.d3d11Source) {
         m_d3d11On12->ReturnUnderlyingResource(dest.d3d11Source.Get(), 0, nullptr, nullptr);
         dest.d3d11Source.Reset();

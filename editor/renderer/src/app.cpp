@@ -148,8 +148,8 @@ bool App::init(const AppConfig& config) {
     }
 
     // Shared fences let the decode thread and the render queue order their
-    // work against each other instead of relying on Flush() and single-queue
-    // luck. Non-fatal: without them the paths behave as they did before.
+    // work against each other. Without copy fences, standalone D3D11 uses
+    // CPU readback instead of publishing unsynchronised shared textures.
     createSyncFences();
 
     // Init texture cache
@@ -258,6 +258,7 @@ void App::processEvents() {
     for (auto& event : events) {
         if (event.type == "snapshot") {
             m_scene.loadSnapshot(event.data);
+            reconcileMedia();
             // The snapshot lists every asset, so start loading them now
             // instead of at the first frame each clip becomes active.
             prefetchMedia();
@@ -824,7 +825,7 @@ void App::waitForGpuIdle() {
     m_cmdQueue->Signal(m_frameFence.Get(), v);
     if (m_frameFence->GetCompletedValue() < v) {
         m_frameFence->SetEventOnCompletion(v, m_frameFenceEvent);
-        WaitForSingleObject(m_frameFenceEvent, 2000);
+        WaitForSingleObject(m_frameFenceEvent, INFINITE);
     }
     for (auto& f : m_frames) {
         if (!f.garbage.srvSlots.empty()) m_textureCache.releaseSlots(f.garbage.srvSlots);
@@ -832,9 +833,8 @@ void App::waitForGpuIdle() {
     }
 }
 
-// Create the D3D12/D3D11 fence pairs used to order decode copies against
-// rendering. Requires ID3D11Device5 (Windows 10 1703+); when unavailable the
-// decoders simply run without them.
+// Share decode-copy completion with D3D12. Frame retirement is checked on the
+// CPU, so the frame fence does not need a D3D11 counterpart.
 bool App::createSyncFences() {
     if (!m_device || !m_d3d11Device) return false;
 
@@ -855,22 +855,11 @@ bool App::createSyncFences() {
         return SUCCEEDED(hr);
     };
 
-    // The frame fence is already created unshared for CPU waits; make a
-    // second, shared one that mirrors it for the D3D11 side.
-    ComPtr<ID3D12Fence> sharedFrameFence;
-    if (!share(sharedFrameFence, m_frameFence11)) {
-        printf("[App] Shared frame fence unavailable; decode/render fences disabled\n");
-        m_frameFence11.Reset();
-        return false;
-    }
-    // Replace the plain frame fence with the shared one so a single value
-    // means the same thing on both APIs.
-    m_frameFence = sharedFrameFence;
-
     if (!share(m_copyFence, m_copyFence11)) {
-        printf("[App] Shared copy fence unavailable; decode copies fall back to Flush\n");
+        printf("[App] Shared copy fence unavailable; standalone decode uses CPU readback\n");
         m_copyFence.Reset();
         m_copyFence11.Reset();
+        return false;
     }
     printf("[App] Cross-API decode/render fences ready\n");
     return true;
@@ -878,7 +867,7 @@ bool App::createSyncFences() {
 
 // --- Media loading and eviction -----------------------------------------
 
-DecoderParams App::decoderParams() const {
+DecoderParams App::decoderParams() {
     DecoderParams p;
     p.d3d12Device = m_device.Get();
     p.d3d11Device = m_d3d11Device.Get();
@@ -887,7 +876,39 @@ DecoderParams App::decoderParams() const {
     p.d3d12Queue = m_cmdQueue.Get();
     p.nv12Mode = m_nv12Active;
     p.verbose = m_config.verbose;
+    p.sync.frameFence = m_frameFence;
+    p.sync.copyFence11 = m_copyFence11;
+    p.sync.copyFenceCounter = &m_copyFenceCounter;
+    p.sync.copySignalMutex = &m_copySignalMutex;
     return p;
+}
+
+void App::reconcileMedia() {
+    std::unordered_map<std::string, std::string> current;
+    for (const auto& track : m_scene.tracks()) {
+        for (const auto& tm : track.media) {
+            const auto* clip = m_scene.getMedia(tm.clipId);
+            if (clip && isVideoFile(clip->uri) && !isRemoteUri(clip->uri))
+                current[tm.id] = clip->uri;
+        }
+    }
+    bool waited = false;
+    for (const auto& [key, uri] : m_videoUris) {
+        auto it = current.find(key);
+        if (it != current.end() && it->second == uri) continue;
+        // Invalidate pending requests even if no decoder has arrived yet.
+        m_mediaLoader.forget(key);
+        if (!waited) {
+            waitForGpuIdle();
+            waited = true;
+        }
+        m_videoDecoders.erase(key);
+        m_audioPlayers.erase(key);
+        m_lastAudioSeek.erase(key);
+        m_mediaLastUsed.erase(key);
+        m_textureCache.invalidate("__video_" + key, m_frames[m_frameIndex].garbage);
+    }
+    m_videoUris = std::move(current);
 }
 
 // Ask the loader for everything the snapshot references. Images are cheap to
@@ -928,9 +949,8 @@ void App::drainLoader() {
             continue;
         }
         if (ready.decoder) {
-            ready.decoder->setSyncFences(m_frameFence.Get(), m_frameFence11.Get(),
-                                         m_copyFence.Get(), m_copyFence11.Get(),
-                                         &m_copyFenceCounter);
+            auto it = m_videoUris.find(ready.key);
+            if (it == m_videoUris.end() || it->second != ready.uri) continue;
             m_videoDecoders[ready.key] = std::move(ready.decoder);
             m_mediaLastUsed[ready.key] = m_frameCounter;
         } else if (!ready.rgba.empty()) {
@@ -1027,7 +1047,6 @@ void App::shutdown() {
     m_d3d11Context.Reset();
     m_d3d11Device.Reset();
     m_nv12Active = false;
-    m_frameFence11.Reset();
     m_copyFence11.Reset();
     m_copyFence.Reset();
     m_frameFence.Reset();

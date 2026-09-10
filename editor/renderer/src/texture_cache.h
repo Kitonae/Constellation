@@ -137,6 +137,7 @@ public:
 
     // Return descriptor slots retired by evictUnused to the free list.
     void releaseSlots(const std::vector<uint32_t>& slots);
+    void invalidate(const std::string& key, FrameGarbage& garbage);
 
     ID3D12DescriptorHeap* srvHeap() const { return m_srvHeap.Get(); }
     uint32_t usedSlots() const { return m_nextSrvIndex - (uint32_t)m_freeSlots.size(); }

@@ -21,6 +21,14 @@
 
 using Microsoft::WRL::ComPtr;
 
+// Installed before decoding starts and immutable until the worker is joined.
+struct DecoderSync {
+    ComPtr<ID3D12Fence> frameFence;
+    ComPtr<ID3D11Fence> copyFence11;
+    std::atomic<UINT64>* copyFenceCounter = nullptr;
+    std::mutex* copySignalMutex = nullptr;
+};
+
 // Colour conversion parameters for the NV12 shader, read from the stream's
 // MF_MT_VIDEO_NOMINAL_RANGE and MF_MT_YUV_MATRIX rather than hard-coded to
 // BT.709 limited range (which made SD and full-range content look wrong).
@@ -117,7 +125,8 @@ public:
               IMFDXGIDeviceManager* sharedManager = nullptr,
               ID3D11On12Device2* d3d11On12Device = nullptr,
               ID3D12CommandQueue* d3d12Queue = nullptr,
-              bool nv12Mode = false);
+              bool nv12Mode = false,
+              const DecoderSync& sync = {});
     void close();
     bool isOpen() const { return m_reader != nullptr; }
 
@@ -125,13 +134,6 @@ public:
     // being built. The frame this call displaces is stamped with it so the
     // decode thread can wait for D3D12 to finish reading before overwriting.
     const VideoFrame* getFrameAtTime(double timeSeconds, UINT64 currentFrameFence = 0);
-
-    // Shared fences for cross-API synchronisation. Both are owned by App:
-    //   frameFence  — signalled by the D3D12 queue at end of frame
-    //   copyFence   — signalled by D3D11 after a decode copy, waited on by D3D12
-    void setSyncFences(ID3D12Fence* frameFence, ID3D11Fence* frameFence11,
-                       ID3D12Fence* copyFence, ID3D11Fence* copyFence11,
-                       std::atomic<UINT64>* copyFenceCounter);
 
     // Highest copy-fence value among frames handed out since the last call.
     UINT64 takePendingCopyFence() { return m_pendingCopyFence.exchange(0); }
@@ -163,6 +165,7 @@ public:
     enum class Mode { NV12, DxvaRgb32, Software };
 
 private:
+    friend struct RendererTestAccess;
     bool initDXVA(IDXGIAdapter1* adapter);
     bool tryOpen(const std::wstring& wpath, Mode mode);
     bool probeNV12();
@@ -175,7 +178,6 @@ private:
     bool borrowFrame(VideoFrame& out);
     void recycle(VideoFrame&& f);
     bool writeNV12Frame(VideoFrame& dest, ID3D11Texture2D* src, UINT subIdx);
-    void waitForRenderRelease(VideoFrame& frame);
     void signalCopyDone(VideoFrame& frame);
 
     ComPtr<IMFSourceReader> m_reader;
@@ -184,6 +186,7 @@ private:
     double m_duration = 0;
     double m_fps = 30.0;
     double m_frameDuration = 1.0 / 30.0;
+    LONG m_defaultStride = 0;
     const char* m_codecName = "unknown";
 
     // D3D12 device for shared texture creation (not owned, borrowed from App)
@@ -195,10 +198,8 @@ private:
     ComPtr<ID3D11DeviceContext> m_d3d11Ctx;
     ComPtr<IMFDXGIDeviceManager> m_dxgiManager;
     ID3D11On12Device2* m_d3d11On12 = nullptr;  // borrowed from App
-    // True when the D3D11 device submits to the same D3D12 queue we render
-    // on (i.e. it is the D3D11On12 device). In that configuration in-order
-    // execution already orders decode copies against sampling, and inserting
-    // a GPU wait for a fence that same queue signals *later* deadlocks it.
+    // D3D11On12 copies use the render queue, so they do not need a separate
+    // copy-completion fence. Frame reuse still waits for retirement on the CPU.
     bool m_sharesRenderQueue = false;
     ComPtr<ID3D11Texture2D> m_staging;  // only used for CPU readback fallback
     bool m_ownsD3D11 = false; // true if we created the device (must release)
@@ -209,12 +210,7 @@ private:
     Mode m_mode = Mode::Software;
     ColorSpaceParams m_colorSpace;
 
-    // Cross-API fences (borrowed from App; may all be null)
-    ID3D12Fence* m_frameFence = nullptr;
-    ComPtr<ID3D11Fence> m_frameFence11;
-    ComPtr<ID3D11Fence> m_copyFence11;
-    ID3D12Fence* m_copyFence = nullptr;
-    std::atomic<UINT64>* m_copyFenceCounter = nullptr;
+    DecoderSync m_sync;
     std::atomic<UINT64> m_pendingCopyFence{0};
 
     // Frame dealer

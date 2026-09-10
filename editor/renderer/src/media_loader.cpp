@@ -5,6 +5,7 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <cstdio>
+#include <algorithm>
 
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -29,30 +30,48 @@ void MediaLoader::stop() {
 
 void MediaLoader::requestImage(const std::string& uri) {
     if (uri.empty() || isRemoteUri(uri)) return;
-    std::lock_guard<std::mutex> lk(m_mu);
-    if (!m_known.insert(uri).second) return;
-    m_queue.push_back(Request{false, uri, uri, {}});
-    m_cv.notify_one();
+    request(Request{false, uri, uri, {}});
 }
 
 void MediaLoader::requestVideo(const std::string& key, const std::string& uri,
                                const DecoderParams& params) {
     if (key.empty() || uri.empty() || isRemoteUri(uri)) return;
+    request(Request{true, key, uri, params});
+}
+
+void MediaLoader::request(Request req) {
     std::lock_guard<std::mutex> lk(m_mu);
-    if (!m_known.insert(key).second) return;
-    m_queue.push_back(Request{true, key, uri, params});
+    auto it = m_known.find(req.key);
+    if (it != m_known.end() && it->second.uri == req.uri) return;
+    req.generation = ++m_nextGeneration;
+    m_known[req.key] = {req.uri, req.generation};
+    std::erase_if(m_queue, [&](const Request& old) { return old.key == req.key; });
+    m_queue.push_back(std::move(req));
     m_cv.notify_one();
+}
+
+bool MediaLoader::isCurrent(const std::string& key, uint64_t generation) const {
+    auto it = m_known.find(key);
+    return it != m_known.end() && it->second.generation == generation;
 }
 
 void MediaLoader::forget(const std::string& key) {
     std::lock_guard<std::mutex> lk(m_mu);
     m_known.erase(key);
+    std::erase_if(m_queue, [&](const Request& req) { return req.key == key; });
 }
 
 std::vector<MediaLoader::Ready> MediaLoader::drainReady() {
     std::vector<Ready> out;
-    std::lock_guard<std::mutex> lk(m_mu);
-    out.swap(m_ready);
+    std::vector<Ready> stale;
+    {
+        std::lock_guard<std::mutex> lk(m_mu);
+        for (auto& ready : m_ready) {
+            (isCurrent(ready.key, ready.generation) ? out : stale).push_back(std::move(ready));
+        }
+        m_ready.clear();
+    }
+    // Closing a stale decoder joins its worker; do that outside the loader lock.
     return out;
 }
 
@@ -72,6 +91,7 @@ void MediaLoader::threadMain() {
         Ready ready;
         ready.key = req.key;
         ready.uri = req.uri;
+        ready.generation = req.generation;
 
         if (req.isVideo) {
             std::string path = uriToPath(req.uri);
@@ -82,7 +102,7 @@ void MediaLoader::threadMain() {
                 dec->setVerbose(req.params.verbose);
                 if (dec->open(path, req.params.d3d12Device, req.params.d3d11Device,
                               req.params.dxgiManager, req.params.d3d11On12,
-                              req.params.d3d12Queue, req.params.nv12Mode)) {
+                              req.params.d3d12Queue, req.params.nv12Mode, req.params.sync)) {
                     ready.decoder = std::move(dec);
                 } else {
                     ready.failed = true;
@@ -92,8 +112,10 @@ void MediaLoader::threadMain() {
             if (!decodeImageFile(req.uri, ready)) ready.failed = true;
         }
 
-        std::lock_guard<std::mutex> lk(m_mu);
-        m_ready.push_back(std::move(ready));
+        {
+            std::lock_guard<std::mutex> lk(m_mu);
+            if (isCurrent(req.key, req.generation)) m_ready.push_back(std::move(ready));
+        }
     }
 
     CoUninitialize();
