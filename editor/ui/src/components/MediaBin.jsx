@@ -1,126 +1,187 @@
-import React from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import { useEditorStore } from '../store.js'
 import { openMediaFiles, openMediaFolder } from '../utils/fileDialogs.js'
-import { importEntries } from '../utils/importMedia.js'
-import MediaThumb from './MediaThumb.jsx'
-import { isModelName } from '../media/index.js'
+import { importEntries, importFiles } from '../utils/importMedia.js'
+import { relinkAsset, revealAsset } from '../utils/relinkMedia.js'
+import { clipInstancesOf, findTimelineItem } from '../selectors.js'
+import usePersistentState from '../hooks/usePersistentState.js'
+import ContextMenu from './ContextMenu.jsx'
+import MediaBinToolbar from './mediabin/MediaBinToolbar.jsx'
+import MediaRow from './mediabin/MediaRow.jsx'
+import useMediaBinView from './mediabin/useMediaBinView.js'
 
-// Reads the playhead only when clicked. Subscribing to `time` here made every
-// row in the bin re-render at the clock rate just to keep a tooltip current.
-function AddClipButton({ clipId }) {
-  return (
-    <button
-      onClick={() => {
-        const st = useEditorStore.getState()
-        const id = st.addClipToTimeline({ clipId, startAt: st.time })
-        if (id) st.setSelectedClip(id)
-      }}
-      title="Insert at playhead"
-      aria-label="Insert at playhead"
-      style={{ width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}
-    >
-      +
-    </button>
-  )
-}
+const DEFAULT_VIEW = { query: '', sort: 'added', kinds: [] }
 
+/**
+ * The media library.
+ *
+ * Gained selection, search, sorting, kind filters, rename, relink and a real
+ * missing-file indicator. Previously it was an unordered list with no way to
+ * find anything and no way to tell a moved file from a thumbnail failure.
+ */
 export default React.memo(function MediaBin() {
-  const media = useEditorStore((s) => s.project?.media || [])
-  const removeMediaClip = useEditorStore((s) => s.removeMediaClip)
+  const media = useEditorStore((s) => s.project?.media)
+  const project = useEditorStore((s) => s.project)
+  const selectedMediaId = useEditorStore((s) => s.selectedMediaId)
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
+  const setSelectedMedia = useEditorStore((s) => s.setSelectedMedia)
+  const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
   const addModelNode = useEditorStore((s) => s.addModelNode)
-  const [menu, setMenu] = React.useState({ open: false, x: 0, y: 0, clipId: null })
 
-  const onImportFiles = async () => {
-    await importEntries(await openMediaFiles())
-  }
+  const [view, setView] = usePersistentState('mediabin.view', DEFAULT_VIEW)
+  const [menu, setMenu] = useState(null)
+  const [dragOver, setDragOver] = useState(false)
+  // The row that is currently being renamed inline. Set by the context menu
+  // and by F2; the row clears it when the edit ends.
+  const [renamingId, setRenamingId] = useState(null)
 
-  const onImportFolder = async () => {
-    await importEntries(await openMediaFolder())
-  }
+  const list = useMediaBinView(media || [], view)
 
-  React.useEffect(() => {
-    if (!menu.open) return
-    const close = () => setMenu(m => ({ ...m, open: false }))
-    window.addEventListener('pointerdown', close)
-    return () => window.removeEventListener('pointerdown', close)
-  }, [menu.open])
+  // Which assets the current clip selection points at, so the bin can show
+  // where a selected clip came from.
+  const linkedAssetIds = useMemo(() => {
+    const out = new Set()
+    for (const id of selectedClipIds || []) {
+      const found = findTimelineItem(project, id)
+      if (found?.tm?.clip_id) out.add(found.tm.clip_id)
+    }
+    return out
+  }, [project, selectedClipIds])
+
+  const useCounts = useMemo(() => {
+    const counts = new Map()
+    for (const t of project?.timeline?.tracks || []) {
+      const items = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+      for (const m of items) {
+        if (m?.clip_id) counts.set(m.clip_id, (counts.get(m.clip_id) || 0) + 1)
+      }
+    }
+    return counts
+  }, [project])
+
+  const onImportFiles = useCallback(async () => { await importEntries(await openMediaFiles()) }, [])
+  const onImportFolder = useCallback(async () => { await importEntries(await openMediaFolder()) }, [])
+
+  const insertAtPlayhead = useCallback((clipId) => {
+    const st = useEditorStore.getState()
+    const id = st.addClipToTimeline({ clipId, startAt: st.time })
+    if (id) st.setSelectedClips([id])
+  }, [])
+
+  const removeAsset = useCallback(async (asset) => {
+    const st = useEditorStore.getState()
+    const uses = clipInstancesOf(st.project, asset.id).length
+    const ok = await st.askConfirm({
+      title: 'Remove Media',
+      message: uses
+        ? `Remove "${asset.name}"?\n${uses} timeline clip${uses === 1 ? '' : 's'} using it will also be removed.`
+        : `Remove "${asset.name}" from the media bin?`,
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (!ok) return
+    useEditorStore.getState().removeMediaClip(asset.id)
+  }, [])
+
+  const menuItems = useCallback((asset) => {
+    const st = useEditorStore.getState()
+    const canReveal = typeof window.go?.main?.App?.RevealInExplorer === 'function'
+    if (!asset) {
+      return [
+        { label: 'Add Files…', icon: 'upload_file', onClick: onImportFiles },
+        { label: 'Add Folder…', icon: 'folder_open', onClick: onImportFolder },
+      ]
+    }
+    const uses = clipInstancesOf(st.project, asset.id).length
+    return [
+      { label: 'Insert at Playhead', icon: 'add', onClick: () => insertAtPlayhead(asset.id) },
+      ...(uses ? [{ label: `Select ${uses} Clip${uses === 1 ? '' : 's'}`, icon: 'select_all', onClick: () => setSelectedClips(clipInstancesOf(st.project, asset.id).map((m) => m.id)) }] : []),
+      { separator: true },
+      { label: 'Rename', icon: 'edit', onClick: () => setRenamingId(asset.id) },
+      { label: 'Relink…', icon: 'link', onClick: () => relinkAsset(asset.id) },
+      ...(canReveal ? [{ label: 'Reveal in Explorer', icon: 'folder_open', onClick: () => revealAsset(asset) }] : []),
+      { label: 'Duplicate', icon: 'content_copy', onClick: () => st.duplicateMedia(asset.id) },
+      ...(asset._kind === 'model' ? [{ label: 'Add to Scene', icon: 'view_in_ar', onClick: () => addModelNode({ name: asset.name, uri: asset.uri }) }] : []),
+      { separator: true },
+      { label: 'Add Files…', icon: 'upload_file', onClick: onImportFiles },
+      { label: 'Add Folder…', icon: 'folder_open', onClick: onImportFolder },
+      { separator: true },
+      { label: 'Remove', icon: 'delete', danger: true, onClick: () => removeAsset(asset) },
+    ]
+  }, [onImportFiles, onImportFolder, insertAtPlayhead, removeAsset, addModelNode, setSelectedClips])
+
+  const total = media?.length || 0
 
   return (
     <div
-      style={{ padding: 8, color: '#c7cfdb', borderTop: '1px solid #232636' }}
+      className={`media-bin${dragOver ? ' is-drop-target' : ''}`}
       onContextMenu={(e) => {
+        if (e.target.closest('.media-row')) return
         e.preventDefault()
-        setMenu({ open: true, x: e.clientX, y: e.clientY, clipId: null })
+        setMenu({ x: e.clientX, y: e.clientY, asset: null })
       }}
-      onClick={() => { if (menu.open) setMenu({ open: false, x: 0, y: 0, clipId: null }) }}
+      // Plain-browser development only: under Wails the native drop handler
+      // in App does the import, and this just draws the highlight.
+      onDragEnter={(e) => { if (e.dataTransfer?.types?.includes('Files')) setDragOver(true) }}
+      onDragOver={(e) => { if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); setDragOver(true) } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false) }}
+      onDrop={(e) => {
+        setDragOver(false)
+        if (window.runtime?.OnFileDrop) return // native path handles it
+        if (!e.dataTransfer?.files?.length) return
+        e.preventDefault()
+        e.stopPropagation()
+        importFiles(e.dataTransfer.files)
+      }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-        <div style={{ fontWeight: 600 }}>Media Bin</div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            const rect = e.currentTarget.getBoundingClientRect()
-            setMenu({ open: true, x: rect.left, y: rect.bottom + 4, clipId: null })
-          }}
-          title="Add New"
-          aria-label="Add New"
-          style={{ position: 'relative' }}
-        >
-          Add New
-        </button>
-      </div>
-      {!media.length && <div style={{ opacity: 0.7 }}>No media yet.</div>}
-      <div style={{ display: 'grid', gap: 6 }}>
-        {media.map((m) => (
-          <div
+      <MediaBinToolbar
+        view={view}
+        setView={setView}
+        count={list.length}
+        total={total}
+        onAddNew={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          setMenu({ x: r.left, y: r.bottom + 4, asset: null })
+        }}
+      />
+
+      <div className="media-bin__list">
+        {!total && <div style={{ opacity: 0.6, fontSize: 12, padding: 4 }}>No media yet. Drop files here or use Add New.</div>}
+        {!!total && !list.length && <div style={{ opacity: 0.6, fontSize: 12, padding: 4 }}>No media matches this filter.</div>}
+        {list.map((m) => (
+          <MediaRow
             key={m.id}
-            draggable
-            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenu({ open: true, x: e.clientX, y: e.clientY, clipId: m.id }) }}
-            onDragStart={(e) => {
-              // Transfer the clip id for timeline drop
-              e.dataTransfer.setData('application/x-constellation-clip-id', m.id)
-              e.dataTransfer.setData('text/plain', m.id)
-              e.dataTransfer.effectAllowed = 'copyMove'
+            asset={m}
+            kind={m._kind}
+            selected={selectedMediaId === m.id}
+            linked={linkedAssetIds.has(m.id)}
+            uses={useCounts.get(m.id) || 0}
+            renaming={renamingId === m.id}
+            onSelect={() => setSelectedMedia(m.id)}
+            onInsert={() => insertAtPlayhead(m.id)}
+            onRenameStart={() => setRenamingId(m.id)}
+            onRenameEnd={(name) => {
+              setRenamingId(null)
+              if (name != null) useEditorStore.getState().renameMedia(m.id, name)
             }}
-            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, cursor: 'grab', minWidth: 0 }}>
-            <MediaThumb uri={m.uri} alt={m.name || m.id} size={48} />
-            <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }} title={m.uri}>
-              <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name || m.id}</div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>{m.duration_seconds?.toFixed?.(2) ?? m.duration_seconds}s</div>
-            </div>
-            <AddClipButton clipId={m.id} />
-          </div>
+            onRelink={() => relinkAsset(m.id)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setSelectedMedia(m.id)
+              setMenu({ x: e.clientX, y: e.clientY, asset: m })
+            }}
+          />
         ))}
       </div>
-      {menu.open && (
-        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 2000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
-          <MenuItem label="Add Files…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFiles() }} />
-          <MenuItem label="Add Folder…" onClick={() => { setMenu({ open: false, x: 0, y: 0, clipId: null }); onImportFolder() }} />
-          {menu.clipId && isModelClip(menu.clipId, media) && (
-            <MenuItem label="Add to Scene" onClick={() => {
-              const clip = media.find(m => m.id === menu.clipId)
-              if (clip) addModelNode({ name: clip.name, uri: clip.uri })
-              setMenu({ open: false, x: 0, y: 0, clipId: null })
-            }} />
-          )}
-          {menu.clipId && <MenuItem label="Remove" onClick={() => { removeMediaClip(menu.clipId); setMenu({ open: false, x: 0, y: 0, clipId: null }) }} />}
-        </div>
-      )}
+
+      <ContextMenu
+        open={!!menu}
+        x={menu?.x || 0}
+        y={menu?.y || 0}
+        items={menu ? menuItems(menu.asset) : []}
+        onClose={() => setMenu(null)}
+      />
     </div>
   )
 })
-
-
-function isModelClip(clipId, media) {
-  const clip = media.find(m => m.id === clipId)
-  if (!clip) return false
-  return isModelName(clip.name || clip.uri || '')
-}
-
-function MenuItem({ label, onClick }) {
-  return (
-    <button type="button" onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'transparent', color: '#c7cfdb', border: 'none', padding: '8px 12px', cursor: 'pointer' }} onMouseDown={(e) => e.preventDefault()}>
-      {label}
-    </button>
-  )
-}

@@ -4,6 +4,10 @@ import {main} from '../models';
 
 export function CloseRendererScreen(arg1:string):Promise<void>;
 
+export function FileExists(arg1:string):Promise<boolean>;
+
+export function RevealInExplorer(arg1:string):Promise<void>;
+
 export function GetFileServerPort():Promise<number>;
 
 export function GetInitError():Promise<string>;

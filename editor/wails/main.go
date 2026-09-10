@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 
@@ -151,6 +152,38 @@ func (a *App) ReadFileBase64(path string) (string, error) {
 // GetFileServerPort returns the sidecar server port for the frontend.
 func (a *App) GetFileServerPort() int {
 	return a.fileServerPort
+}
+
+// FileExists reports whether a local media file is still on disk.
+//
+// The Media Bin needs to tell "the file moved" apart from "the thumbnail
+// failed to decode"; both used to render as the same grey placeholder. Goes
+// through the same path validation as the file server, so it cannot be used
+// to probe arbitrary locations.
+func (a *App) FileExists(path string) bool {
+	clean := filepath.Clean(path)
+	if err := validateFSPath(clean); err != nil {
+		return false
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// RevealInExplorer opens the OS file browser with the file selected.
+func (a *App) RevealInExplorer(path string) error {
+	clean := filepath.Clean(path)
+	if err := validateFSPath(clean); err != nil {
+		return err
+	}
+	if _, err := os.Stat(clean); err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+	// explorer.exe returns exit status 1 even when it succeeds, so the error
+	// from Run is not meaningful here; Start avoids waiting on it at all.
+	return exec.Command("explorer.exe", "/select,", clean).Start()
 }
 
 // --- Renderer Wails bindings ---

@@ -19,12 +19,12 @@ export default class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 16, color: '#ff4444', background: '#1a0a0a', borderRadius: 6, margin: 8 }}>
+        <div style={{ padding: 16, color: 'var(--error)', background: 'var(--error-bg)', borderRadius: 'var(--radius)', margin: 8 }}>
           <div style={{ marginBottom: 8, fontWeight: 'bold' }}>Something went wrong</div>
           <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 12 }}>{this.state.error?.message || 'Unknown error'}</div>
           <button
             onClick={() => this.setState({ hasError: false, error: null })}
-            style={{ background: '#232636', color: '#c7cfdb', border: '1px solid #3a4060', borderRadius: 4, padding: '4px 12px', cursor: 'pointer' }}
+            className="btn"
           >
             Retry
           </button>

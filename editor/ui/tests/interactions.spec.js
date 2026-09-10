@@ -7,79 +7,148 @@ test.describe('Editor Interactions', () => {
     });
 
     test('should display main layout components', async ({ page }) => {
-        // Verify Menu Bar
-        await expect(page.getByText('File', { exact: true })).toBeVisible();
-        await expect(page.getByText('View', { exact: true })).toBeVisible();
-        await expect(page.getByText('Displays', { exact: true })).toBeVisible();
+        // Menu bar
+        await expect(page.getByRole('menuitem', { name: 'File' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'View' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Displays' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Help' })).toBeVisible();
 
-        // Verify Timeline
-        await expect(page.getByText('Timeline', { exact: true })).toBeVisible();
+        // Timeline. Play is a toggle now, so there is no separate Pause button
+        // until playback starts.
+        await expect(page.getByTestId('timeline-title')).toBeVisible();
         await expect(page.getByLabel('Play')).toBeVisible();
-        await expect(page.getByLabel('Pause')).toBeVisible();
         await expect(page.getByLabel('Stop')).toBeVisible();
+        await expect(page.getByLabel('Go to Start')).toBeVisible();
 
-        // Verify Media Bin
+        // Media bin
         await expect(page.getByText('Media Bin', { exact: true })).toBeVisible();
         await expect(page.getByLabel('Add New')).toBeVisible();
+
+        // Status bar
+        await expect(page.getByText('Untitled')).toBeVisible();
     });
 
     test('should open and navigate File menu', async ({ page }) => {
-        await page.getByText('File', { exact: true }).click();
+        await page.getByRole('menuitem', { name: 'File' }).click();
 
-        await expect(page.getByText('New Show')).toBeVisible();
-        await expect(page.getByText('Open Show…')).toBeVisible();
-        await expect(page.getByText('Save Show…')).toBeVisible();
-        await expect(page.getByText('Quit')).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: /New Show/ })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: /Open Show/ })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: /Save Show/ })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Quit' })).toBeVisible();
     });
 
-    test('should open and navigate View menu', async ({ page }) => {
-        await page.getByText('View', { exact: true }).click();
+    test('Edit menu exposes undo, redo and selection commands', async ({ page }) => {
+        await page.getByRole('menuitem', { name: 'Edit' }).click();
 
-        await expect(page.getByRole('button', { name: '2D' })).toBeVisible();
-        await expect(page.getByRole('button', { name: '3D' })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Output', exact: true })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Output Overlay' })).toBeVisible();
-
-        // Gizmo options
-        await expect(page.getByRole('button', { name: 'Move' })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Rotate' })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Scale' })).toBeVisible();
+        // Nothing has been edited yet, so Undo and Redo are unavailable.
+        await expect(page.getByRole('menuitem', { name: 'Undo' })).toHaveAttribute('aria-disabled', 'true');
+        await expect(page.getByRole('menuitem', { name: 'Redo' })).toHaveAttribute('aria-disabled', 'true');
+        await expect(page.getByRole('menuitem', { name: /Select All Clips/ })).toBeVisible();
     });
 
-    test('should handle New Show dialog', async ({ page }) => {
-        // Setup dialog handler
-        page.on('dialog', async dialog => {
-            expect(dialog.message()).toContain('Create new show?');
-            await dialog.accept();
-        });
+    test('View menu shows viewport and panel toggles', async ({ page }) => {
+        await page.getByRole('menuitem', { name: 'View' }).click();
 
-        await page.getByText('File', { exact: true }).click();
-        await page.getByText('New Show').click();
+        await expect(page.getByRole('menuitemradio', { name: '2D Stage' })).toBeVisible();
+        await expect(page.getByRole('menuitemradio', { name: '3D Scene' })).toBeVisible();
+        await expect(page.getByRole('menuitemradio', { name: 'Output' })).toBeVisible();
+        await expect(page.getByRole('menuitemcheckbox', { name: 'Output Overlay' })).toBeVisible();
+
+        await expect(page.getByRole('menuitemradio', { name: 'Move' })).toBeVisible();
+        await expect(page.getByRole('menuitemradio', { name: 'Rotate' })).toBeVisible();
+        await expect(page.getByRole('menuitemradio', { name: 'Scale' })).toBeVisible();
+
+        await expect(page.getByRole('menuitemcheckbox', { name: 'Timeline' })).toBeVisible();
+    });
+
+    test('menus are keyboard operable', async ({ page }) => {
+        const file = page.getByRole('menuitem', { name: 'File' });
+        await file.focus();
+        await page.keyboard.press('ArrowDown');
+        await expect(file).toHaveAttribute('aria-expanded', 'true');
+
+        // Escape closes and returns focus to the trigger.
+        await page.keyboard.press('Escape');
+        await expect(file).toHaveAttribute('aria-expanded', 'false');
+        await expect(file).toBeFocused();
+    });
+
+    test('New Show only warns when there are unsaved changes', async ({ page }) => {
+        // A clean document goes straight through, with no dialog.
+        await page.getByRole('menuitem', { name: 'File' }).click();
+        await page.getByRole('menuitem', { name: /New Show/ }).click();
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+
+        // Dirty it, then the styled confirmation appears (no native dialog).
+        await page.getByLabel('Add Track').click();
+        await page.getByRole('menuitem', { name: 'File' }).click();
+        await page.getByRole('menuitem', { name: /New Show/ }).click();
+
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText('unsaved changes');
+        await dialog.getByRole('button', { name: 'Discard' }).click();
+        await expect(page.getByRole('dialog')).toHaveCount(0);
     });
 
     test('should add a new track', async ({ page }) => {
-        // Check initial track count (assuming 0 or 1, but let's just check if we can add one)
-        // We can check if "Track 1" exists, then add, then check "Track 2"
-
-        // Note: The app might start with some tracks or none. 
-        // Let's assume it starts with empty or we can just look for the button.
-
         await page.getByLabel('Add Track').click();
-        // After clicking, we expect a new track label to appear. 
-        // If it was empty, "Track 1" appears. If "Track 1" was there, "Track 2" appears.
-        // Let's just verify the button is clickable and doesn't crash.
         await expect(page.getByLabel('Add Track')).toBeVisible();
+        // A track exists and can be renamed from its header.
+        await expect(page.getByText('Track 1')).toBeVisible();
     });
 
     test('should zoom timeline', async ({ page }) => {
-        const zoomIn = page.getByLabel('Zoom In');
-        const zoomOut = page.getByLabel('Zoom Out');
+        // The stage has its own zoom controls, labelled "(Stage)".
+        const zoomIn = page.getByLabel('Zoom In', { exact: true });
+        const zoomOut = page.getByLabel('Zoom Out', { exact: true });
 
         await expect(zoomIn).toBeVisible();
         await expect(zoomOut).toBeVisible();
 
         await zoomIn.click();
         await zoomOut.click();
+        await expect(page.getByLabel('Zoom to Fit')).toBeVisible();
+    });
+
+    test('play toggles to pause and back', async ({ page }) => {
+        await page.getByLabel('Play').click();
+        await expect(page.getByLabel('Pause')).toBeVisible();
+        await page.getByLabel('Pause').click();
+        await expect(page.getByLabel('Play')).toBeVisible();
+    });
+
+    test('keyboard shortcut overlay lists the bindings', async ({ page }) => {
+        await page.getByRole('menuitem', { name: 'Help' }).click();
+        await page.getByRole('menuitem', { name: /Keyboard Shortcuts/ }).click();
+
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText('Play / Pause');
+        await expect(dialog).toContainText('Transport');
+
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+    });
+
+    test('media bin can be searched and filtered', async ({ page }) => {
+        await expect(page.getByLabel('Search media')).toBeVisible();
+        await expect(page.getByLabel('Sort media')).toBeVisible();
+        await expect(page.getByText('No media yet.')).toBeVisible();
+
+        await page.getByLabel('Search media').fill('nothing-matches');
+        // With no media at all the empty state stays as it is.
+        await expect(page.getByText('No media yet.')).toBeVisible();
+    });
+
+    test('panels collapse and reopen from the View menu', async ({ page }) => {
+        await page.getByRole('menuitem', { name: 'View' }).click();
+        await page.getByRole('menuitemcheckbox', { name: 'Media Bin' }).click();
+        await expect(page.getByLabel('Show Media Bin')).toBeVisible();
+
+        await page.getByLabel('Show Media Bin').click();
+        await expect(page.getByLabel('Search media')).toBeVisible();
     });
 
 });

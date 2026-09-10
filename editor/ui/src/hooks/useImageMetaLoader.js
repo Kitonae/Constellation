@@ -1,15 +1,20 @@
 import { useEffect } from 'react'
-import { resolveImageSrc } from '../components/MediaThumb.jsx'
-import { getVideoMetadata, resolveFileUrl } from '../utils/videoUtils.js'
-import { extFromUri, isVideoName } from '../media/asset.js'
+import { resolveUriSync } from '../media/uri.js'
+import { resolveFileUrl } from '../utils/videoUtils.js'
+import { getNaturalSize } from '../media/naturalSize.js'
+import { assetKind } from '../media/kind.js'
 
 /**
- * Preloads image/video natural sizes for clip placements.
- * For videos, probes dimensions via a hidden <video> element.
+ * Preloads natural sizes and render sources for the 2D viewport's clips.
+ *
+ * The probing itself lives in `media/naturalSize.js` (cached and
+ * concurrency-limited) — this hook only maps the result into the viewport's
+ * `{ [clipId]: { w, h, src } }` shape and keeps the 1920x1080 fallback so a
+ * clip whose file will not decode is still visible and draggable.
  *
  * @param {Array} placements - Array of { tm, clip } objects
- * @param {Object} imageMeta - Current image metadata state { [clipId]: { w, h, src } }
- * @param {Function} setImageMeta - State setter for image metadata
+ * @param {Object} imageMeta - Current metadata state
+ * @param {Function} setImageMeta - State setter
  */
 export default function useImageMetaLoader(placements, imageMeta, setImageMeta) {
   useEffect(() => {
@@ -17,34 +22,16 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
     async function ensureMeta() {
       for (const { clip, tm } of placements) {
         if (!clip?.uri || imageMeta[tm.clip_id]) continue
-        const uriStr = String(clip.uri)
-        const ext = extFromUri(uriStr) || extFromUri(clip.name || '')
-        if (isVideoName('x.' + ext)) {
-          // Probe video dimensions
-          try {
-            const meta = await getVideoMetadata(clip.uri)
-            if (cancelled) return
-            const videoSrc = resolveFileUrl(clip.uri)
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: meta.width || 1920, h: meta.height || 1080, src: videoSrc } }))
-          } catch {
-            if (cancelled) return
-            // Fallback to 1920x1080 so the clip isn't invisible
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: 1920, h: 1080, src: null } }))
-          }
+        const kind = assetKind(clip.uri) === 'unknown' ? assetKind(clip.name || '') : assetKind(clip.uri)
+        const size = await getNaturalSize(clip.uri, kind)
+        if (cancelled) return
+        const src = kind === 'video' ? resolveFileUrl(clip.uri) : resolveUriSync(clip.uri)
+        if (kind === 'video') {
+          setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: size?.w || 1920, h: size?.h || 1080, src: src || null } }))
           continue
         }
-        const src = await resolveImageSrc(clip.uri)
-        if (cancelled) return
-        if (!src) continue
-        await new Promise((resolve) => {
-          const img = new Image()
-          img.onload = () => {
-            setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: img.naturalWidth, h: img.naturalHeight, src } }))
-            resolve()
-          }
-          img.onerror = () => resolve()
-          img.src = src
-        })
+        if (!size || !src) continue
+        setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: size.w, h: size.h, src } }))
       }
     }
     ensureMeta()

@@ -8,6 +8,10 @@ import MediaBin from './components/MediaBin.jsx'
 import Inspector from './components/Inspector.jsx'
 import TopConsoleDrawer from './components/TopConsoleDrawer.jsx'
 import MenuBar from './components/MenuBar.jsx'
+import StatusBar from './components/StatusBar.jsx'
+import Splitter from './components/Splitter.jsx'
+import ShortcutsOverlay from './components/ShortcutsOverlay.jsx'
+import ConfirmHost from './components/ConfirmDialog.jsx'
 import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
 import { createDisplaySink, createNativeSink } from './media/sink.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
@@ -15,8 +19,14 @@ import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { buildProjectWrapper } from './utils/projectSerialize.js'
 import { useShortcuts } from './hooks/useShortcuts.js'
+import useRendererStatusPoll from './hooks/useRendererStatusPoll.js'
+import useWindowTitle from './hooks/useWindowTitle.js'
 import { viewportActions } from './viewportActions.js'
 import { importPaths, importFiles } from './utils/importMedia.js'
+import { buildBindings } from './shortcuts.js'
+import { selectSelectionSummary, selectDirty, clipInstancesOf, findAsset } from './selectors.js'
+import { timelineExtent } from './utils/clipTime.js'
+import { loadLayout, clampLayout, startLayoutPersistence, layoutBounds } from './layout/persistLayout.js'
 
 /** Sink id for a web display window, so open/close can address it. */
 const sinkIdFor = (screenId) => `screen-${screenId}`
@@ -27,6 +37,10 @@ const sinkIdFor = (screenId) => `screen-${screenId}`
  * would push the same time and the same project JSON N times per tick.
  */
 const NATIVE_SINK_ID = 'native-renderers'
+
+/** Playhead step for the `,` / `.` keys, and the Shift-modified version. */
+const STEP_SMALL = 0.1
+const STEP_LARGE = 1.0
 
 /**
  * Everything about a screen that requires re-opening its output window.
@@ -45,22 +59,18 @@ export default function App() {
   const project = useEditorStore((s) => s.project)
   const scene = useEditorStore((s) => s.scene)
   const viewMode = useEditorStore((s) => s.viewMode)
-  const [fileName, setFileName] = useState('')
-  const [status, setStatus] = useState('')
-  // Resizable left pane (Media Bin)
-  const [mediaWidth, setMediaWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
-  const leftPaneDragRef = useRef(null) // { startX, startW }
-  // Resizable right pane (Inspector)
-  const [inspectorWidth, setInspectorWidth] = useState(() => Math.floor(window.innerWidth * 0.25))
-  const rightPaneDragRef = useRef(null) // { startX, startW }
-  const rightPaneRef = useRef(null)
-  // Resizable footer (timeline) height
-  const [timelineHeight, setTimelineHeight] = useState(350)
-  const footerDragRef = useRef(null) // { startY, startH }
+  const layout = useEditorStore((s) => s.layout)
+  const setLayout = useEditorStore((s) => s.setLayout)
+  const toggleLayoutPanel = useEditorStore((s) => s.toggleLayoutPanel)
+  const outputsEnabled = useEditorStore((s) => s.outputsEnabled)
+  const screenReopenRequest = useEditorStore((s) => s.screenReopenRequest)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   // Bumped by "Reopen Displays" to force the screen effect to rebuild every
   // output even though the scene itself has not changed.
   const [reopenNonce, setReopenNonce] = useState(0)
+
+  useWindowTitle()
+  useRendererStatusPoll()
 
   // Initialize default project on startup
   useEffect(() => {
@@ -68,6 +78,32 @@ export default function App() {
       useEditorStore.getState().newProject()
     }
   }, [])
+
+  // --- Panel layout -------------------------------------------------------
+
+  // Restore the saved sizes once, then keep mirroring changes back out.
+  useEffect(() => {
+    const restored = loadLayout(useEditorStore.getState().layout)
+    useEditorStore.getState().setLayout(restored)
+    return startLayoutPersistence()
+  }, [])
+
+  // A shrunk window must not leave a pane wider than the window itself.
+  useEffect(() => {
+    const onResize = () => {
+      const st = useEditorStore.getState()
+      const next = clampLayout(st.layout)
+      if (next.mediaWidth !== st.layout.mediaWidth
+        || next.inspectorWidth !== st.layout.inspectorWidth
+        || next.timelineHeight !== st.layout.timelineHeight) {
+        st.setLayout(next)
+      }
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  const bounds = layoutBounds()
 
   // --- Media import -------------------------------------------------------
 
@@ -97,43 +133,145 @@ export default function App() {
     }
   }, [])
 
+  // --- Document actions ---------------------------------------------------
+
+  const requestNewShow = useCallback(async () => {
+    const st = useEditorStore.getState()
+    if (selectDirty(st)) {
+      const ok = await st.askConfirm({
+        title: 'New Show',
+        message: 'Discard unsaved changes and start a new show?',
+        confirmLabel: 'Discard',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    useEditorStore.getState().newProject()
+    useEditorStore.getState().setDocumentName('')
+    useEditorStore.getState().setStatus('New show created')
+  }, [])
+
+  const requestQuit = useCallback(async () => {
+    const st = useEditorStore.getState()
+    if (selectDirty(st)) {
+      const ok = await st.askConfirm({
+        title: 'Quit',
+        message: 'You have unsaved changes. Quit anyway?',
+        confirmLabel: 'Quit',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    try { window.runtime?.Quit?.() } catch { }
+    try { window.close() } catch { }
+  }, [])
+
+  /**
+   * Delete whatever is selected.
+   *
+   * The old handler removed one screen node or one clip, so a five-clip
+   * marquee deleted exactly one of them and a selected media asset could not
+   * be deleted by keyboard at all.
+   */
+  const deleteSelection = useCallback(async () => {
+    const st = useEditorStore.getState()
+    const sel = selectSelectionSummary(st)
+    if (sel.kind === 'node') {
+      st.removeScreenNode(sel.ids[0])
+      return
+    }
+    if (sel.kind === 'clips') {
+      if (sel.count > 1) {
+        const ok = await st.askConfirm({
+          title: 'Delete Clips',
+          message: `Remove ${sel.count} clips from the timeline?`,
+          confirmLabel: 'Delete',
+          danger: true,
+        })
+        if (!ok) return
+      }
+      useEditorStore.getState().removeClips(sel.ids)
+      return
+    }
+    if (sel.kind === 'media') {
+      const id = sel.ids[0]
+      const uses = clipInstancesOf(st.project, id).length
+      const asset = findAsset(st.project, id)
+      const ok = await st.askConfirm({
+        title: 'Remove Media',
+        message: uses
+          ? `Remove "${asset?.name || id}"?\n${uses} timeline clip${uses === 1 ? '' : 's'} using it will also be removed.`
+          : `Remove "${asset?.name || id}" from the media bin?`,
+        confirmLabel: 'Remove',
+        danger: true,
+      })
+      if (!ok) return
+      useEditorStore.getState().removeMediaClip(id)
+    }
+  }, [])
+
+  // The Edit menu asks for a delete through an event so it does not need the
+  // async handler threaded down into it.
+  useEffect(() => {
+    const onDelete = () => { deleteSelection() }
+    window.addEventListener('editor:delete-selection', onDelete)
+    return () => window.removeEventListener('editor:delete-selection', onDelete)
+  }, [deleteSelection])
+
   // --- Keyboard -----------------------------------------------------------
 
-  // One shortcut layer for the whole app. Every binding is skipped while a
-  // text field has focus, so typing a space or pressing Delete in the
-  // Inspector no longer reaches these handlers.
-  const shortcuts = useMemo(() => [
-    {
-      match: (e) => (e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey,
-      run: () => useEditorStore.getState().undo(),
-      allowInEditable: false,
+  // One shortcut layer for the whole app, built from the shared table in
+  // shortcuts.js so the menus, the Help overlay and the status-bar hints all
+  // describe exactly what is bound here. Every binding is skipped while a
+  // text field has focus.
+  const shortcuts = useMemo(() => buildBindings({
+    newShow: requestNewShow,
+    openShow: () => fileRef.current?.click(),
+    saveShow: () => setShowSaveDialog(true),
+
+    undo: () => useEditorStore.getState().undo(),
+    redo: () => useEditorStore.getState().redo(),
+    delete: () => { deleteSelection() },
+    selectAllClips: () => useEditorStore.getState().selectAllClips(),
+    deselect: () => useEditorStore.getState().clearSelection(),
+    duplicate: () => {
+      const st = useEditorStore.getState()
+      if (st.selectedClipIds.length) st.duplicateClips(st.selectedClipIds)
     },
-    {
-      match: (e) => (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey)),
-      run: () => useEditorStore.getState().redo(),
+    splitClip: () => {
+      const st = useEditorStore.getState()
+      const id = st.selectedClipId
+      if (!id) return
+      const t = getMediaSession().getTime()
+      const newId = st.splitClipAtTime(id, t)
+      if (!newId) st.setStatus('Playhead is not over the selected clip', 'warn')
     },
-    {
-      match: (e) => e.code === 'Backquote' && !e.ctrlKey && !e.metaKey,
-      run: () => useEditorStore.getState().toggleConsole(),
+
+    playPause: () => {
+      const st = useEditorStore.getState()
+      if (st.playing) st.pause(); else st.play()
     },
-    {
-      match: (e) => e.key === 'Delete' || e.key === 'Backspace',
-      run: () => {
-        const st = useEditorStore.getState()
-        // A selected screen node wins over a selected clip, matching the
-        // behaviour the 2D viewport used to implement on its own.
-        if (st.selectedId && findNodeById(st.scene?.roots, st.selectedId)?.kind?.type === 'screen') {
-          st.removeScreenNode(st.selectedId)
-        } else if (st.selectedClipId) {
-          st.removeClip(st.selectedClipId)
-        }
-      },
+    goToStart: () => useEditorStore.getState().seek(0),
+    goToEnd: () => useEditorStore.getState().seek(timelineExtent(useEditorStore.getState().project)),
+    stepBack: (e) => {
+      const t = getMediaSession().getTime()
+      useEditorStore.getState().seek(Math.max(0, t - (e.shiftKey ? STEP_LARGE : STEP_SMALL)))
     },
-    {
-      match: (e) => (e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey,
-      run: () => viewportActions.frameAll?.(),
+    stepForward: (e) => {
+      const t = getMediaSession().getTime()
+      useEditorStore.getState().seek(t + (e.shiftKey ? STEP_LARGE : STEP_SMALL))
     },
-  ], [])
+
+    nudgeLeft: (e) => nudgeSelectedClips(-(e.shiftKey ? STEP_LARGE : STEP_SMALL)),
+    nudgeRight: (e) => nudgeSelectedClips(e.shiftKey ? STEP_LARGE : STEP_SMALL),
+
+    frameAll: () => viewportActions.frameAll?.(),
+    frameSelected: () => viewportActions.frameSelected?.(),
+    zoom100: () => viewportActions.zoomTo100?.(),
+
+    toggleConsole: () => useEditorStore.getState().toggleConsole(),
+    shortcutsHelp: () => useEditorStore.getState().toggleShortcutsHelp(),
+  }), [requestNewShow, deleteSelection])
   useShortcuts(shortcuts)
 
   // --- Output screens and sinks ------------------------------------------
@@ -146,9 +284,12 @@ export default function App() {
   const rendererScreens = useRef(new Set()) // open native renderer screen ids
   useEffect(() => {
     const session = getMediaSession()
+    const store = useEditorStore.getState()
     const prev = prevScreensRef.current
     const next = new Map()
-    const screens = (scene?.roots || []).filter((n) => n.kind?.type === 'screen')
+    // "Close All Displays" holds every output shut until it is turned back
+    // on, including across later scene edits.
+    const screens = outputsEnabled ? (scene?.roots || []).filter((n) => n.kind?.type === 'screen') : []
 
     const closeScreen = (id, key) => {
       const type = String(key || '').split('|')[0]
@@ -160,6 +301,7 @@ export default function App() {
         session.removeSink(sinkIdFor(id))
         closeDisplayWindow(id)
       }
+      useEditorStore.getState().clearOutputStatus(id)
     }
 
     const openScreen = async (n) => {
@@ -167,12 +309,19 @@ export default function App() {
       const px = k.pixels?.[0] | 0
       const py = k.pixels?.[1] | 0
       if (!(k.enabled ?? true) || px <= 0 || py <= 0) return
-      if (k.screenType === 'renderer') {
+      const isRenderer = k.screenType === 'renderer'
+      store.setOutputStatus(n.id, {
+        type: isRenderer ? 'renderer' : 'web',
+        name: n.name || n.id,
+        state: 'launching',
+      })
+      if (isRenderer) {
         try {
           await window.go?.main?.App?.OpenRendererScreen(n.id, px, py)
         } catch (e) {
           console.error('Failed to open renderer screen:', e)
-          useEditorStore.getState().addLog({ level: 'error', message: `Renderer launch failed: ${e}` })
+          useEditorStore.getState().setOutputStatus(n.id, { state: 'error', error: String(e) })
+          useEditorStore.getState().addLog({ level: 'error', message: `Renderer launch failed for "${n.name || n.id}": ${e}` })
           return
         }
         rendererScreens.current.add(n.id)
@@ -184,7 +333,17 @@ export default function App() {
         }
       } else {
         const win = await openDisplayWindow(n.id, px, py)
-        if (!win) return
+        if (!win) {
+          // A blocked popup used to be a silent `return`: the output simply
+          // never appeared and nothing anywhere said why.
+          useEditorStore.getState().setOutputStatus(n.id, { state: 'blocked' })
+          useEditorStore.getState().addLog({
+            level: 'error',
+            message: `Display window for "${n.name || n.id}" was blocked. Allow pop-ups for this app, then use Displays > Re-open Displays.`,
+          })
+          return
+        }
+        useEditorStore.getState().setOutputStatus(n.id, { state: 'open' })
         // The window may still be loading; it announces itself with
         // `display:ready` and we answer with a snapshot (see below).
         session.addSink(createDisplaySink(win, { id: sinkIdFor(n.id), screenId: n.id }))
@@ -202,7 +361,17 @@ export default function App() {
       if (!next.has(id)) closeScreen(id, k)
     }
     prevScreensRef.current = next
-  }, [scene, reopenNonce])
+  }, [scene, reopenNonce, outputsEnabled])
+
+  // The Inspector's Relaunch button asks for one screen to be rebuilt. The Go
+  // backend owns the process lifecycle; forgetting the screen here makes the
+  // effect above run its normal close-then-open path for it.
+  useEffect(() => {
+    if (!screenReopenRequest?.id) return
+    prevScreensRef.current.delete(screenReopenRequest.id)
+    setReopenNonce((n) => n + 1)
+    useEditorStore.setState({ screenReopenRequest: null })
+  }, [screenReopenRequest])
 
   // A freshly opened display window tells us when its message listener is up.
   useEffect(() => {
@@ -226,23 +395,28 @@ export default function App() {
   const onFile = async (e) => {
     const f = e.target.files?.[0]
     if (!f) return
-    setFileName(f.name)
     const text = await f.text()
     try {
       useEditorStore.getState().loadProject(JSON.parse(text))
+      useEditorStore.getState().setDocumentName(f.name)
+      useEditorStore.getState().setStatus(`Opened ${f.name}`)
     } catch (err) {
       useEditorStore.getState().addLog({ level: 'error', message: `Invalid project JSON: ${err}` })
-      setStatus('Invalid JSON: ' + err)
     }
+    // Let the same file be picked again after a failed parse.
+    e.target.value = ''
   }
+
+  const viewport = viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)
 
   return (
     <div className="layout">
       <header>
         <MenuBar
-          onNewShow={() => { if (confirm('Create new show? Unsaved changes will be lost.')) useEditorStore.getState().newProject() }}
+          onNewShow={requestNewShow}
           onOpenProject={() => fileRef.current?.click()}
           onSaveShow={() => setShowSaveDialog(true)}
+          onQuit={requestQuit}
           onReopenDisplays={() => {
             // Forget what we think is open; the screen effect then treats
             // every screen as new and re-opens it with a fresh sink.
@@ -252,92 +426,101 @@ export default function App() {
         />
         <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />
       </header>
+
       <main>
-        <div className="panel" style={{ width: mediaWidth, flex: '0 0 auto', display: 'flex', flexDirection: 'column', position: 'relative', borderRight: '1px solid #232636' }}>
-          <div style={{ flex: 1, overflow: 'auto' }}>
-            <MediaBin />
-          </div>
-          <div
-            onPointerDown={(e) => {
-              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
-              leftPaneDragRef.current = { startX: e.clientX, startW: mediaWidth }
-              e.preventDefault()
-            }}
-            onPointerMove={(e) => {
-              if (!leftPaneDragRef.current) return
-              const dx = e.clientX - leftPaneDragRef.current.startX
-              const minW = 150
-              const maxW = window.innerWidth * 0.45
-              const next = Math.max(minW, Math.min(maxW, leftPaneDragRef.current.startW + dx))
-              setMediaWidth(next)
-              e.preventDefault()
-            }}
-            onPointerUp={(e) => { leftPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
-            style={{ position: 'absolute', top: 0, bottom: 0, right: -3, width: 6, cursor: 'col-resize', zIndex: 10 }}
-            title="Drag to resize media bin"
-          />
+        {layout.mediaCollapsed ? (
+          <CollapsedRail title="Media Bin" icon="right_panel_open" onExpand={() => toggleLayoutPanel('media')} />
+        ) : (
+          <>
+            <div className="panel" style={{ width: layout.mediaWidth, flex: '0 0 auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <ErrorBoundary><MediaBin /></ErrorBoundary>
+            </div>
+            <Splitter
+              orientation="vertical"
+              label="Resize media bin"
+              value={layout.mediaWidth}
+              min={bounds.mediaWidth.min}
+              max={bounds.mediaWidth.max}
+              onChange={(v) => setLayout({ mediaWidth: v })}
+              onDoubleClick={() => toggleLayoutPanel('media')}
+            />
+          </>
+        )}
+
+        <div className="panel" style={{ flex: 1, minWidth: 0 }}>
+          <ErrorBoundary>{viewport}</ErrorBoundary>
         </div>
-        <div className="panel" style={{ flex: 1, minWidth: 0 }}><ErrorBoundary>{viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)}</ErrorBoundary></div>
-        <div
-          ref={rightPaneRef}
-          className="panel"
-          style={{ width: inspectorWidth, flex: '0 0 auto', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', borderLeft: '1px solid #232636' }}
-        >
-          <div
-            onPointerDown={(e) => {
-              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
-              rightPaneDragRef.current = { startX: e.clientX, startW: inspectorWidth }
-              e.preventDefault()
-            }}
-            onPointerMove={(e) => {
-              if (!rightPaneDragRef.current) return
-              const dx = e.clientX - rightPaneDragRef.current.startX
-              const minW = 200
-              const maxW = window.innerWidth * 0.45
-              // Dragging left increases width
-              const next = Math.max(minW, Math.min(maxW, rightPaneDragRef.current.startW - dx))
-              setInspectorWidth(next)
-              e.preventDefault()
-            }}
-            onPointerUp={(e) => { rightPaneDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
-            style={{ position: 'absolute', top: 0, bottom: 0, left: -3, width: 6, cursor: 'col-resize', zIndex: 10 }}
-            title="Drag to resize inspector"
-          />
-          <div style={{ flex: '1 1 auto', minHeight: 100, overflow: 'auto' }}>
-            <ErrorBoundary><Inspector /></ErrorBoundary>
-          </div>
-        </div>
+
+        {layout.inspectorCollapsed ? (
+          <CollapsedRail title="Inspector" icon="left_panel_open" onExpand={() => toggleLayoutPanel('inspector')} />
+        ) : (
+          <>
+            <Splitter
+              orientation="vertical"
+              label="Resize inspector"
+              value={layout.inspectorWidth}
+              min={bounds.inspectorWidth.min}
+              max={bounds.inspectorWidth.max}
+              invert
+              onChange={(v) => setLayout({ inspectorWidth: v })}
+              onDoubleClick={() => toggleLayoutPanel('inspector')}
+            />
+            {/* One scroll container, owned by the Inspector itself, so its
+                tab bar stays put instead of scrolling with the content. */}
+            <div className="panel" style={{ width: layout.inspectorWidth, flex: '0 0 auto', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+              <ErrorBoundary><Inspector /></ErrorBoundary>
+            </div>
+          </>
+        )}
       </main>
-      <footer className="panel" style={{ height: timelineHeight, minHeight: 80, position: 'relative', overflow: 'hidden' }}>
-        {/* Drag handle at top of footer to resize timeline height */}
-        <div
-          onPointerDown={(e) => { try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }; footerDragRef.current = { startY: e.clientY, startH: timelineHeight } }}
-          onPointerMove={(e) => {
-            if (!footerDragRef.current) return
-            const dy = e.clientY - footerDragRef.current.startY
-            const minH = 80
-            const maxH = 600
-            const next = Math.max(minH, Math.min(maxH, footerDragRef.current.startH - dy))
-            setTimelineHeight(next)
-          }}
-          onPointerUp={(e) => { footerDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { } }}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 6, cursor: 'row-resize', background: 'linear-gradient(180deg, #1a1e2c, #121520)', borderBottom: '1px solid #232636', zIndex: 2 }}
-          title="Drag to resize timeline"
-        />
-        <div style={{ position: 'absolute', inset: '6px 0 0 0', overflow: 'hidden' }}>
-          <ErrorBoundary><Timeline /></ErrorBoundary>
-        </div>
+
+      {/* The footer's own height is the timeline's height: the global
+          `footer { padding: 12px }` used to make the real strip 26px taller
+          than the number the splitter was clamping. */}
+      <footer style={{ height: layout.timelineCollapsed ? 26 : layout.timelineHeight, minHeight: 0 }}>
+        {layout.timelineCollapsed ? (
+          <button
+            type="button"
+            className="panel__rail panel__rail--horizontal"
+            aria-label="Show Timeline"
+            onClick={() => toggleLayoutPanel('timeline')}
+          >
+            <span className="ms" aria-hidden="true">expand_less</span>
+            <span className="panel__rail-title">Timeline</span>
+          </button>
+        ) : (
+          <>
+            <Splitter
+              orientation="horizontal"
+              label="Resize timeline"
+              value={layout.timelineHeight}
+              min={bounds.timelineHeight.min}
+              max={bounds.timelineHeight.max}
+              invert
+              onChange={(v) => setLayout({ timelineHeight: v })}
+              onDoubleClick={() => toggleLayoutPanel('timeline')}
+            />
+            <div className="panel" style={{ flex: 1, minHeight: 0 }}>
+              <ErrorBoundary><Timeline /></ErrorBoundary>
+            </div>
+          </>
+        )}
       </footer>
+
+      <StatusBar />
+
       <TopConsoleDrawer />
       <LoadingOverlay />
+      <ShortcutsOverlay />
+      <ConfirmHost />
       <SaveShowDialog
         open={showSaveDialog}
         onClose={() => setShowSaveDialog(false)}
         defaultName={project?.name || 'show'}
         onSave={(name) => {
+          const st = useEditorStore.getState()
           try {
-            const wrapper = buildProjectWrapper(project, scene)
-            // Update project name in wrapper if needed, or just use filename
+            const wrapper = buildProjectWrapper(st.project, st.scene)
             if (wrapper.project) wrapper.project.name = name
 
             const blob = new Blob([JSON.stringify(wrapper, null, 2)], { type: 'application/json' })
@@ -347,11 +530,12 @@ export default function App() {
             a.download = name + '.json'
             a.click()
             URL.revokeObjectURL(url)
-            setStatus('Show saved as ' + name)
-            useEditorStore.getState().addLog({ level: 'info', message: 'Show saved as ' + name })
+            st.setDocumentName(name + '.json')
+            st.markClean()
+            st.setStatus(`Saved ${name}.json`)
+            st.addLog({ level: 'info', message: 'Show saved as ' + name })
           } catch (e) {
-            setStatus('Save failed: ' + e)
-            useEditorStore.getState().addLog({ level: 'error', message: 'Save failed: ' + e })
+            st.addLog({ level: 'error', message: 'Save failed: ' + e })
           }
         }}
       />
@@ -359,14 +543,49 @@ export default function App() {
   )
 }
 
-/** Depth-first lookup used by the Delete shortcut. */
-function findNodeById(roots, id) {
-  const stack = [...(roots || [])]
-  while (stack.length) {
-    const n = stack.pop()
-    if (!n) continue
-    if (n.id === id) return n
-    if (n.children?.length) stack.push(...n.children)
+/**
+ * A collapsed side panel: a rail that clicks back open.
+ *
+ * The whole rail is one button. Nesting a second clickable control inside a
+ * clickable wrapper fired both handlers, so expanding instantly collapsed
+ * again.
+ */
+function CollapsedRail({ title, icon, onExpand }) {
+  return (
+    <button
+      type="button"
+      className="panel__rail"
+      title={`Show ${title}`}
+      aria-label={`Show ${title}`}
+      onClick={onExpand}
+    >
+      <span className="ms" aria-hidden="true">{icon}</span>
+      <span className="panel__rail-title">{title}</span>
+    </button>
+  )
+}
+
+/**
+ * Shift every selected clip in time, as one undo entry.
+ *
+ * The whole selection is clamped by its earliest clip so a group nudged
+ * against zero keeps its internal spacing instead of collapsing.
+ */
+function nudgeSelectedClips(delta) {
+  const st = useEditorStore.getState()
+  const ids = st.selectedClipIds
+  if (!ids?.length) return
+  const items = []
+  for (const t of st.project?.timeline?.tracks || []) {
+    const list = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
+    for (const m of list) if (ids.includes(m?.id)) items.push(m)
   }
-  return null
+  if (!items.length) return
+  const starts = items.map((m) => Number(m.start ?? m.start_at_seconds) || 0)
+  const applied = Math.max(delta, -Math.min(...starts))
+  if (applied === 0) return
+  st.moveClips(
+    items.map((m, i) => ({ id: m.id, start: starts[i] + applied })),
+    ids.length > 1 ? 'Nudge Clips' : 'Nudge Clip',
+  )
 }

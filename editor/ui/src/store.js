@@ -5,6 +5,18 @@ import { setFileServerBase, toFileUri } from './media/uri.js'
 import { createMediaSession } from './media/session.js'
 import { buildProjectWrapper } from './utils/projectSerialize.js'
 import { createUndoStore, withUndo } from './undo.js'
+import {
+  MIN_CLIP_DURATION,
+  numOr,
+  trackMedia,
+  trackClipIds,
+  clipStart,
+  clipDuration,
+  clipEnd,
+  matchesClip,
+  timelineEnd,
+} from './utils/clipTime.js'
+import { clipInstancesOf, findNode as findNodeIn } from './selectors.js'
 
 // Initialize the file server base URL if running under Wails. This is the only
 // place it happens — App.jsx used to repeat it on mount.
@@ -34,11 +46,80 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   importingMediaCountUpdatedAt: 0,
   viewMode: '2d', // '2d' | '3d'
   showOutputOverlay: true,
+  // Selection. Node, clip and media selections are mutually exclusive: the
+  // setters below clear the other two, so the Inspector can never stack a
+  // screen's sections on top of a clip's.
   selectedId: null,
   selectedClipId: null, // primary selected timeline item id
   selectedClipIds: [], // multi-select support for stage/timeline
+  selectedMediaId: null, // selected media-bin asset
   selectedTrackIndex: null, // selected track index
   gizmoMode: 'translate',
+
+  // --- Status, document identity and outputs ------------------------------
+  // The status bar reads all of these. They used to be local App state that
+  // was set and never rendered, so a failed save looked like nothing at all.
+  statusMessage: null, // { text, level, time }
+  setStatus: (text, level = 'info') => set({ statusMessage: { text: String(text ?? ''), level, time: Date.now() } }),
+  documentName: '',
+  setDocumentName: (name) => set({ documentName: String(name || '') }),
+
+  // The reference the document is compared against to decide "dirty".
+  // A boolean flag would go stale because undo/redo bypass the middleware.
+  _cleanRef: { project: null, scene: null },
+  markClean: () => set((s) => ({ _cleanRef: { project: s.project, scene: s.scene } })),
+
+  outputs: {}, // screenId -> { type, state, fps, error, name }
+  setOutputStatus: (screenId, patch) => set((s) => ({
+    outputs: { ...s.outputs, [screenId]: { ...(s.outputs[screenId] || {}), ...patch } },
+  })),
+  clearOutputStatus: (screenId) => set((s) => {
+    if (!(screenId in s.outputs)) return {}
+    const next = { ...s.outputs }
+    delete next[screenId]
+    return { outputs: next }
+  }),
+  // Gates the screen effect in App, so "Close All Displays" stays closed even
+  // when the scene changes afterwards.
+  outputsEnabled: true,
+  setOutputsEnabled: (on) => set({ outputsEnabled: !!on }),
+  // A request for App to tear down and re-open one screen's output. The Go
+  // backend owns the renderer lifecycle; this only asks.
+  screenReopenRequest: null,
+  requestScreenReopen: (id) => set({ screenReopenRequest: { id, nonce: Date.now() } }),
+
+  // --- Modal confirmation -------------------------------------------------
+  // Any code path can `await askConfirm(...)`; ConfirmHost renders whatever
+  // is pending. Replaces window.confirm, which in a webview is an unstyled
+  // OS modal that returns focus nowhere.
+  confirmRequest: null,
+  askConfirm: (opts) => new Promise((resolve) => {
+    set({ confirmRequest: { confirmLabel: 'OK', cancelLabel: 'Cancel', ...opts, resolve } })
+  }),
+  resolveConfirm: (result) => {
+    const req = get().confirmRequest
+    set({ confirmRequest: null })
+    try { req?.resolve?.(!!result) } catch { }
+  },
+
+  // --- Panel layout (persisted by layout/persistLayout.js) ----------------
+  layout: {
+    mediaWidth: 300,
+    inspectorWidth: 320,
+    timelineHeight: 320,
+    mediaCollapsed: false,
+    inspectorCollapsed: false,
+    timelineCollapsed: false,
+  },
+  setLayout: (patch) => set((s) => ({ layout: { ...s.layout, ...(typeof patch === 'function' ? patch(s.layout) : patch) } })),
+  toggleLayoutPanel: (which) => set((s) => {
+    const key = which === 'media' ? 'mediaCollapsed' : which === 'inspector' ? 'inspectorCollapsed' : 'timelineCollapsed'
+    return { layout: { ...s.layout, [key]: !s.layout[key] } }
+  }),
+
+  // Keyboard-shortcut help overlay
+  shortcutsHelpOpen: false,
+  toggleShortcutsHelp: () => set((s) => ({ shortcutsHelpOpen: !s.shortcutsHelpOpen })),
   // Console/logging state
   logs: [], // { id, level, message, time }
   consoleOpen: false,
@@ -52,7 +133,14 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     const next = [...s.logs, entry]
     // keep last 500 entries
     const pruned = next.length > 500 ? next.slice(next.length - 500) : next
-    return { logs: pruned }
+    // Anything that went wrong belongs on the status bar too — the console
+    // drawer is hidden behind a keystroke most users never find. Done inside
+    // this reducer so it stays one commit.
+    const patch = { logs: pruned }
+    if (level === 'warn' || level === 'error') {
+      patch.statusMessage = { text: entry.message, level, time: entry.time }
+    }
+    return patch
   }),
   clearLogs: () => set({ logs: [] }),
   beginImport: () => set((s) => {
@@ -116,12 +204,19 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
         return t
       })
     }
-    set({ project: proj, scene: proj.scene, selectedId: null, time: 0, _undoLabel: 'Load Project' })
+    set({ project: proj, scene: proj.scene, selectedId: null, selectedClipId: null, selectedClipIds: [], selectedMediaId: null, time: 0, _undoLabel: 'Load Project' })
+    // Opening a document starts a new history. Undo used to walk back into
+    // the *previous* document, and at startup one Ctrl+Z could restore the
+    // null project the app was created from.
+    resetHistory('Load Project')
+    get().markClean()
   },
   newProject: () => {
     const scene = { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
     const proj = defaultProject(scene)
-    set({ project: proj, scene: proj.scene, selectedId: null, time: 0, _undoLabel: 'New Project' })
+    set({ project: proj, scene: proj.scene, selectedId: null, selectedClipId: null, selectedClipIds: [], selectedMediaId: null, time: 0, _undoLabel: 'New Project' })
+    resetHistory('New Project')
+    get().markClean()
   },
   // Add a generic media clip to the project's media bin
   addMediaClip: ({ id, name, uri, duration_seconds }) => set((s) => {
@@ -130,6 +225,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       name: name || 'Clip',
       uri,
       duration_seconds: duration_seconds ?? 10,
+      added_at: Date.now(),
     }
     const baseProj = s.project ?? defaultProject(s.scene)
     const nextProj = { ...baseProj, media: [...(baseProj.media ?? []), clip] }
@@ -261,38 +357,22 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       : { project: nextProj, scene: baseProj.scene, _undoLabel: `Add Image ${clip.name}` }
   }),
   // Update a timeline clip's 2D transform parameters
-  updateClipTransform: ({ clipId, timelineId, position, scale, opacity, blur, fade_in, fade_out }) => set((s) => {
+  /**
+   * Update one clip's 2D transform.
+   *
+   * The per-clip work lives in `applyClipPatch` so the multi-clip variant
+   * (`updateClipsTransform`) applies exactly the same coercion and clamping.
+   */
+  updateClipTransform: ({ clipId, timelineId, label, ...patch }) => set((s) => {
     if (!s.project?.timeline?.tracks) return {}
-    const tracks = (s.project.timeline.tracks || []).map((t) => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-      const nextMediaList = mediaList.map((m) => {
-        const match = timelineId ? (m?.id === timelineId) : (clipId ? (m?.clip_id === clipId) : false)
-        if (!m || !match) return m
-        const nextPos = position
-          ? { x: toInt(position.x, m.position?.x ?? 0), y: toInt(position.y, m.position?.y ?? 0) }
-          : (m.position ? { x: toInt(m.position.x, 0), y: toInt(m.position.y, 0) } : { x: 0, y: 0 })
-        const nextScale = scale
-          ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
-          : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
-        // Every numeric field goes through numOr: a half-typed value from an
-        // Inspector field must never land NaN in the document.
-        const nextOpacity = (opacity !== undefined)
-          ? Math.max(0, Math.min(1, numOr(opacity, m.opacity ?? 1)))
-          : numOr(m.opacity, 1)
-        const nextBlur = (blur !== undefined)
-          ? Math.max(0, numOr(blur, m.blur ?? 0))
-          : numOr(m.blur, 0)
-        const nextFadeIn = (fade_in !== undefined)
-          ? Math.max(0, numOr(fade_in, m.fade_in ?? 0))
-          : numOr(m.fade_in, 0)
-        const nextFadeOut = (fade_out !== undefined)
-          ? Math.max(0, numOr(fade_out, m.fade_out ?? 0))
-          : numOr(m.fade_out, 0)
-        return { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur, fade_in: nextFadeIn, fade_out: nextFadeOut }
-      })
-      return { ...t, media: nextMediaList }
-    })
-    return { project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } }, _undoLabel: position ? 'Move Clip' : scale ? 'Resize Clip' : opacity !== undefined ? 'Change Opacity' : 'Edit Clip' }
+    const tracks = (s.project.timeline.tracks || []).map((t) => ({
+      ...t,
+      media: trackMedia(t).map((m) => (m && matchesClip(m, timelineId, clipId) ? applyClipPatch(m, patch) : m)),
+    }))
+    return {
+      project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } },
+      _undoLabel: label || labelForClipPatch(patch),
+    }
   }),
   // Update a specific effect for a clip
   updateClipEffect: ({ timelineId, effect, value, enabled }) => set((s) => {
@@ -343,45 +423,294 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     }))
     return { project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } }, _undoLabel: 'Resize Clip Duration' }
   }),
+  /** Move one clip. Kept as a convenience over `moveClips`. */
+  moveClip: (timelineId, patch = {}) => get().moveClips([{ id: timelineId, ...patch }]),
+  reorderClip: (clipId, newIndex) => get().moveClip(clipId, { trackIndex: newIndex }),
+
+  // --- Batched clip operations -------------------------------------------
+  // Each of these is exactly one set() and therefore exactly one undo entry.
+  // Dragging five clips used to write five times and need five Ctrl+Z.
+
   /**
-   * Move a clip horizontally and/or between tracks in a single commit.
-   *
-   * A timeline reorder drag changes both at once; issuing updateClipStart and
-   * reorderClip separately produced two undo entries for one gesture.
+   * Move several clips at once, horizontally and/or between tracks.
+   * @param {{id:string,start?:number,trackIndex?:number}[]} patches
    */
-  moveClip: (timelineId, { start, trackIndex } = {}) => set((s) => {
-    if (!s.project?.timeline?.tracks) return {}
+  moveClips: (patches, label) => set((s) => {
+    if (!s.project?.timeline?.tracks || !patches?.length) return {}
     const tl = s.project.timeline
-    let moved = null
-    let fromIndex = -1
+    const byId = new Map(patches.filter((p) => p?.id).map((p) => [p.id, p]))
+    if (!byId.size) return {}
+
+    // Lift every moving clip out, remembering the track it came from.
+    const lifted = new Map() // id -> { m, fromIndex }
     let tracks = (tl.tracks || []).map((t, i) => {
       const list = trackMedia(t)
-      const idx = list.findIndex((m) => m?.id === timelineId)
-      if (idx === -1) return t
-      fromIndex = i
-      moved = list[idx]
-      const next = [...list]
-      next.splice(idx, 1)
-      return { ...t, media: next }
+      if (!list.some((m) => byId.has(m?.id))) return t
+      const keep = []
+      for (const m of list) {
+        if (m && byId.has(m.id)) lifted.set(m.id, { m, fromIndex: i })
+        else keep.push(m)
+      }
+      return { ...t, media: keep }
     })
-    if (!moved) return {}
+    if (!lifted.size) return {}
 
-    if (start !== undefined) {
-      const nextStart = Math.max(0, numOr(start, clipStart(moved)))
-      moved = { ...moved, start: nextStart, start_at_seconds: nextStart }
+    let crossedTracks = false
+    for (const [id, entry] of lifted) {
+      const patch = byId.get(id)
+      let moved = entry.m
+      if (patch.start !== undefined) {
+        const nextStart = Math.max(0, numOr(patch.start, clipStart(entry.m)))
+        moved = { ...moved, start: nextStart, start_at_seconds: nextStart }
+      }
+      const target = patch.trackIndex === undefined
+        ? entry.fromIndex
+        : Math.max(0, Math.min(tracks.length - 1, Math.round(numOr(patch.trackIndex, entry.fromIndex))))
+      if (target !== entry.fromIndex) crossedTracks = true
+      tracks[target] = { ...tracks[target], media: [...trackMedia(tracks[target]), moved] }
     }
 
-    const targetIndex = (trackIndex === undefined)
-      ? fromIndex
-      : Math.max(0, Math.min(tracks.length - 1, Math.round(numOr(trackIndex, fromIndex))))
-    tracks[targetIndex] = { ...tracks[targetIndex], media: [...trackMedia(tracks[targetIndex]), moved] }
-
+    const auto = lifted.size > 1
+      ? 'Move Clips'
+      : (crossedTracks ? 'Move Clip to Track' : 'Move Clip on Timeline')
     return {
       project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } },
-      _undoLabel: targetIndex === fromIndex ? 'Move Clip on Timeline' : 'Move Clip to Track',
+      _undoLabel: label || auto,
     }
   }),
-  reorderClip: (clipId, newIndex) => get().moveClip(clipId, { trackIndex: newIndex }),
+
+  /**
+   * Set a clip's start and duration together.
+   *
+   * A left-edge trim changes both, and doing that through updateClipStart
+   * plus updateClipDuration produced two history entries for one gesture.
+   */
+  trimClip: (timelineId, { start, duration }) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const tl = s.project.timeline
+    const tracks = (tl.tracks || []).map((t) => ({
+      ...t,
+      media: trackMedia(t).map((m) => {
+        if (!m || m.id !== timelineId) return m
+        const nextDur = Math.max(MIN_CLIP_DURATION, numOr(duration, clipDuration(m)))
+        const nextStart = Math.max(0, numOr(start, clipStart(m)))
+        return {
+          ...m,
+          start: nextStart,
+          start_at_seconds: nextStart,
+          duration: nextDur,
+          out_seconds: numOr(m.in_seconds, 0) + nextDur,
+        }
+      }),
+    }))
+    return {
+      project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } },
+      _undoLabel: 'Trim Clip',
+    }
+  }),
+
+  /** Remove several timeline items in one commit. */
+  removeClips: (ids) => set((s) => {
+    if (!s.project?.timeline?.tracks || !ids?.length) return {}
+    const doomed = new Set(ids)
+    const tracks = (s.project.timeline.tracks || []).map((t) => ({
+      ...t,
+      media: trackMedia(t).filter((m) => !doomed.has(m?.id)),
+    }))
+    const selectedClipIds = (s.selectedClipIds || []).filter((id) => !doomed.has(id))
+    return {
+      project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } },
+      selectedClipId: doomed.has(s.selectedClipId) ? (selectedClipIds[0] ?? null) : s.selectedClipId,
+      selectedClipIds,
+      _undoLabel: doomed.size > 1 ? ('Remove ' + doomed.size + ' Clips') : 'Remove Clip from Timeline',
+    }
+  }),
+
+  /** Copy clips, each placed immediately after its original on the same track. */
+  duplicateClips: (ids) => {
+    const s = get()
+    if (!s.project?.timeline?.tracks || !ids?.length) return []
+    const wanted = new Set(ids)
+    const newIds = []
+    const tracks = s.project.timeline.tracks.map((t) => {
+      const list = trackMedia(t)
+      const extra = []
+      for (const m of list) {
+        if (!m || !wanted.has(m.id)) continue
+        const id = 'tl-' + Math.random().toString(36).slice(2, 9)
+        const start = clipEnd(m)
+        newIds.push(id)
+        extra.push({ ...m, id, start, start_at_seconds: start })
+      }
+      return extra.length ? { ...t, media: [...list, ...extra] } : t
+    })
+    if (!newIds.length) return []
+    const tl = s.project.timeline
+    set({
+      project: { ...s.project, timeline: { ...tl, tracks, duration_seconds: timelineEnd(tracks, tl) } },
+      selectedClipIds: newIds,
+      selectedClipId: newIds[0],
+      selectedId: null,
+      selectedMediaId: null,
+      _undoLabel: newIds.length > 1 ? ('Duplicate ' + newIds.length + ' Clips') : 'Duplicate Clip',
+    })
+    return newIds
+  },
+
+  /**
+   * Cut a clip in two at `t`.
+   *
+   * The right half starts its source that much later, so a video keeps
+   * playing the same frames across the cut. Fades stay on the outer edges.
+   */
+  splitClipAtTime: (timelineId, t) => {
+    const s = get()
+    if (!s.project?.timeline?.tracks) return null
+    const at = numOr(t, 0)
+    let newId = null
+    const tracks = s.project.timeline.tracks.map((track) => {
+      const list = trackMedia(track)
+      const idx = list.findIndex((m) => m?.id === timelineId)
+      if (idx === -1) return track
+      const m = list[idx]
+      const start = clipStart(m)
+      const dur = clipDuration(m)
+      const end = start + dur
+      if (!(at > start + MIN_CLIP_DURATION && at < end - MIN_CLIP_DURATION)) return track
+      const leftDur = at - start
+      const rightDur = end - at
+      const inSec = numOr(m.in_seconds, 0)
+      const left = { ...m, duration: leftDur, out_seconds: inSec + leftDur, fade_out: 0 }
+      newId = 'tl-' + Math.random().toString(36).slice(2, 9)
+      const right = {
+        ...m,
+        id: newId,
+        start: at,
+        start_at_seconds: at,
+        duration: rightDur,
+        in_seconds: inSec + leftDur,
+        out_seconds: inSec + leftDur + rightDur,
+        fade_in: 0,
+      }
+      const next = [...list]
+      next.splice(idx, 1, left, right)
+      return { ...track, media: next }
+    })
+    if (!newId) return null
+    const tl = s.project.timeline
+    set({ project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Split Clip' })
+    return newId
+  },
+
+  /** Apply the same transform patch to several clips in one commit. */
+  updateClipsTransform: (ids, patch, label) => set((s) => {
+    if (!s.project?.timeline?.tracks || !ids?.length) return {}
+    const wanted = new Set(ids)
+    const tracks = (s.project.timeline.tracks || []).map((t) => ({
+      ...t,
+      media: trackMedia(t).map((m) => (m && wanted.has(m.id) ? applyClipPatch(m, patch) : m)),
+    }))
+    return {
+      project: { ...s.project, timeline: { ...(s.project.timeline || {}), tracks } },
+      _undoLabel: label || (ids.length > 1 ? ('Edit ' + ids.length + ' Clips') : labelForClipPatch(patch)),
+    }
+  }),
+
+  // --- Tracks --------------------------------------------------------------
+
+  renameTrack: (index, name) => set((s) => {
+    const tl = s.project?.timeline
+    if (!tl?.tracks?.[index]) return {}
+    const clean = String(name || '').trim()
+    const tracks = tl.tracks.map((t, i) => (i === index ? { ...t, name: clean || undefined } : t))
+    return { project: { ...s.project, timeline: { ...tl, tracks } }, _undoLabel: 'Rename Track' }
+  }),
+
+  removeTrack: (index) => set((s) => {
+    const tl = s.project?.timeline
+    if (!tl?.tracks?.length || index < 0 || index >= tl.tracks.length) return {}
+    const doomed = new Set(trackClipIds(tl.tracks[index]))
+    const tracks = tl.tracks.filter((_, i) => i !== index)
+    const selectedClipIds = (s.selectedClipIds || []).filter((id) => !doomed.has(id))
+    let nextTrackIndex = s.selectedTrackIndex
+    if (nextTrackIndex === index) nextTrackIndex = null
+    else if (typeof nextTrackIndex === 'number' && nextTrackIndex > index) nextTrackIndex -= 1
+    return {
+      project: { ...s.project, timeline: { ...tl, tracks } },
+      selectedClipIds,
+      selectedClipId: doomed.has(s.selectedClipId) ? (selectedClipIds[0] ?? null) : s.selectedClipId,
+      selectedTrackIndex: nextTrackIndex,
+      _undoLabel: 'Remove Track',
+    }
+  }),
+
+  // --- Renaming and relinking ---------------------------------------------
+
+  renameNode: (id, name) => set((s) => {
+    if (!s.scene?.roots) return {}
+    const clean = String(name || '').trim()
+    if (!clean) return {}
+    const node = findNodeIn(s.scene.roots, id)
+    const kind = node?.kind?.type === 'model' ? 'Model' : 'Screen'
+    return {
+      scene: { ...s.scene, roots: s.scene.roots.map((n) => updateNode(n, id, (x) => ({ ...x, name: clean }))) },
+      _undoLabel: 'Rename ' + kind,
+    }
+  }),
+
+  /** Give one timeline item its own display name, overriding the asset's. */
+  renameTimelineClip: (timelineId, label) => set((s) => {
+    if (!s.project?.timeline?.tracks) return {}
+    const clean = String(label || '').trim()
+    const tracks = s.project.timeline.tracks.map((t) => ({
+      ...t,
+      media: trackMedia(t).map((m) => (m?.id === timelineId ? { ...m, label: clean || undefined } : m)),
+    }))
+    return { project: { ...s.project, timeline: { ...s.project.timeline, tracks } }, _undoLabel: 'Rename Clip' }
+  }),
+
+  renameMedia: (mediaId, name) => set((s) => {
+    if (!s.project?.media) return {}
+    const clean = String(name || '').trim()
+    if (!clean) return {}
+    return {
+      project: { ...s.project, media: s.project.media.map((m) => (m.id === mediaId ? { ...m, name: clean } : m)) },
+      _undoLabel: 'Rename Media',
+    }
+  }),
+
+  /**
+   * Point an asset at a new file, keeping its id.
+   *
+   * Every timeline instance references the asset by id, so a relink repairs
+   * all of them at once - which is the point of relinking over re-importing.
+   */
+  relinkMedia: (mediaId, opts) => set((s) => {
+    const uri = opts?.uri
+    if (!s.project?.media || !uri) return {}
+    return {
+      project: {
+        ...s.project,
+        media: s.project.media.map((m) => (m.id === mediaId
+          ? {
+            ...m,
+            uri,
+            ...(opts.name ? { name: opts.name } : {}),
+            ...(opts.duration_seconds !== undefined ? { duration_seconds: opts.duration_seconds } : {}),
+          }
+          : m)),
+      },
+      _undoLabel: 'Relink Media',
+    }
+  }),
+
+  duplicateMedia: (mediaId) => set((s) => {
+    const src = (s.project?.media || []).find((m) => m.id === mediaId)
+    if (!src) return {}
+    const copy = { ...src, id: 'clip-' + Math.random().toString(36).slice(2, 8), name: src.name + ' copy', added_at: Date.now() }
+    return { project: { ...s.project, media: [...s.project.media, copy] }, _undoLabel: 'Duplicate Media' }
+  }),
+
   // Transport is owned by the MediaSession / PresentationClock. These actions
   // only forward; `playing` and `time` are mirrored back by the subscription
   // installed in getMediaSession() below.
@@ -395,7 +724,15 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   },
   stop: () => {
     queueLog('info', 'Local: stop')
-    try { getMediaSession().stop() } catch { set({ playing: false, time: 0 }) }
+    try {
+      const ms = getMediaSession()
+      ms.stop()
+      // session.stop() early-returns when the clock is already stopped, so a
+      // clock that was seeked while paused would keep its old time and the
+      // playhead would not come home. Seek explicitly in that case; the
+      // clock's onStop/onSeek then moves every playhead for us.
+      if (ms.getTime() !== 0) ms.seek(0)
+    } catch { set({ playing: false, time: 0 }) }
     set({ time: 0 })
   },
   seek: (t) => {
@@ -403,12 +740,38 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     set({ time: next })
     try { getMediaSession().seek(next) } catch {}
   },
-  setSelected: (id) => set({ selectedId: id }),
-  setSelectedClip: (clipId) => set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] }),
-  setSelectedClips: (clipIds) => set({ selectedClipIds: Array.isArray(clipIds) ? clipIds : [], selectedClipId: (clipIds && clipIds.length ? clipIds[0] : null) }),
+  // Selecting one kind of thing clears the others. Clearing one kind leaves
+  // the rest alone, so the viewport's two-call "clear everything" still works.
+  setSelected: (id) => set(id
+    ? { selectedId: id, selectedClipId: null, selectedClipIds: [], selectedMediaId: null }
+    : { selectedId: null }),
+  setSelectedClip: (clipId) => set(clipId
+    ? { selectedClipId: clipId, selectedClipIds: [clipId], selectedId: null, selectedMediaId: null }
+    : { selectedClipId: null, selectedClipIds: [] }),
+  setSelectedClips: (clipIds) => {
+    const ids = Array.isArray(clipIds) ? clipIds.filter(Boolean) : []
+    set(ids.length
+      ? { selectedClipIds: ids, selectedClipId: ids[0], selectedId: null, selectedMediaId: null }
+      : { selectedClipIds: [], selectedClipId: null })
+  },
+  setSelectedMedia: (id) => set(id
+    ? { selectedMediaId: id, selectedId: null, selectedClipId: null, selectedClipIds: [] }
+    : { selectedMediaId: null }),
+  clearSelection: () => set({ selectedId: null, selectedClipId: null, selectedClipIds: [], selectedMediaId: null }),
+  /** Select every timeline item in the project. */
+  selectAllClips: () => {
+    const ids = allClipIdsOf(get().project)
+    get().setSelectedClips(ids)
+  },
+  /** Select every clip on one track. */
+  selectClipsInTrack: (index) => {
+    const t = get().project?.timeline?.tracks?.[index]
+    if (!t) return
+    get().setSelectedClips(trackClipIds(t))
+  },
   setSelectedTrackIndex: (index) => set({ selectedTrackIndex: index }),
   setGizmoMode: (mode) => set({ gizmoMode: mode }),
-  updateNodeTransform: (id, next) => set((s) => ({
+  updateNodeTransform: (id, next, label = 'Move Screen') => set((s) => ({
     scene: {
       ...s.scene,
       roots: s.scene.roots.map((n) => updateNode(n, id, (node) => ({
@@ -420,7 +783,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
         }
       })))
     },
-    _undoLabel: 'Move Screen',
+    _undoLabel: label,
   })),
   // Remove a clip instance from the timeline by timeline item id
   removeClip: (clipId) => set((s) => {
@@ -436,19 +799,26 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   removeMediaClip: (clipId) => set((s) => {
     if (!s.project) return {}
     const nextMedia = (s.project.media || []).filter((m) => m.id !== clipId)
+    // Every timeline instance of the asset goes with it, so any selection
+    // pointing at one of those instances has to go too.
+    const doomed = new Set(clipInstancesOf(s.project, clipId).map((m) => m.id))
     let nextTl = s.project.timeline || null
     if (nextTl?.tracks?.length) {
-      if (nextTl?.tracks?.length) {
-        const tracks = nextTl.tracks.map((t) => {
-          const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-          return { ...t, media: mediaList.filter((m) => m.clip_id !== clipId) }
-        })
-        nextTl = { ...nextTl, tracks }
-      }
+      const tracks = nextTl.tracks.map((t) => ({
+        ...t,
+        media: trackMedia(t).filter((m) => m.clip_id !== clipId),
+      }))
+      nextTl = { ...nextTl, tracks }
     }
     const nextProject = { ...s.project, media: nextMedia, ...(nextTl ? { timeline: nextTl } : {}) }
-    const selectedClipId = s.selectedClipId === clipId ? null : s.selectedClipId
-    return { project: nextProject, selectedClipId, _undoLabel: 'Remove Media' }
+    const selectedClipIds = (s.selectedClipIds || []).filter((id) => !doomed.has(id))
+    return {
+      project: nextProject,
+      selectedClipId: doomed.has(s.selectedClipId) ? (selectedClipIds[0] ?? null) : s.selectedClipId,
+      selectedClipIds,
+      selectedMediaId: s.selectedMediaId === clipId ? null : s.selectedMediaId,
+      _undoLabel: 'Remove Media',
+    }
   }),
   updateScreenPixels: (id, pixels) => set((s) => ({
     scene: {
@@ -522,6 +892,17 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
 })))
 window.useEditorStore = useEditorStore
 
+/**
+ * Start a fresh undo history at the current document.
+ *
+ * Called when a document is created or opened: those are not edits to the
+ * old document, they replace it, and history that crosses that boundary can
+ * only restore something the user cannot see.
+ */
+function resetHistory(label) {
+  useEditorStore.setState({ _undoStack: [], _redoStack: [], _undoLabel: null, _currentLabel: label })
+}
+
 // Helper to enqueue a log entry without needing a store setter in scope
 function queueLog(level, message) {
   try {
@@ -532,45 +913,6 @@ function queueLog(level, message) {
 
 // --- shared coercion / legacy-shape helpers ---
 
-/** Finite number or fallback. Guards every reducer against NaN from an input. */
-function numOr(val, fallback = 0) {
-  const n = Number(val)
-  return Number.isFinite(n) ? n : fallback
-}
-
-/** A track's clips, tolerating the single-object legacy shape. */
-function trackMedia(t) {
-  if (!t) return []
-  return Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-}
-
-function clipStart(m) {
-  return numOr(m?.start ?? m?.start_at_seconds, 0)
-}
-
-function clipDuration(m) {
-  if (m?.duration !== undefined) return numOr(m.duration, 0)
-  return Math.max(0, numOr(m?.out_seconds, 0) - numOr(m?.in_seconds, 0))
-}
-
-/** Does this timeline item match the requested selector? */
-function matchesClip(m, timelineId, clipId) {
-  if (timelineId) return m?.id === timelineId
-  if (clipId) return m?.clip_id === clipId
-  return false
-}
-
-/** Timeline length = the furthest clip end, never shrinking below the stored value. */
-function timelineEnd(tracks, tl) {
-  let end = numOr(tl?.duration_seconds, 0)
-  for (const t of tracks) {
-    for (const m of trackMedia(t)) {
-      if (m) end = Math.max(end, clipStart(m) + clipDuration(m))
-    }
-  }
-  return end
-}
-
 /**
  * The playhead position to use for "insert here" actions.
  *
@@ -580,6 +922,71 @@ function timelineEnd(tracks, tl) {
 function currentTime(state) {
   try { return numOr(getMediaSession().getTime(), numOr(state?.time, 0)) } catch { }
   return numOr(state?.time, 0)
+}
+
+/**
+ * Apply a transform patch to one clip.
+ *
+ * Shared by the single- and multi-clip actions so both coerce and clamp
+ * identically. Every numeric field goes through numOr: a half-typed value
+ * from an Inspector field must never land NaN in the document, which used to
+ * make a clip vanish or close an output window.
+ *
+ * `positionDelta` nudges rather than sets, which is what a multi-selection
+ * edit needs (each clip keeps its own offset).
+ */
+function applyClipPatch(m, patch) {
+  const { position, positionDelta, scale, opacity, blur, fade_in, fade_out } = patch || {}
+
+  let nextPos = m.position ? { x: toInt(m.position.x, 0), y: toInt(m.position.y, 0) } : { x: 0, y: 0 }
+  if (position) {
+    nextPos = { x: toInt(position.x, nextPos.x), y: toInt(position.y, nextPos.y) }
+  }
+  if (positionDelta) {
+    nextPos = {
+      x: toInt(nextPos.x + numOr(positionDelta.dx, 0), nextPos.x),
+      y: toInt(nextPos.y + numOr(positionDelta.dy, 0), nextPos.y),
+    }
+  }
+
+  const nextScale = scale
+    ? { x: toInt(scale.x, m.scale?.x ?? 0), y: toInt(scale.y, m.scale?.y ?? 0) }
+    : (m.scale ? { x: toInt(m.scale.x, 0), y: toInt(m.scale.y, 0) } : { x: 0, y: 0 })
+
+  const nextOpacity = (opacity !== undefined)
+    ? Math.max(0, Math.min(1, numOr(opacity, m.opacity ?? 1)))
+    : numOr(m.opacity, 1)
+  const nextBlur = (blur !== undefined)
+    ? Math.max(0, numOr(blur, m.blur ?? 0))
+    : numOr(m.blur, 0)
+  const nextFadeIn = (fade_in !== undefined)
+    ? Math.max(0, numOr(fade_in, m.fade_in ?? 0))
+    : numOr(m.fade_in, 0)
+  const nextFadeOut = (fade_out !== undefined)
+    ? Math.max(0, numOr(fade_out, m.fade_out ?? 0))
+    : numOr(m.fade_out, 0)
+
+  return { ...m, position: nextPos, scale: nextScale, opacity: nextOpacity, blur: nextBlur, fade_in: nextFadeIn, fade_out: nextFadeOut }
+}
+
+/** History label inferred from which field a transform patch touches. */
+function labelForClipPatch(patch) {
+  if (!patch) return 'Edit Clip'
+  if (patch.position || patch.positionDelta) return 'Move Clip'
+  if (patch.scale) return 'Resize Clip'
+  if (patch.opacity !== undefined) return 'Change Opacity'
+  if (patch.fade_in !== undefined || patch.fade_out !== undefined) return 'Change Fade'
+  if (patch.blur !== undefined) return 'Change Blur'
+  return 'Edit Clip'
+}
+
+/** Every timeline item id in a project. */
+function allClipIdsOf(project) {
+  const out = []
+  for (const t of project?.timeline?.tracks || []) {
+    for (const m of trackMedia(t)) if (m?.id) out.push(m.id)
+  }
+  return out
 }
 
 // Integer coercion helper for pixel-based values
@@ -604,17 +1011,6 @@ function updateNode(node, id, fn) {
   if (node.id === id) return fn(node)
   if (!node.children?.length) return node
   return { ...node, children: node.children.map((c) => updateNode(c, id, fn)) }
-}
-
-function findNode(nodes, id) {
-  const stack = [...nodes]
-  while (stack.length) {
-    const n = stack.pop()
-    if (!n) continue
-    if (n.id === id) return n
-    if (n.children?.length) stack.push(...n.children)
-  }
-  return null
 }
 
 // --- Media Session singleton ---

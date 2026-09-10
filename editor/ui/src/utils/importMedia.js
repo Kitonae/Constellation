@@ -21,15 +21,20 @@ function isAbsolutePath(p) {
  * Import a batch of `{ file?, path? }` entries into the media bin.
  * Reports progress through the store and is cancellable from the overlay.
  *
+ * Files that cannot be imported used to be skipped in silence — the
+ * progress overlay counted them and nothing ever said which ones did not
+ * arrive. They are now collected and reported.
+ *
  * @param {{file?: File, path?: string}[]} entries
- * @returns {Promise<string[]>} ids of the created media clips
+ * @returns {Promise<{added: string[], skipped: {name: string, reason: string}[]}>}
  */
 export async function importEntries(entries) {
   const list = (entries || []).filter(Boolean)
-  if (!list.length) return []
+  if (!list.length) return { added: [], skipped: [] }
 
   const st = useEditorStore.getState()
   const added = []
+  const skipped = []
   st.startImport(list.length)
   try {
     let i = 0
@@ -43,7 +48,7 @@ export async function importEntries(entries) {
       // Yield so the progress overlay can paint
       await new Promise((r) => setTimeout(r, 0))
 
-      if (!isImportableFile(name)) continue
+      if (!isImportableFile(name)) { skipped.push({ name, reason: 'unsupported file type' }); continue }
 
       let uri = null
       if (isAbsolutePath(path)) {
@@ -54,7 +59,7 @@ export async function importEntries(entries) {
       } else if (path) {
         uri = toFileUri(path)
       }
-      if (!uri) continue
+      if (!uri) { skipped.push({ name, reason: 'could not resolve a path' }); continue }
 
       let duration = isModelName(name) ? 0 : DEFAULT_CLIP_SECONDS
       if (isVideoName(name)) {
@@ -63,6 +68,7 @@ export async function importEntries(entries) {
           if (meta?.duration) duration = meta.duration
         } catch (e) {
           console.warn('Failed to get video metadata', e)
+          useEditorStore.getState().addLog({ level: 'warn', message: `Could not read duration of ${name}; using ${DEFAULT_CLIP_SECONDS}s` })
         }
       }
 
@@ -76,7 +82,25 @@ export async function importEntries(entries) {
   } finally {
     useEditorStore.getState().finishImport()
   }
-  return added
+
+  reportImport(added, skipped)
+  return { added, skipped }
+}
+
+/** Tell the user what arrived and what did not. */
+function reportImport(added, skipped) {
+  const st = useEditorStore.getState()
+  if (!added.length && !skipped.length) return
+  if (skipped.length) {
+    const names = skipped.slice(0, 3).map((s) => s.name).join(', ')
+    const more = skipped.length > 3 ? ` and ${skipped.length - 3} more` : ''
+    st.addLog({
+      level: 'warn',
+      message: `Imported ${added.length}, skipped ${skipped.length}: ${names}${more}`,
+    })
+  } else {
+    st.setStatus(`Imported ${added.length} file${added.length === 1 ? '' : 's'}`)
+  }
 }
 
 /** Import absolute OS paths (Wails native file drop, file pickers). */

@@ -2,8 +2,12 @@ import { useEffect, useMemo } from 'react'
 import { getMediaSession } from '../store.js'
 
 /**
- * Drives clip visibility (and the throttled timecode readout) straight from
- * the PresentationClock, writing to the DOM without re-rendering React.
+ * Drives clip visibility straight from the PresentationClock, writing to the
+ * DOM without re-rendering React.
+ *
+ * It used to also drive a throttled timecode state setter for the 2D
+ * viewport, but that value was never rendered anywhere - pure re-render
+ * churn at 8Hz.
  *
  * Previously this subscribed to the whole zustand store, so it also fired on
  * unrelated changes such as log entries, and did a linear `find` per clip on
@@ -13,10 +17,8 @@ import { getMediaSession } from '../store.js'
  * @param {React.MutableRefObject<Map>} clipRefs - clip id -> React ref to DOM element
  * @param {React.MutableRefObject<Map>} videoRefs - clip id -> React ref to video element
  * @param {Array} allTimelineItems - All non-overlapping timeline items
- * @param {Function} setTimeDisplay - Throttled state setter for UI timecode display
- * @param {React.MutableRefObject<number>} lastTimeUiRef - Last UI update timestamp
  */
-export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems, setTimeDisplay, lastTimeUiRef) {
+export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems) {
   const spans = useMemo(() => {
     const map = new Map()
     for (const m of allTimelineItems) {
@@ -30,8 +32,6 @@ export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineIt
 
   useEffect(() => {
     const apply = (t = 0) => {
-      const now = performance.now()
-      if (now - lastTimeUiRef.current > 125) { lastTimeUiRef.current = now; setTimeDisplay(t) }
       clipRefs.current.forEach((ref, id) => {
         const el = ref.current
         if (!el) return
@@ -46,5 +46,5 @@ export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineIt
     const unsub = clock.subscribe({ onTick: apply, onSeek: apply, onStop: () => apply(0) })
     apply(clock.getTime())
     return () => { try { unsub() } catch { } }
-  }, [spans, clipRefs, videoRefs, setTimeDisplay, lastTimeUiRef])
+  }, [spans, clipRefs, videoRefs])
 }

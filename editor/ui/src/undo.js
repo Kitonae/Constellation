@@ -26,9 +26,9 @@ function snapshotsEqual(a, b) {
 
 /**
  * Undo/redo restores the document (project + scene) but selection is UI state
- * and is not part of a snapshot. After a restore the selected clip or node may
- * no longer exist, leaving the Inspector pointed at a ghost, so drop any
- * selection the restored document does not contain.
+ * and is not part of a snapshot. After a restore the selected clip, node or
+ * media asset may no longer exist, leaving the Inspector pointed at a ghost,
+ * so drop any selection the restored document does not contain.
  */
 function pruneSelection(state) {
   const clipIds = new Set()
@@ -44,11 +44,13 @@ function pruneSelection(state) {
     if (n.id) nodeIds.add(n.id)
     if (n.children?.length) stack.push(...n.children)
   }
+  const mediaIds = new Set((state.project?.media ?? []).map((m) => m?.id).filter(Boolean))
   const selectedClipIds = (state.selectedClipIds ?? []).filter((id) => clipIds.has(id))
   return {
     selectedId: nodeIds.has(state.selectedId) ? state.selectedId : null,
     selectedClipId: clipIds.has(state.selectedClipId) ? state.selectedClipId : null,
     selectedClipIds,
+    selectedMediaId: mediaIds.has(state.selectedMediaId) ? state.selectedMediaId : null,
   }
 }
 
@@ -62,6 +64,17 @@ export function createUndoStore(set, get, api) {
 
     // Set a label for the next state change (called by actions)
     _setUndoLabel: (label) => set({ _undoLabel: label }),
+
+    /**
+     * Coalesce a gesture into one history entry.
+     *
+     * A drag-to-scrub field or a stage drag writes on every pointermove, and
+     * each write would otherwise be its own undo step. Between begin and end
+     * the middleware passes writes through untracked; `endUndoBatch` pushes a
+     * single entry, and `{ cancel: true }` (Escape) puts the document back.
+     */
+    beginUndoBatch: (label) => { api._beginBatch?.(label) },
+    endUndoBatch: (opts) => { api._endBatch?.(opts) },
 
     // Push current state onto undo stack (called after mutations)
     _pushUndo: (label) => {
@@ -140,6 +153,36 @@ export function createUndoStore(set, get, api) {
         set({ ...current, ...pruneSelection({ ...s, ...current }), _undoStack: undoStack, _redoStack: redoStack, _currentLabel: currentLabel })
       })
     },
+
+    /**
+     * Jump forward to a specific point in the redo stack.
+     *
+     * The mirror of `undoTo`. The History panel used to reach a future state
+     * by calling `redo()` N times, which meant N store commits and N renders
+     * for one click.
+     */
+    redoTo: (targetIndex) => {
+      const skip = api?._skipUndo || ((fn) => fn())
+      skip(() => {
+        const s = get()
+        let undoStack = [...s._undoStack]
+        let redoStack = [...s._redoStack]
+        let current = cloneTracked(s)
+        let currentLabel = s._currentLabel
+
+        // Redo entries are stored oldest-first, so stepping to `targetIndex`
+        // means popping everything down to and including it.
+        while (redoStack.length > targetIndex) {
+          const entry = redoStack.pop()
+          undoStack.push({ label: currentLabel, state: current })
+          current = entry.state
+          currentLabel = entry.label
+        }
+        if (undoStack.length > MAX_HISTORY) undoStack = undoStack.slice(undoStack.length - MAX_HISTORY)
+
+        set({ ...current, ...pruneSelection({ ...s, ...current }), _undoStack: undoStack, _redoStack: redoStack, _currentLabel: currentLabel })
+      })
+    },
   }
 }
 
@@ -147,10 +190,33 @@ export function createUndoStore(set, get, api) {
 export function withUndo(config) {
   return (originalSet, get, api) => {
     let _skipUndo = false
+    let _batch = null // { label, snapshot }
+
+    const pushEntry = (label, snapshot, next) => {
+      const stack = [...(next._undoStack || []), { label, state: snapshot }]
+      if (stack.length > MAX_HISTORY) stack.shift()
+      originalSet({ _undoStack: stack, _redoStack: [], _undoLabel: null, _currentLabel: label })
+    }
 
     const trackedSet = (partial, replace) => {
       if (_skipUndo) {
         originalSet(partial, replace)
+        return
+      }
+
+      // Inside a batch every write lands on the document but none of them
+      // push history; the single entry is created by _endBatch.
+      if (_batch) {
+        const prevLabel = get()._undoLabel
+        originalSet(partial, replace)
+        // A label the caller gave to beginUndoBatch describes the whole
+        // gesture ("Scrub Opacity") and outranks the per-write label each
+        // individual action sets. Only borrow the inner one when the batch
+        // was opened without a name.
+        if (!_batch.named) {
+          const after = get()
+          if (after._undoLabel && after._undoLabel !== prevLabel) _batch.label = after._undoLabel
+        }
         return
       }
 
@@ -160,11 +226,7 @@ export function withUndo(config) {
 
       // Check if any tracked keys changed
       if (!snapshotsEqual(prev, next)) {
-        const label = next._undoLabel || 'Edit'
-        const snap = cloneTracked(prev)
-        const stack = [...(next._undoStack || []), { label, state: snap }]
-        if (stack.length > MAX_HISTORY) stack.shift()
-        originalSet({ _undoStack: stack, _redoStack: [], _undoLabel: null, _currentLabel: label })
+        pushEntry(next._undoLabel || 'Edit', cloneTracked(prev), next)
       }
     }
 
@@ -172,6 +234,24 @@ export function withUndo(config) {
     api._skipUndo = (fn) => {
       _skipUndo = true
       try { fn() } finally { _skipUndo = false }
+    }
+
+    api._beginBatch = (label) => {
+      if (_batch) return // already batching; the outermost gesture owns it
+      _batch = { label: label || 'Edit', named: !!label, snapshot: cloneTracked(get()) }
+    }
+
+    api._endBatch = ({ cancel = false } = {}) => {
+      const batch = _batch
+      _batch = null
+      if (!batch) return
+      if (cancel) {
+        originalSet({ ...batch.snapshot, _undoLabel: null })
+        return
+      }
+      const next = get()
+      if (snapshotsEqual(batch.snapshot, next)) return // nothing actually moved
+      pushEntry(batch.label, batch.snapshot, next)
     }
 
     return config(trackedSet, get, api)

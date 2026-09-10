@@ -1,89 +1,164 @@
-import React, { useMemo, useRef, useEffect, useState, useCallback, Suspense } from 'react'
+import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
-import { resolveImageSrc } from './MediaThumb.jsx'
-import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
 import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
-import { generateModelThumbnail } from '../utils/modelThumbnail.js'
 import { isEditableTarget } from '../hooks/useShortcuts.js'
 import { viewportActions } from '../viewportActions.js'
+import { trackMedia, clipStart, clipDuration } from '../utils/clipTime.js'
+import { snapValue, snapOffsets, collectStageSnapTargets } from '../utils/snap.js'
+import { resizeRect, isCorner } from '../utils/resizeRect.js'
+import ContextMenu from './ContextMenu.jsx'
+import Node2D from './viewport2d/Node2D.jsx'
+import VideoFrame from './viewport2d/VideoFrame.jsx'
+import SelectionOverlay from './viewport2d/SelectionOverlay.jsx'
+import ViewportToolbar from './viewport2d/ViewportToolbar.jsx'
+import ResizeHandles from './viewport2d/ResizeHandles.jsx'
+import { dotGridBg } from './viewport2d/dotGridBg.js'
+import {
+  Z_NEUTRAL, ZOOM_MIN, ZOOM_MAX, STAGE_W, STAGE_H, STAGE_CENTER,
+  clamp, ratioForZoom, scaleForZoom,
+} from './viewport2d/constants.js'
+import { worldToStage, stageToWorld, clipWorldRect, screenWorldRect, rectToStage, isClipActive, rectsIntersect } from './viewport2d/stageMath.js'
+
+const DRAG_THRESHOLD_PX = 3
+const SNAP_PX = 6
+const MIN_CLIP_SIZE = 8
 
 function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
   const project = useEditorStore((s) => s.project)
-  // Throttle time-dependent React updates; direct DOM updates for clip positions
-  const [timeDisplay, setTimeDisplay] = useState(useEditorStore.getState().time || 0)
-  const lastTimeUiRef = useRef(0)
-  const selectedClipId = useEditorStore((s) => s.selectedClipId)
-  const selectedClipIds = useEditorStore((s) => s.selectedClipIds || [])
-  const setSelectedClip = useEditorStore((s) => s.setSelectedClip)
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
   const selectedId = useEditorStore((s) => s.selectedId)
   const setSelected = useEditorStore((s) => s.setSelected)
   const showOutputOverlay = useEditorStore((s) => s.showOutputOverlay)
+
   const scrollRef = useRef(null)
   const stageRef = useRef(null)
-  const [containerSize, setContainerSize] = useState({ w: 100, h: 100 })
-  // Default zoomed way out; neutral (1:1 px) is 20%
   const [zoom, setZoom] = useState(0.02)
-  const [pan, setPan] = useState(null) // { startX, startY, startLeft, startTop }
-  const [imageMeta, setImageMeta] = useState({}) // { [clipId]: { w, h, src } }
-  const [dnd, setDnd] = useState({ over: false, screenId: null, left: 0, top: 0 })
-  const [dragClip, setDragClip] = useState(null) // { targets: { [id]: { origX, origY, currentX, currentY } }, startX, startY, isDragging }
+  const [pan, setPan] = useState(null)
+  const [imageMeta, setImageMeta] = useState({})
+  const [dnd, setDnd] = useState({ over: false, screenId: null })
+  const [dragClip, setDragClip] = useState(null)
   const dragClipRef = useRef(null)
   const clipDraggedRef = useRef(false)
-  const [menu, setMenu] = useState({ open: false, x: 0, y: 0 })
-  const [marquee, setMarquee] = useState(null) // { x1, y1, x2, y2 }
+  const [menu, setMenu] = useState(null)
+  const [marquee, setMarquee] = useState(null)
   const draggedRef = useRef(false)
-  const [tool, setTool] = useState('select') // 'select' | 'hand'
+  const [tool, setTool] = useState('select')
   const [shiftHeld, setShiftHeld] = useState(false)
-  const [spaceHeld, setSpaceHeld] = useState(false)
-  const spaceHeldRef = useRef(false)
-  const [dragScreen, setDragScreen] = useState(null) // { nodeId, origX, origY, startX, startY, currentX, currentY }
+  const [dragScreen, setDragScreen] = useState(null)
   const dragScreenRef = useRef(null)
+  const [resize, setResize] = useState(null)
+  const resizeRef = useRef(null)
+  const [snapGuides, setSnapGuides] = useState(null)
 
-  // Global failsafe: if the pointer is released outside the element, end any active clip drag
-  useEffect(() => {
-    const endDrag = (e) => {
-      if (dragClipRef.current && dragClipRef.current.targets && e.type !== 'pointercancel') {
-        Object.entries(dragClipRef.current.targets).forEach(([id, data]) => {
-          if (data.currentX !== undefined) {
-            useEditorStore.getState().updateClipTransform({ timelineId: id, position: { x: data.currentX, y: data.currentY } })
-          }
-        })
-      }
-      setDragClip((d) => d ? null : d)
-      dragClipRef.current = null
+  const scale = scaleForZoom(zoom)
+  const ratio = ratioForZoom(zoom)
+  const center = STAGE_CENTER
+  const selectedSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds])
+
+  const nodes = useMemo(() => (scene?.roots ?? []), [scene])
+  const nodeIndex = useMemo(() => {
+    const map = new Map()
+    function walk(n) { if (!n) return; map.set(n.id, n); (n.children || []).forEach(walk) }
+    nodes.forEach(walk)
+    return map
+  }, [nodes])
+  const mediaById = useMemo(() => Object.fromEntries((project?.media || []).map((m) => [m.id, m])), [project])
+  const allTimelineItems = useMemo(() => {
+    const tracks = project?.timeline?.tracks || []
+    return tracks.flatMap((t) => {
+      const list = trackMedia(t)
+      const overlaps = computeOverlaps(list)
+      return list.filter((m) => !overlaps.has(m.id))
+    })
+  }, [project])
+
+  const clipRefs = useRef(new Map())
+  const getClipRef = (id) => {
+    if (!clipRefs.current.has(id)) clipRefs.current.set(id, React.createRef())
+    return clipRefs.current.get(id)
+  }
+  const videoRefs = useRef(new Map())
+
+  const placements = useMemo(() => {
+    const res = []
+    const live = new Set()
+    for (const m of allTimelineItems) {
+      const screen = m.target_node_id ? nodeIndex.get(m.target_node_id) : null
+      live.add(m.id)
+      res.push({ tm: m, screen, clip: mediaById[m.clip_id] })
     }
-    window.addEventListener('pointerup', endDrag, true)
-    window.addEventListener('pointercancel', endDrag, true)
-    window.addEventListener('mouseup', endDrag, true)
-    window.addEventListener('touchend', endDrag, true)
-    return () => {
-      window.removeEventListener('pointerup', endDrag, true)
-      window.removeEventListener('pointercancel', endDrag, true)
-      window.removeEventListener('mouseup', endDrag, true)
-      window.removeEventListener('touchend', endDrag, true)
+    // Drop refs for clips that are gone; these maps used to grow for the
+    // lifetime of the session.
+    for (const id of [...clipRefs.current.keys()]) if (!live.has(id)) clipRefs.current.delete(id)
+    for (const id of [...videoRefs.current.keys()]) if (!live.has(id)) videoRefs.current.delete(id)
+    return res
+  }, [allTimelineItems, nodeIndex, mediaById])
+
+  /** World rect of a clip, resolving a 0 scale through the probed size. */
+  const rectOf = useCallback(
+    ({ tm, screen }) => clipWorldRect(tm, screen, imageMeta[tm.clip_id]),
+    [imageMeta],
+  )
+
+  // --- Drag commit --------------------------------------------------------
+
+  /**
+   * One idempotent commit for a clip drag.
+   *
+   * Both the element's pointerup and a window-level failsafe can fire (the
+   * failsafe captures, so it usually wins). Dragging N clips also used to
+   * write N times and therefore need N undo steps.
+   */
+  const commitClipDrag = useCallback(() => {
+    const d = dragClipRef.current
+    dragClipRef.current = null
+    setDragClip(null)
+    setSnapGuides(null)
+    if (!d?.isDragging) return
+    const patches = Object.entries(d.targets)
+      .filter(([, v]) => v.currentX !== undefined)
+      .map(([id, v]) => ({ timelineId: id, position: { x: v.currentX, y: v.currentY } }))
+    if (!patches.length) return
+    clipDraggedRef.current = true
+    // Each clip lands at its own position, so a single shared patch will not
+    // do; the batch is what turns N writes into one history entry.
+    const st = useEditorStore.getState()
+    st.beginUndoBatch(patches.length > 1 ? `Move ${patches.length} Clips` : 'Move Clip')
+    try {
+      for (const p of patches) st.updateClipTransform({ timelineId: p.timelineId, position: p.position, label: 'Move Clip' })
+    } finally {
+      st.endUndoBatch()
     }
   }, [])
 
-  // Modifier-key state for the hand tool. Commands (Delete, Frame All) live in
-  // App's single shortcut layer; this effect only tracks held keys, never
-  // swallows a keystroke aimed at a text field, and cleans up its own blur
-  // listener.
+  // Global failsafe: the pointer can be released outside the element.
+  useEffect(() => {
+    const endDrag = (e) => {
+      if (e.type === 'pointercancel') { dragClipRef.current = null; setDragClip(null); return }
+      if (dragClipRef.current) commitClipDrag()
+    }
+    window.addEventListener('pointerup', endDrag, true)
+    window.addEventListener('pointercancel', endDrag, true)
+    return () => {
+      window.removeEventListener('pointerup', endDrag, true)
+      window.removeEventListener('pointercancel', endDrag, true)
+    }
+  }, [commitClipDrag])
+
+  // Shift = screens-only picking mode. Space is no longer a pan modifier:
+  // it plays and pauses, like every other editor.
   useEffect(() => {
     const down = (e) => {
       if (isEditableTarget(e.target)) return
       if (e.key === 'Shift') setShiftHeld(true)
-      if (e.key === ' ') { setSpaceHeld(true); spaceHeldRef.current = true; e.preventDefault() }
     }
-    const up = (e) => {
-      if (e.key === 'Shift') setShiftHeld(false)
-      if (e.key === ' ') { setSpaceHeld(false); spaceHeldRef.current = false }
-    }
-    const onBlur = () => { setShiftHeld(false); setSpaceHeld(false); spaceHeldRef.current = false }
+    const up = (e) => { if (e.key === 'Shift') setShiftHeld(false) }
+    const onBlur = () => setShiftHeld(false)
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', onBlur)
@@ -94,15 +169,13 @@ function Viewport2D() {
     }
   }, [])
 
-  // Global failsafe: commit screen drag on pointer release anywhere
+  // Global failsafe: commit a screen drag on release anywhere.
   useEffect(() => {
-    const endScreenDrag = (e) => {
+    const endScreenDrag = () => {
       const d = dragScreenRef.current
       if (!d) return
-      if (d.currentX !== undefined) {
-        useEditorStore.getState().updateNodeTransform(d.nodeId, {
-          position: { x: d.currentX, y: d.currentY, z: 0 },
-        })
+      if (d.moved && d.currentX !== undefined) {
+        useEditorStore.getState().updateNodeTransform(d.nodeId, { position: { x: d.currentX, y: d.currentY, z: 0 } })
       }
       setDragScreen(null)
       dragScreenRef.current = null
@@ -115,139 +188,141 @@ function Viewport2D() {
     }
   }, [])
 
+  // --- Zoom ---------------------------------------------------------------
+
+  /** Zoom about a point, keeping whatever is under it fixed. */
+  const applyZoom = useCallback((nextZoom, clientX, clientY) => {
+    const sc = scrollRef.current
+    if (!sc) return
+    const target = clamp(nextZoom, ZOOM_MIN, ZOOM_MAX)
+    if (target === zoom) return
+    const rect = sc.getBoundingClientRect()
+    const ax = clientX ?? rect.left + rect.width / 2
+    const ay = clientY ?? rect.top + rect.height / 2
+    const contentLeft = sc.scrollLeft + (ax - rect.left)
+    const contentTop = sc.scrollTop + (ay - rect.top)
+    const world = stageToWorld(contentLeft, contentTop, ratioForZoom(zoom), center)
+
+    setZoom(target)
+
+    const after = worldToStage(world.x, world.y, ratioForZoom(target), center)
+    sc.scrollLeft = after.x - (ax - rect.left)
+    sc.scrollTop = after.y - (ay - rect.top)
+  }, [zoom, center])
+
+  const zoomTo100 = useCallback(() => applyZoom(Z_NEUTRAL), [applyZoom])
+
   useEffect(() => {
-    const onResize = () => {
-      const el = scrollRef.current
-      if (!el) return
-      setContainerSize({ w: el.clientWidth, h: el.clientHeight })
+    const sc = scrollRef.current
+    if (!sc) return
+    const handler = (e) => {
+      e.preventDefault()
+      applyZoom(zoom * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY)
     }
-    onResize()
-    const ro = new ResizeObserver(onResize)
-    if (scrollRef.current) ro.observe(scrollRef.current)
-    return () => ro.disconnect()
+    sc.addEventListener('wheel', handler, { passive: false })
+    return () => sc.removeEventListener('wheel', handler)
+  }, [applyZoom, zoom])
+
+  // Ctrl/Cmd +/-. Kept local (rather than in App's shortcut table) because
+  // it needs the viewport's own geometry to anchor the zoom.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      const plus = e.key === '+' || e.key === '=' || e.code === 'Equal' || e.code === 'NumpadAdd'
+      const minus = e.key === '-' || e.key === '_' || e.code === 'Minus' || e.code === 'NumpadSubtract'
+      if (!plus && !minus) return
+      if (isEditableTarget(e.target)) return
+      e.preventDefault()
+      applyZoom(zoom * (plus ? 1.1 : 1 / 1.1))
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [applyZoom, zoom])
+
+  // --- Framing ------------------------------------------------------------
+
+  const frameBounds = useCallback((bounds) => {
+    if (!bounds) return
+    const { minX, minY, maxX, maxY } = bounds
+    const sc = scrollRef.current
+    if (!sc) return
+    const padding = 100
+    const worldW = (maxX - minX) + padding * 2
+    const worldH = (maxY - minY) + padding * 2
+    if (!(worldW > 0 && worldH > 0)) return
+
+    // Stage rects are measured in media pixels, and `ratioForZoom` is screen
+    // pixels per media pixel, so the fit is ratio * Z_NEUTRAL. The old
+    // formula also divided by BASE_SCALE, making every fit 50x too small —
+    // it always bottomed out at the minimum zoom, so "Frame All" left the
+    // content a few pixels across.
+    const fitRatio = Math.min(sc.clientWidth / worldW, sc.clientHeight / worldH)
+    const clamped = clamp(fitRatio * Z_NEUTRAL, ZOOM_MIN, ZOOM_MAX)
+    setZoom(clamped)
+
+    const c = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+    requestAnimationFrame(() => {
+      const s = scrollRef.current
+      if (!s) return
+      const p = worldToStage(c.x, c.y, ratioForZoom(clamped), center)
+      s.scrollLeft = p.x - s.clientWidth / 2
+      s.scrollTop = p.y - s.clientHeight / 2
+    })
+  }, [center])
+
+  /** Bounding box of a set of world rects. */
+  const boundsOf = useCallback((rects) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    let any = false
+    for (const r of rects) {
+      if (!r || !(r.w > 0) || !(r.h > 0)) continue
+      minX = Math.min(minX, r.cx - r.w / 2)
+      maxX = Math.max(maxX, r.cx + r.w / 2)
+      minY = Math.min(minY, r.cy - r.h / 2)
+      maxY = Math.max(maxY, r.cy + r.h / 2)
+      any = true
+    }
+    return any ? { minX, minY, maxX, maxY } : null
   }, [])
 
-  const BASE_SCALE = 50 // pixels per scene unit at neutral zoom
-  const Z_NEUTRAL = 0.2
-  const scale = BASE_SCALE * (zoom / Z_NEUTRAL)
-  const STAGE_W = 4000
-  const STAGE_H = 3000
-  const center = { x: STAGE_W / 2, y: STAGE_H / 2 }
-
-  const nodes = useMemo(() => (scene?.roots ?? []), [scene])
-  const nodeIndex = useMemo(() => {
-    const map = new Map()
-    function walk(n) { if (!n) return; map.set(n.id, n); (n.children || []).forEach(walk) }
-    nodes.forEach(walk)
-    return map
-  }, [nodes])
-  const mediaById = useMemo(() => Object.fromEntries((project?.media || []).map(m => [m.id, m])), [project])
-  const allTimelineItems = useMemo(() => {
-    const tracks = project?.timeline?.tracks || []
-    return tracks.flatMap(t => {
-      const mediaList = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-
-      const overlaps = computeOverlaps(mediaList)
-      return mediaList.filter(m => !overlaps.has(m.id))
-    })
-  }, [project])
-  const clipRefs = useRef(new Map())
-  const getClipRef = (id) => {
-    if (!clipRefs.current.has(id)) clipRefs.current.set(id, React.createRef())
-    return clipRefs.current.get(id)
-  }
-  const videoRefs = useRef(new Map())
-  const getVideoRef = (id) => {
-    if (!videoRefs.current.has(id)) videoRefs.current.set(id, React.createRef())
-    return videoRefs.current.get(id)
-  }
-  const placements = useMemo(() => {
-    const res = []
-    const live = new Set()
-    for (const m of allTimelineItems) {
-      const screen = m.target_node_id ? nodeIndex.get(m.target_node_id) : null
-      const clip = mediaById[m.clip_id]
-      live.add(m.id)
-      res.push({ tm: m, screen, clip })
-    }
-    // Drop refs for clips that are gone; these maps used to grow for the
-    // lifetime of the session.
-    for (const id of [...clipRefs.current.keys()]) if (!live.has(id)) clipRefs.current.delete(id)
-    for (const id of [...videoRefs.current.keys()]) if (!live.has(id)) videoRefs.current.delete(id)
-    return res
-  }, [allTimelineItems, nodeIndex, mediaById])
-
-  // Fit every screen and clip in the viewport. Registered in
-  // `viewportActions` so App's shortcut layer can drive it with `F`.
   const frameAll = useCallback(() => {
-      // Compute bounding box of all screens and clips in world-space
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      let hasContent = false
+    const rects = [
+      ...nodes.filter((n) => n.kind?.type === 'screen').map(screenWorldRect),
+      ...placements.map(rectOf),
+    ]
+    frameBounds(boundsOf(rects))
+  }, [nodes, placements, rectOf, frameBounds, boundsOf])
 
-      for (const n of nodes) {
-        if (n.kind?.type !== 'screen') continue
-        const px = n.kind?.pixels?.[0] || 0
-        const py = n.kind?.pixels?.[1] || 0
-        if (px <= 0 || py <= 0) continue
-        const sx = n.transform?.position?.x || 0
-        const sy = n.transform?.position?.y || 0
-        minX = Math.min(minX, sx - px / 2)
-        maxX = Math.max(maxX, sx + px / 2)
-        minY = Math.min(minY, sy - py / 2)
-        maxY = Math.max(maxY, sy + py / 2)
-        hasContent = true
-      }
-
-      for (const { tm } of placements) {
-        const mx = tm.position?.x || 0
-        const my = tm.position?.y || 0
-        const meta = imageMeta[tm.clip_id]
-        const tw = (tm.scale?.x > 0 ? tm.scale.x : meta?.w) || 100
-        const th = (tm.scale?.y > 0 ? tm.scale.y : meta?.h) || 100
-        minX = Math.min(minX, mx - tw / 2)
-        maxX = Math.max(maxX, mx + tw / 2)
-        minY = Math.min(minY, my - th / 2)
-        maxY = Math.max(maxY, my + th / 2)
-        hasContent = true
-      }
-
-      if (!hasContent) return
-
-      const padding = 100
-      const worldW = (maxX - minX) + padding * 2
-      const worldH = (maxY - minY) + padding * 2
-      const sc = scrollRef.current
-      if (!sc) return
-      const viewW = sc.clientWidth
-      const viewH = sc.clientHeight
-
-      const fitZoom = Math.min(viewW / worldW, viewH / worldH) * Z_NEUTRAL / BASE_SCALE
-      const clampedZoom = clamp(fitZoom, 0.01, 20)
-      setZoom(clampedZoom)
-
-      const newRatio = (clampedZoom / Z_NEUTRAL)
-      const centerWorldX = (minX + maxX) / 2
-      const centerWorldY = (minY + maxY) / 2
-      requestAnimationFrame(() => {
-        const s = scrollRef.current
-        if (!s) return
-        s.scrollLeft = STAGE_W / 2 + centerWorldX * newRatio - s.clientWidth / 2
-        s.scrollTop = STAGE_H / 2 - centerWorldY * newRatio - s.clientHeight / 2
-      })
-  }, [nodes, placements, imageMeta])
+  const frameSelected = useCallback(() => {
+    const st = useEditorStore.getState()
+    const rects = []
+    if (st.selectedId) {
+      const n = nodeIndex.get(st.selectedId)
+      if (n?.kind?.type === 'screen') rects.push(screenWorldRect(n))
+    }
+    const wanted = new Set(st.selectedClipIds)
+    for (const p of placements) if (wanted.has(p.tm.id)) rects.push(rectOf(p))
+    const b = boundsOf(rects)
+    if (!b) { st.setStatus('Nothing selected to frame', 'warn'); return }
+    frameBounds(b)
+  }, [nodeIndex, placements, rectOf, frameBounds, boundsOf])
 
   useEffect(() => {
     viewportActions.frameAll = frameAll
-    return () => { if (viewportActions.frameAll === frameAll) viewportActions.frameAll = null }
-  }, [frameAll])
+    viewportActions.frameSelected = frameSelected
+    viewportActions.zoomTo100 = zoomTo100
+    return () => {
+      if (viewportActions.frameAll === frameAll) viewportActions.frameAll = null
+      if (viewportActions.frameSelected === frameSelected) viewportActions.frameSelected = null
+      if (viewportActions.zoomTo100 === zoomTo100) viewportActions.zoomTo100 = null
+    }
+  }, [frameAll, frameSelected, zoomTo100])
 
-  // 60fps store subscription for clip visibility + video sync (extracted hook)
-  useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems, setTimeDisplay, lastTimeUiRef)
-
-  // Preload image natural sizes for clip placements (extracted hook)
+  // 60fps clip visibility + video sync
+  useClipVisibilitySync(clipRefs, videoRefs, allTimelineItems)
   useImageMetaLoader(placements, imageMeta, setImageMeta)
 
-  // Center the scroll on first mount
+  // Centre the scroll on first mount
   useEffect(() => {
     const sc = scrollRef.current
     if (!sc) return
@@ -255,8 +330,10 @@ function Viewport2D() {
     sc.scrollTop = (STAGE_H - sc.clientHeight) / 2
   }, [])
 
+  // --- Pan ----------------------------------------------------------------
+
   const onPointerDown = useCallback((e) => {
-    const isHand = tool === 'hand' || spaceHeldRef.current || (e.ctrlKey && e.altKey) || e.button === 1
+    const isHand = tool === 'hand' || (e.ctrlKey && e.altKey) || e.button === 1
     if (!isHand) return
     const sc = scrollRef.current
     if (!sc) return
@@ -270,10 +347,8 @@ function Viewport2D() {
     if (!pan) return
     const sc = scrollRef.current
     if (!sc) return
-    const dx = e.clientX - pan.startX
-    const dy = e.clientY - pan.startY
-    sc.scrollLeft = pan.startLeft - dx
-    sc.scrollTop = pan.startTop - dy
+    sc.scrollLeft = pan.startLeft - (e.clientX - pan.startX)
+    sc.scrollTop = pan.startTop - (e.clientY - pan.startY)
     e.preventDefault()
   }, [pan])
 
@@ -281,103 +356,143 @@ function Viewport2D() {
     if (!pan) return
     setPan(null)
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
-    e.preventDefault()
   }, [pan])
 
-  const onWheel = useCallback((e) => {
-    // Zoom on mouse wheel; keep point under cursor stable
-    // Use smooth multiplier; positive deltaY zooms out, negative zooms in
-    e.preventDefault()
-    const sc = scrollRef.current
-    if (!sc) return
-    const rect = sc.getBoundingClientRect()
-    const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
-    const contentTop = sc.scrollTop + (e.clientY - rect.top)
+  // --- Snapping helpers ---------------------------------------------------
 
-    // Convert current content pixel to world point
-    const worldX = (contentLeft - center.x) / scale
-    const worldY = (center.y - contentTop) / scale
+  const stageSnapTargets = useCallback((excludeIds) => collectStageSnapTargets({
+    screens: nodes.filter((n) => n.kind?.type === 'screen' && (n.kind?.enabled ?? true)).map(screenWorldRect),
+    clips: placements.map(rectOf),
+    excludeIds,
+  }), [nodes, placements, rectOf])
 
-    // Compute next zoom
-    const factor = Math.exp(-e.deltaY * 0.0015)
-    const nextZoom = clamp(zoom * factor, 0.01, 20)
-    if (nextZoom === zoom) return
-    const nextScale = BASE_SCALE * (nextZoom / Z_NEUTRAL)
-    setZoom(nextZoom)
+  // --- Resize -------------------------------------------------------------
 
-    // Compute new content pixel for the same world point
-    const newPx = center.x + worldX * nextScale
-    const newPy = center.y - worldY * nextScale
-    // Adjust scroll so the point under the mouse stays fixed
-    sc.scrollLeft = newPx - (e.clientX - rect.left)
-    sc.scrollTop = newPy - (e.clientY - rect.top)
-  }, [zoom, scale, center.x, center.y])
+  const singleSelected = selectedClipIds.length === 1
+    ? placements.find((p) => p.tm.id === selectedClipIds[0])
+    : null
 
-  // Attach a non-passive wheel listener to fully prevent default scrolling
-  useEffect(() => {
-    const sc = scrollRef.current
-    if (!sc) return
-    const handler = (ev) => onWheel(ev)
-    sc.addEventListener('wheel', handler, { passive: false })
-    return () => sc.removeEventListener('wheel', handler)
-  }, [onWheel])
-
-  // Ctrl/Cmd +/- keyboard zoom centered on viewport center
-  useEffect(() => {
-    const onKey = (e) => {
-      const isMod = e.ctrlKey || e.metaKey
-      if (!isMod) return
-      const key = e.key
-      const code = e.code
-      const plus = key === '+' || key === '=' || code === 'Equal' || code === 'NumpadAdd'
-      const minus = key === '-' || key === '_' || code === 'Minus' || code === 'NumpadSubtract'
-      if (!plus && !minus) return
-
-      // avoid when typing
-      const t = e.target
-      const tag = (t?.tagName || '').toLowerCase()
-      if (t?.isContentEditable || tag === 'input' || tag === 'textarea') return
-
-      e.preventDefault()
-      const sc = scrollRef.current
-      if (!sc) return
-      const rect = sc.getBoundingClientRect()
-      // center of viewport
-      const clientX = rect.left + rect.width / 2
-      const clientY = rect.top + rect.height / 2
-      const contentLeft = sc.scrollLeft + (clientX - rect.left)
-      const contentTop = sc.scrollTop + (clientY - rect.top)
-
-      const worldX = (contentLeft - center.x) / scale
-      const worldY = (center.y - contentTop) / scale
-
-      const step = 1.1
-      const nextZoom = clamp(zoom * (plus ? step : 1 / step), 0.01, 20)
-      if (nextZoom === zoom) return
-      const nextScale = BASE_SCALE * (nextZoom / Z_NEUTRAL)
-      setZoom(nextZoom)
-
-      const newPx = center.x + worldX * nextScale
-      const newPy = center.y - worldY * nextScale
-      sc.scrollLeft = newPx - (clientX - rect.left)
-      sc.scrollTop = newPy - (clientY - rect.top)
+  const onResizeStart = useCallback((handle, e) => {
+    if (!singleSelected) return
+    const r = rectOf(singleSelected)
+    const d = {
+      id: singleSelected.tm.id,
+      handle,
+      startX: e.clientX,
+      startY: e.clientY,
+      orig: r,
+      rect: r,
     }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [zoom, scale, center.x, center.y])
+    resizeRef.current = d
+    setResize(d)
+  }, [singleSelected, rectOf])
 
   useEffect(() => {
-    if (!menu.open) return
-    const close = () => setMenu(m => ({ ...m, open: false }))
-    window.addEventListener('pointerdown', close)
-    return () => window.removeEventListener('pointerdown', close)
-  }, [menu.open])
+    if (!resize) return
+    const onMove = (e) => {
+      const d = resizeRef.current
+      if (!d) return
+      // Screen y grows downward, world y grows upward.
+      const dx = (e.clientX - d.startX) / ratio
+      const dy = -(e.clientY - d.startY) / ratio
+      let next = resizeRect(d.orig, d.handle, dx, dy, {
+        // Corners keep the aspect ratio; Shift frees it.
+        keepAspect: isCorner(d.handle) && !e.shiftKey,
+        minSize: MIN_CLIP_SIZE,
+      })
+      // Snap the edge the handle is actually dragging, then re-run the
+      // resize with the adjusted delta so the geometry stays consistent.
+      let guides = null
+      if (!e.altKey) {
+        const targets = stageSnapTargets([d.id])
+        const threshold = SNAP_PX / ratio
+        const movesW = d.handle.includes('w')
+        const movesE = d.handle.includes('e')
+        const movesN = d.handle.includes('n')
+        const movesS = d.handle.includes('s')
+
+        let adjDx = dx
+        let adjDy = dy
+        if (movesW || movesE) {
+          const edge = movesW ? next.cx - next.w / 2 : next.cx + next.w / 2
+          const r = snapValue(edge, targets.x, threshold)
+          if (r.snapped) { adjDx = dx + r.delta; guides = { ...(guides || {}), x: r.target } }
+        }
+        if (movesN || movesS) {
+          // North is the larger world y, so its screen delta is inverted.
+          const edge = movesN ? next.cy + next.h / 2 : next.cy - next.h / 2
+          const r = snapValue(edge, targets.y, threshold)
+          if (r.snapped) { adjDy = dy + r.delta; guides = { ...(guides || {}), y: r.target } }
+        }
+        if (adjDx !== dx || adjDy !== dy) {
+          next = resizeRect(d.orig, d.handle, adjDx, adjDy, {
+            keepAspect: isCorner(d.handle) && !e.shiftKey,
+            minSize: MIN_CLIP_SIZE,
+          })
+        }
+      }
+      const updated = { ...d, rect: next }
+      resizeRef.current = updated
+      setResize(updated)
+      setSnapGuides(guides)
+    }
+    const onUp = () => {
+      const d = resizeRef.current
+      resizeRef.current = null
+      setResize(null)
+      setSnapGuides(null)
+      if (!d) return
+      const r = d.rect
+      if (r.w === d.orig.w && r.h === d.orig.h && r.cx === d.orig.cx && r.cy === d.orig.cy) return
+      const screen = singleSelected?.screen
+      const spos = screen?.transform?.position || { x: 0, y: 0 }
+      useEditorStore.getState().updateClipTransform({
+        timelineId: d.id,
+        position: { x: r.cx - (spos.x ?? 0), y: r.cy - (spos.y ?? 0) },
+        scale: { x: Math.round(r.w), y: Math.round(r.h) },
+        label: 'Resize Clip',
+      })
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [resize, ratio, stageSnapTargets, singleSelected])
+
+  // --- Context menu -------------------------------------------------------
+
+  const stageMenuItems = useCallback(() => {
+    const st = useEditorStore.getState()
+    const node = st.selectedId ? nodeIndex.get(st.selectedId) : null
+    const isScreen = node?.kind?.type === 'screen'
+    const clipCount = st.selectedClipIds.length
+    return [
+      { label: 'Add Web Screen', icon: 'desktop_windows', onClick: () => st.addScreenNode({ pixels: [1920, 1080], screenType: 'web' }) },
+      { label: 'Add Renderer Screen', icon: 'cast', onClick: () => st.addScreenNode({ pixels: [1920, 1080], screenType: 'renderer' }) },
+      ...(clipCount ? [
+        { separator: true },
+        { label: clipCount > 1 ? `Remove ${clipCount} Clips` : 'Remove Clip', icon: 'delete', danger: true, onClick: () => st.removeClips(st.selectedClipIds) },
+      ] : []),
+      ...(isScreen ? [
+        { separator: true },
+        { label: `Remove ${node.name || 'Screen'}`, icon: 'delete', danger: true, onClick: () => st.removeScreenNode(node.id) },
+      ] : []),
+    ]
+  }, [nodeIndex])
+
+  // --- Render -------------------------------------------------------------
+
+  const resizeRectStage = resize
+    ? rectToStage(resize.rect, ratio, center)
+    : (singleSelected ? rectToStage(rectOf(singleSelected), ratio, center) : null)
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div
         ref={scrollRef}
-        onContextMenu={(e) => { e.preventDefault(); setMenu({ open: true, x: e.clientX, y: e.clientY }) }}
+        onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }) }}
         onDragOver={(e) => {
           if (!e.dataTransfer?.types?.includes('application/x-constellation-clip-id') && !e.dataTransfer?.types?.includes('text/plain')) return
           e.preventDefault()
@@ -386,28 +501,18 @@ function Viewport2D() {
           const rect = sc.getBoundingClientRect()
           const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
           const contentTop = sc.scrollTop + (e.clientY - rect.top)
-          const Z_NEUTRAL = 0.2
-          const ratio = (zoom / Z_NEUTRAL)
           let target = null
           for (const n of nodes) {
-            if (n.kind?.type !== 'screen' || (n.kind?.enabled === false)) continue
-            const spos = n.transform?.position || { x: 0, y: 0, z: 0 }
-            const cx = center.x + (spos.x || 0) * scale
-            const cy = center.y - (spos.y || 0) * scale
-            const px = n.kind?.pixels?.[0] || 0
-            const py = n.kind?.pixels?.[1] || 0
-            const w = Math.max(2, px * ratio)
-            const h = Math.max(2, py * ratio)
-            const left = cx - w / 2
-            const top = cy - h / 2
-            if (contentLeft >= left && contentLeft <= left + w && contentTop >= top && contentTop <= top + h) {
-              target = { id: n.id }
+            if (n.kind?.type !== 'screen' || n.kind?.enabled === false) continue
+            const r = rectToStage(screenWorldRect(n), ratio, center)
+            if (contentLeft >= r.left && contentLeft <= r.left + r.width && contentTop >= r.top && contentTop <= r.top + r.height) {
+              target = n.id
               break
             }
           }
-          setDnd({ over: !!target, screenId: target?.id || null, left: contentLeft, top: contentTop })
+          setDnd({ over: !!target, screenId: target })
         }}
-        onDragLeave={() => setDnd({ over: false, screenId: null, left: 0, top: 0 })}
+        onDragLeave={() => setDnd({ over: false, screenId: null })}
         onDrop={(e) => {
           const clipId = e.dataTransfer.getData('application/x-constellation-clip-id') || e.dataTransfer.getData('text/plain')
           if (!clipId) return
@@ -415,36 +520,48 @@ function Viewport2D() {
           const sc = scrollRef.current
           if (!sc) return
           const rect = sc.getBoundingClientRect()
-          const contentLeft = sc.scrollLeft + (e.clientX - rect.left)
-          const contentTop = sc.scrollTop + (e.clientY - rect.top)
-          const Z_NEUTRAL = 0.2
-          const ratio = (zoom / Z_NEUTRAL)
-          // No per-screen association; position relative to world center
-          const pos = { x: (contentLeft - center.x) / ratio, y: (center.y - contentTop) / ratio }
+          const world = stageToWorld(
+            sc.scrollLeft + (e.clientX - rect.left),
+            sc.scrollTop + (e.clientY - rect.top),
+            ratio, center,
+          )
           const { addClipToTimeline, time } = useEditorStore.getState()
-          addClipToTimeline({ clipId, startAt: time, position: pos })
-          setDnd({ over: false, screenId: null, left: 0, top: 0 })
+          addClipToTimeline({ clipId, startAt: time, position: world })
+          setDnd({ over: false, screenId: null })
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto', background: '#0b0d12', cursor: pan ? 'grabbing' : ((tool === 'hand' || spaceHeld) ? 'grab' : 'default'), overscrollBehavior: 'contain', outline: shiftHeld ? '2px solid #00e5ff' : 'none', outlineOffset: '-2px' }}
+        style={{
+          position: 'relative', width: '100%', height: '100%', overflow: 'auto',
+          background: 'var(--bg-deep)',
+          cursor: pan ? 'grabbing' : (tool === 'hand' ? 'grab' : 'default'),
+          overscrollBehavior: 'contain',
+          outline: shiftHeld ? '2px solid var(--stage-mode)' : 'none',
+          outlineOffset: '-2px',
+        }}
       >
         <div
           ref={stageRef}
           style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
-          onClick={(e) => { if (!draggedRef.current && !e.ctrlKey) { setSelected(null); setSelectedClips([]) } }}
+          onClick={(e) => {
+            if (draggedRef.current || e.ctrlKey || e.shiftKey) return
+            setSelected(null)
+            setSelectedClips([])
+          }}
           onPointerDown={(e) => {
-            // Start marquee selection only on empty space (not when Ctrl+Alt panning or clicking a clip)
             if (e.button !== 0) return
-            if (tool === 'hand' || spaceHeldRef.current || (e.ctrlKey && e.altKey)) return
+            if (tool === 'hand' || (e.ctrlKey && e.altKey)) return
             if (e.target !== stageRef.current) return
             const sc = scrollRef.current
             if (!sc) return
             const rect = sc.getBoundingClientRect()
             const x = sc.scrollLeft + (e.clientX - rect.left)
             const y = sc.scrollTop + (e.clientY - rect.top)
-            setMarquee({ x1: x, y1: y, x2: x, y2: y })
+            // Shift adds, Alt subtracts, otherwise replace. The marquee used
+            // to always union, so there was no way to narrow a selection.
+            const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace'
+            setMarquee({ x1: x, y1: y, x2: x, y2: y, mode })
             draggedRef.current = false
             try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
             e.preventDefault()
@@ -457,658 +574,235 @@ function Viewport2D() {
             const rect = sc.getBoundingClientRect()
             const x = sc.scrollLeft + (e.clientX - rect.left)
             const y = sc.scrollTop + (e.clientY - rect.top)
-            setMarquee((m) => {
-              if (m) draggedRef.current = true
-              return (m ? { ...m, x2: x, y2: y } : m)
-            })
+            if (Math.hypot(x - marquee.x1, y - marquee.y1) > DRAG_THRESHOLD_PX) draggedRef.current = true
+            setMarquee((m) => (m ? { ...m, x2: x, y2: y } : m))
             e.preventDefault()
           }}
           onPointerUp={(e) => {
             if (!marquee) return
-            // Normalize marquee rect
-            const mx = Math.min(marquee.x1, marquee.x2)
-            const my = Math.min(marquee.y1, marquee.y2)
-            const mw = Math.abs(marquee.x2 - marquee.x1)
-            const mh = Math.abs(marquee.y2 - marquee.y1)
-            // Collect all intersecting clips
-            const ratio = (zoom / Z_NEUTRAL)
-            const picked = []
+            try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
+            const box = {
+              left: Math.min(marquee.x1, marquee.x2),
+              top: Math.min(marquee.y1, marquee.y2),
+              width: Math.abs(marquee.x2 - marquee.x1),
+              height: Math.abs(marquee.y2 - marquee.y1),
+            }
+            setMarquee(null)
+            if (!draggedRef.current) return
             const tNow = useEditorStore.getState().time
-            for (const { tm, screen } of placements) {
-              const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
-              const cx = center.x + (spos.x ?? 0) * scale
-              const cy = center.y - (spos.y ?? 0) * scale
-              const meta = imageMeta[tm.clip_id]
-              const baseW = meta?.w || 100
-              const baseH = meta?.h || 100
-              const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
-              const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
-              const w = Math.max(2, targetWpx * ratio)
-              const h = Math.max(2, targetHpx * ratio)
-              const left = cx + (tm.position?.x || 0) * ratio - w / 2
-              const top = cy - (tm.position?.y || 0) * ratio - h / 2
-              const inter = (mx < left + w) && (mx + mw > left) && (my < top + h) && (my + mh > top)
-              const start = (tm.start ?? tm.start_at_seconds) || 0
-              const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
-              const isActive = tNow >= start && tNow <= start + dur
-              if (inter && isActive) picked.push(tm.id)
+            const picked = []
+            for (const p of placements) {
+              if (!isClipActive(p.tm, tNow)) continue
+              if (rectsIntersect(box, rectToStage(rectOf(p), ratio, center))) picked.push(p.tm.id)
             }
             const current = new Set(selectedClipIds)
-            picked.forEach(id => current.add(id))
-            setSelectedClips(Array.from(current))
-            setMarquee(null)
-            try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
+            if (marquee.mode === 'replace') setSelectedClips(picked)
+            else if (marquee.mode === 'add') setSelectedClips([...new Set([...current, ...picked])])
+            else setSelectedClips([...current].filter((id) => !picked.includes(id)))
             e.preventDefault()
             e.stopPropagation()
           }}
         >
           {marquee && (
-            <div
-              style={{
-                position: 'absolute',
-                left: Math.min(marquee.x1, marquee.x2),
-                top: Math.min(marquee.y1, marquee.y2),
-                width: Math.abs(marquee.x2 - marquee.x1),
-                height: Math.abs(marquee.y2 - marquee.y1),
-                border: '1px dashed #6aa0ff',
-                background: 'rgba(106,160,255,0.12)',
-                pointerEvents: 'none',
-                zIndex: 1000,
-              }}
-            />
+            <div style={{
+              position: 'absolute',
+              left: Math.min(marquee.x1, marquee.x2),
+              top: Math.min(marquee.y1, marquee.y2),
+              width: Math.abs(marquee.x2 - marquee.x1),
+              height: Math.abs(marquee.y2 - marquee.y1),
+              border: '1px dashed var(--accent)',
+              background: 'rgba(106,160,255,0.12)',
+              pointerEvents: 'none',
+              zIndex: 1000,
+            }} />
           )}
-          {/* axes */}
-          <div style={{ position: 'absolute', left: center.x, top: 0, bottom: 0, width: 1, background: '#3a4e85' }} />
-          <div style={{ position: 'absolute', top: center.y, left: 0, right: 0, height: 1, background: '#3a4e85' }} />
 
-          {/* draw screens */}
+          {/* Axes */}
+          <div style={{ position: 'absolute', left: center.x, top: 0, bottom: 0, width: 1, background: 'var(--stage-line)' }} />
+          <div style={{ position: 'absolute', top: center.y, left: 0, right: 0, height: 1, background: 'var(--stage-line)' }} />
+
           {nodes.map((n) => (
-            <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected} highlight={dnd.over && dnd.screenId === n.id} shiftHeld={shiftHeld} dragScreen={dragScreen} setDragScreen={setDragScreen} dragScreenRef={dragScreenRef} />
+            <Node2D key={n.id} node={n} center={center} scale={scale} selectedId={selectedId} onSelect={setSelected}
+              highlight={dnd.over && dnd.screenId === n.id} shiftHeld={shiftHeld}
+              dragScreen={dragScreen} setDragScreen={setDragScreen} dragScreenRef={dragScreenRef} />
           ))}
 
-          {/* Output overlay: represent each screen's pixel output area */}
-          {showOutputOverlay && nodes.map((n) => n).filter(n => n.kind?.type === 'screen' && (n.kind?.enabled ?? true)).map((screen) => {
-            const spos = screen.transform?.position || { x: 0, y: 0, z: 0 }
-            const cx = center.x + (spos.x || 0) * scale
-            const cy = center.y - (spos.y || 0) * scale
-            const px = screen.kind?.pixels?.[0] || 0
-            const py = screen.kind?.pixels?.[1] || 0
-            const ratio = (zoom / Z_NEUTRAL)
-            const w = Math.max(2, px * ratio)
-            const h = Math.max(2, py * ratio)
-            const left = cx - w / 2
-            const top = cy - h / 2
-            return (
-              <div key={`out-${screen.id}`} style={{ position: 'absolute', left, top, width: w, height: h, border: '1px dashed #6aa0ff', background: 'rgba(90,120,255,0.07)', zIndex: 50, pointerEvents: 'none' }} title={`Output ${px}x${py}`} />
-            )
-          })}
+          {showOutputOverlay && nodes
+            .filter((n) => n.kind?.type === 'screen' && (n.kind?.enabled ?? true))
+            .map((screen) => {
+              const r = rectToStage(screenWorldRect(screen), ratio, center)
+              return (
+                <div key={`out-${screen.id}`}
+                  style={{ position: 'absolute', ...r, border: '1px dashed var(--accent)', background: 'rgba(90,120,255,0.07)', zIndex: 50, pointerEvents: 'none' }}
+                  title={`Output ${screen.kind?.pixels?.[0]}x${screen.kind?.pixels?.[1]}`} />
+              )
+            })}
 
-          {placements.map(({ tm, screen, clip }, idx) => {
+          {placements.map(({ tm, screen, clip }) => {
             const tNow = useEditorStore.getState().time
-            const spos = screen?.transform?.position || { x: 0, y: 0, z: 0 }
-            const cx = center.x + (spos.x ?? 0) * scale
-            const cy = center.y - (spos.y ?? 0) * scale
-            const mpos = tm.position || { x: 0, y: 0 }
-            const meta = imageMeta[tm.clip_id]
-            const baseW = meta?.w || 100
-            const baseH = meta?.h || 100
-            const targetWpx = (tm.scale?.x && tm.scale.x > 0) ? tm.scale.x : baseW
-            const targetHpx = (tm.scale?.y && tm.scale.y > 0) ? tm.scale.y : baseH
-            const ratio = (zoom / Z_NEUTRAL)
-            const w = Math.max(2, targetWpx * ratio)
-            const h = Math.max(2, targetHpx * ratio)
-            const left = cx + (mpos.x || 0) * ratio - w / 2
-            const top = cy - (mpos.y || 0) * ratio - h / 2
-            const isSel = selectedClipId === tm.id || selectedClipIds.includes(tm.id)
-            const start = (tm.start ?? tm.start_at_seconds) || 0
-            const dur = Math.max(0, (tm.duration ?? ((tm.out_seconds - tm.in_seconds) || 0)))
-            const isActive = tNow >= start && tNow <= start + dur
-
-            const finalOpacity = computeFadeOpacity(tm, tNow)
+            const dragged = dragClip?.targets?.[tm.id]
+            const base = rectOf({ tm, screen })
+            const world = dragged?.currentX !== undefined
+              ? { ...base, cx: (screen?.transform?.position?.x ?? 0) + dragged.currentX, cy: (screen?.transform?.position?.y ?? 0) + dragged.currentY }
+              : base
+            const isBeingResized = resize?.id === tm.id
+            const box = rectToStage(isBeingResized ? resize.rect : world, ratio, center)
+            const isSel = selectedSet.has(tm.id)
+            const uri = String(clip?.uri || '')
+            const isVideo = mediaTypeFromExt(extFromUri(uri) || extFromUri(clip?.name || '')) === 'video'
 
             return (
-              <div key={tm.id} ref={getClipRef(tm.id)}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (clipDraggedRef.current) {
-                    clipDraggedRef.current = false
-                    return
-                  }
-                  if (e.ctrlKey) {
-                    if (selectedClipIds.includes(tm.id)) {
-                      setSelectedClips(selectedClipIds.filter(id => id !== tm.id))
-                    } else {
-                      setSelectedClips([...selectedClipIds, tm.id])
-                    }
-                  } else {
-                    setSelectedClips([tm.id])
-                  }
-                }}
+              <div
+                key={tm.id}
+                ref={getClipRef(tm.id)}
+                className="v2d-clip"
                 onPointerDown={(e) => {
                   if (tool === 'hand') return
                   if (e.button !== 0) return
                   e.stopPropagation()
                   try { e.currentTarget.setPointerCapture(e.pointerId) } catch { }
-
-                  const isSelected = selectedClipIds.includes(tm.id)
-                  const draggingIds = isSelected ? [...new Set([...selectedClipIds, tm.id])] : [tm.id]
+                  const st = useEditorStore.getState()
+                  const ids = st.selectedClipIds.includes(tm.id) && !e.ctrlKey && !e.metaKey
+                    ? st.selectedClipIds
+                    : [tm.id]
                   const targets = {}
-                  draggingIds.forEach(id => {
-                    const item = allTimelineItems.find(m => m.id === id)
-                    if (item) {
-                      targets[id] = {
-                        origX: item.position?.x || 0,
-                        origY: item.position?.y || 0
-                      }
-                    }
-                  })
-
-                  const d = { startX: e.clientX, startY: e.clientY, targets, isDragging: false }
+                  for (const id of ids) {
+                    const item = allTimelineItems.find((m) => m.id === id)
+                    if (item) targets[id] = { origX: item.position?.x || 0, origY: item.position?.y || 0 }
+                  }
+                  const d = {
+                    startX: e.clientX, startY: e.clientY, targets, isDragging: false,
+                    primaryId: tm.id, modifiers: { ctrl: e.ctrlKey || e.metaKey },
+                  }
                   setDragClip(d)
                   dragClipRef.current = d
                   clipDraggedRef.current = false
                 }}
                 onPointerMove={(e) => {
-                  if (!dragClipRef.current) return
+                  const d = dragClipRef.current
+                  if (!d) return
                   if ((e.buttons & 1) === 0) { setDragClip(null); dragClipRef.current = null; return }
+                  const dx = e.clientX - d.startX
+                  const dy = e.clientY - d.startY
+                  if (!d.isDragging && Math.hypot(dx, dy) <= DRAG_THRESHOLD_PX) return
+                  d.isDragging = true
 
-                  const dx = e.clientX - dragClipRef.current.startX
-                  const dy = e.clientY - dragClipRef.current.startY
-
-                  if (!dragClipRef.current.isDragging && Math.hypot(dx, dy) > 3) {
-                    dragClipRef.current.isDragging = true
+                  let wdx = dx / ratio
+                  let wdy = -dy / ratio
+                  let guides = null
+                  if (!e.altKey) {
+                    const ids = Object.keys(d.targets)
+                    const targets = stageSnapTargets(ids)
+                    const threshold = SNAP_PX / ratio
+                    const primary = rectOf({ tm, screen })
+                    const px = primary.cx + wdx
+                    const py = primary.cy + wdy
+                    const sx = snapOffsets([px - primary.w / 2, px, px + primary.w / 2], targets.x, threshold)
+                    const sy = snapOffsets([py - primary.h / 2, py, py + primary.h / 2], targets.y, threshold)
+                    if (sx.snapped) wdx += sx.delta
+                    if (sy.snapped) wdy += sy.delta
+                    if (sx.snapped || sy.snapped) guides = { x: sx.snapped ? sx.target : null, y: sy.snapped ? sy.target : null }
                   }
 
-                  const newTargets = {}
-                  Object.entries(dragClipRef.current.targets).forEach(([id, init]) => {
-                    newTargets[id] = {
-                      ...init,
-                      currentX: init.origX + dx / ratio,
-                      currentY: init.origY - dy / ratio
-                    }
-                  })
-
-                  const newDrag = { ...dragClipRef.current, targets: newTargets }
-                  dragClipRef.current = newDrag
-                  setDragClip(newDrag)
+                  const nextTargets = {}
+                  for (const [id, init] of Object.entries(d.targets)) {
+                    nextTargets[id] = { ...init, currentX: init.origX + wdx, currentY: init.origY + wdy }
+                  }
+                  const next = { ...d, targets: nextTargets }
+                  dragClipRef.current = next
+                  setDragClip(next)
+                  setSnapGuides(guides)
                 }}
                 onPointerUp={(e) => {
-                  if (dragClipRef.current) {
-                    if (dragClipRef.current.isDragging) {
-                      clipDraggedRef.current = true
-                      Object.entries(dragClipRef.current.targets).forEach(([id, data]) => {
-                        if (data.currentX !== undefined) {
-                          useEditorStore.getState().updateClipTransform({ timelineId: id, position: { x: data.currentX, y: data.currentY } })
-                        }
-                      })
-                    }
-                    setDragClip(null)
-                    dragClipRef.current = null
-                  }
+                  const d = dragClipRef.current
                   try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
+                  if (!d) return
+                  if (!d.isDragging) {
+                    // A click: select, with Ctrl toggling.
+                    const st = useEditorStore.getState()
+                    if (d.modifiers.ctrl) {
+                      const cur = st.selectedClipIds
+                      st.setSelectedClips(cur.includes(tm.id) ? cur.filter((x) => x !== tm.id) : [...cur, tm.id])
+                    } else {
+                      st.setSelectedClips([tm.id])
+                    }
+                    dragClipRef.current = null
+                    setDragClip(null)
+                    return
+                  }
+                  commitClipDrag()
                 }}
-                onDragStart={(e) => { e.preventDefault() }}
-                onPointerCancel={(e) => { if (dragClipRef.current) { setDragClip(null); dragClipRef.current = null } try { e.currentTarget.releasePointerCapture?.(e.pointerId) } catch { } }}
-                title={(clip?.name || tm.clip_id) + ` (${(tm.start_at_seconds || 0).toFixed?.(2)}s)`}
+                onDragStart={(e) => e.preventDefault()}
+                title={`${clip?.name || tm.clip_id} (${clipStart(tm).toFixed(2)}s · ${clipDuration(tm).toFixed(2)}s)`}
                 style={{
-                  position: 'absolute',
-                  left: (dragClip?.targets?.[tm.id]?.currentX !== undefined) ? (cx + dragClip.targets[tm.id].currentX * ratio - w / 2) : left,
-                  top: (dragClip?.targets?.[tm.id]?.currentY !== undefined) ? (cy - dragClip.targets[tm.id].currentY * ratio - h / 2) : top,
-                  width: w,
-                  height: h,
-                  background: '#0b0d12',
-                  border: `1px solid ${isSel ? '#ffcc00' : '#3a4060'}`,
-                  boxShadow: isSel ? '0 0 0 1px #ffcc0066' : 'none',
-                  borderRadius: 4,
+                  left: box.left,
+                  top: box.top,
+                  width: box.width,
+                  height: box.height,
+                  background: 'var(--bg-deep)',
+                  border: `1px solid ${isSel ? 'var(--accent-yellow)' : 'var(--border-subtle)'}`,
+                  boxShadow: isSel ? '0 0 0 1px var(--selected-glow)' : 'none',
+                  borderRadius: 'var(--radius-sm)',
                   overflow: 'hidden',
-                  display: isActive ? 'flex' : 'none',
+                  display: isClipActive(tm, tNow) ? 'flex' : 'none',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#c7cfdb',
+                  color: 'var(--text)',
                   fontSize: 11,
                   pointerEvents: shiftHeld ? 'none' : 'auto',
                   zIndex: 5,
                   userSelect: 'none',
-                  WebkitUserSelect: 'none',
-                  MozUserSelect: 'none',
-                  WebkitUserDrag: 'none',
                   touchAction: 'none',
-                  opacity: shiftHeld ? 0.4 : finalOpacity,
-                  filter: shiftHeld ? 'grayscale(1)' : buildFilterString(tm)
+                  opacity: shiftHeld ? 0.4 : computeFadeOpacity(tm, tNow),
+                  filter: shiftHeld ? 'grayscale(1)' : buildFilterString(tm),
                 }}
               >
-                {(() => {
-                  const uri_ = String(clip?.uri || '')
-                  const ext = extFromUri(uri_) || extFromUri(clip?.name || '')
-                  const isVideo = mediaTypeFromExt(ext) === 'video'
-                  if (isVideo) {
-                    return <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
-                  }
-                  if (imageMeta[tm.clip_id]?.src) {
-                    return <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none', WebkitUserDrag: 'none' }} />
-                  }
-                  return <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', userSelect: 'none' }}>{clip?.name || tm.clip_id}</span>
-                })()}
-                {/* White 1px bounding box overlay */}
-                <div style={{ position: 'absolute', inset: 0, border: '1px solid #ffffff', pointerEvents: 'none' }} />
+                {isVideo
+                  ? <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
+                  : imageMeta[tm.clip_id]?.src
+                    ? <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false}
+                      style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none' }} />
+                    : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{clip?.name || tm.clip_id}</span>}
               </div>
             )
           })}
-        </div>
-      </div>
-      {/* Selection label (top-left of stage) */}
-      <SelectionOverlay nodes={nodes} nodeIndex={nodeIndex} mediaById={mediaById} selectedId={selectedId} selectedClipId={selectedClipId} />
 
-      {/* Viewport Controls */}
-      <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', flexDirection: 'row', gap: 8, zIndex: 10, pointerEvents: 'none' }}>
-        {/* Tool toggle */}
-        <div style={{ display: 'flex', flexDirection: 'row', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
-          <IconButton active={tool === 'select'} onClick={() => setTool('select')} title="Select">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" /><path d="M13 13l6 6" /></svg>
-          </IconButton>
-          <div style={{ width: 1, background: '#232636' }} />
-          <IconButton active={tool === 'hand'} onClick={() => setTool('hand')} title="Pan">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0" /><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2" /><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></svg>
-          </IconButton>
-        </div>
+          {/* Resize handles for exactly one selected clip. */}
+          {singleSelected && !dragClip && (
+            <ResizeHandles rect={resizeRectStage} onStart={onResizeStart} />
+          )}
 
-        {/* Zoom controls */}
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <div style={{ display: 'flex', flexDirection: 'row', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
-            <IconButton onClick={() => setZoom(z => clamp(z / 1.25, 0.01, 20))} title="Zoom Out">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
-            </IconButton>
-            <div style={{ width: 1, background: '#232636' }} />
-            <IconButton onClick={() => setZoom(z => clamp(z * 1.25, 0.01, 20))} title="Zoom In">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
-            </IconButton>
-          </div>
-          <div style={{ padding: '2px 6px', fontSize: 12, color: '#b9c3d6', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
-            {Math.round(zoom * 100)}%
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'row', background: '#0f1115', border: '1px solid #232636', borderRadius: 4, overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
-            <IconButton onClick={frameAll} title="Frame All (F)">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /><path d="M15 3v18" /><path d="M3 9h18" /><path d="M3 15h18" /></svg>
-            </IconButton>
-          </div>
+          {snapGuides?.x != null && (
+            <div className="v2d-snap-guide" style={{ left: worldToStage(snapGuides.x, 0, ratio, center).x, top: 0, width: 1, height: STAGE_H }} />
+          )}
+          {snapGuides?.y != null && (
+            <div className="v2d-snap-guide" style={{ top: worldToStage(0, snapGuides.y, ratio, center).y, left: 0, height: 1, width: STAGE_W }} />
+          )}
         </div>
       </div>
 
-      {menu.open && (
-        <div style={{ position: 'fixed', left: menu.x, top: menu.y, background: '#0f1115', border: '1px solid #232636', borderRadius: 4, zIndex: 5000, minWidth: 160, boxShadow: '0 4px 12px rgba(0,0,0,0.4)' }} onClick={(e) => { e.stopPropagation() }} onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.preventDefault()}>
-          <StageMenu
-            onAddScreen={(screenType) => {
-              setMenu({ open: false, x: 0, y: 0 })
-              useEditorStore.getState().addScreenNode({ pixels: [1920, 1080], screenType })
-            }}
-            onRemoveClip={() => {
-              setMenu({ open: false, x: 0, y: 0 })
-              const st = useEditorStore.getState()
-              if (st.selectedClipId) st.removeClip(st.selectedClipId)
-            }}
-            onRemoveScreen={() => {
-              setMenu({ open: false, x: 0, y: 0 })
-              const st = useEditorStore.getState()
-              const sel = st.selectedId
-              if (!sel) return
-              // ensure selected is a screen
-              const nodes = st.scene?.roots || []
-              const stack = [...nodes]
-              let isScreen = false
-              while (stack.length) {
-                const n = stack.pop()
-                if (!n) continue
-                if (n.id === sel) { isScreen = n.kind?.type === 'screen'; break }
-                if (n.children?.length) stack.push(...n.children)
-              }
-              if (isScreen) st.removeScreenNode(sel)
-            }}
-          />
-        </div>
-      )}
+      <SelectionOverlay />
+
+      <ViewportToolbar
+        tool={tool}
+        setTool={setTool}
+        zoom={zoom}
+        onZoomIn={() => applyZoom(zoom * 1.25)}
+        onZoomOut={() => applyZoom(zoom / 1.25)}
+        onZoom100={zoomTo100}
+        onFrameAll={frameAll}
+        onFrameSelected={frameSelected}
+        hasSelection={!!selectedId || selectedClipIds.length > 0}
+      />
+
+      <ContextMenu
+        open={!!menu}
+        x={menu?.x || 0}
+        y={menu?.y || 0}
+        items={menu ? stageMenuItems() : []}
+        onClose={() => setMenu(null)}
+      />
     </div>
-  )
-}
-
-function VideoFrame({ clip, style }) {
-  const [thumb, setThumb] = useState(null)
-  const uri = String(clip?.uri || '')
-
-  useEffect(() => {
-    let cancelled = false
-    async function loadThumb() {
-      try {
-        const { generateVideoThumbnail } = await import('../utils/videoUtils.js')
-        const dataUrl = await generateVideoThumbnail(uri, 0)
-        if (!cancelled) setThumb(dataUrl)
-      } catch { }
-    }
-    if (uri) loadThumb()
-    return () => { cancelled = true }
-  }, [uri])
-
-  if (thumb) {
-    return <img src={thumb} alt={clip?.name || ''} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
-  }
-  return <span style={{ padding: '0 4px', color: '#888', fontSize: 11, userSelect: 'none', ...style }}>{clip?.name || 'video'}</span>
-}
-
-function Node2D({ node, center, scale, selectedId, onSelect, highlight, shiftHeld, dragScreen, setDragScreen, dragScreenRef }) {
-  const t = node.transform
-  const Z_NEUTRAL = 0.2
-  const ratio = scale / 50 // since scale already includes zoom/Z_NEUTRAL, and BASE_SCALE is 50
-  const posX = (t?.position?.x ?? 0)
-  const posY = (t?.position?.y ?? 0)
-  const x = posX * ratio + center.x
-  const y = center.y - posY * ratio
-  const s = t?.scale ?? { x: 1, y: 1, z: 1 }
-  const isSelected = node.id === selectedId
-
-  const children = (node.children ?? []).map((c) => (
-    <Node2D key={c.id} node={c} center={center} scale={scale} selectedId={selectedId} onSelect={onSelect} shiftHeld={shiftHeld} dragScreen={dragScreen} setDragScreen={setDragScreen} dragScreenRef={dragScreenRef} />
-  ))
-
-  if (node.kind?.type === 'screen') {
-    const px = node.kind?.pixels?.[0] || 0
-    const py = node.kind?.pixels?.[1] || 0
-    const w = Math.max(2, px * (ratio))
-    const h = Math.max(2, py * (ratio))
-    const isRenderer = (node.kind?.screenType || 'web') === 'renderer'
-    const borderColor = isSelected || highlight ? '#ffcc00' : '#3a4e85'
-
-    // Apply drag offset if this screen is being dragged
-    const isDragging = dragScreen?.nodeId === node.id
-    const drawX = isDragging && dragScreen.currentX !== undefined ? dragScreen.currentX * ratio + center.x : x
-    const drawY = isDragging && dragScreen.currentY !== undefined ? center.y - dragScreen.currentY * ratio : y
-    const screenLabel = `${node.name || node.id} (${px}x${py})`
-    const typeTag = isRenderer ? 'NDI' : 'Web'
-
-    return (
-      <>
-        <div
-          onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
-          onPointerDown={(e) => {
-            if (!shiftHeld || e.button !== 0) return
-            e.stopPropagation()
-            e.preventDefault()
-            try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-            onSelect(node.id)
-            const d = { nodeId: node.id, origX: posX, origY: posY, startX: e.clientX, startY: e.clientY }
-            setDragScreen(d)
-            dragScreenRef.current = d
-          }}
-          onPointerMove={(e) => {
-            const d = dragScreenRef.current
-            if (!d || d.nodeId !== node.id) return
-            if ((e.buttons & 1) === 0) { setDragScreen(null); dragScreenRef.current = null; return }
-            const dx = e.clientX - d.startX
-            const dy = e.clientY - d.startY
-            const next = { ...d, currentX: d.origX + dx / ratio, currentY: d.origY - dy / ratio }
-            dragScreenRef.current = next
-            setDragScreen(next)
-          }}
-          onPointerUp={(e) => {
-            const d = dragScreenRef.current
-            if (!d || d.nodeId !== node.id) return
-            if (d.currentX !== undefined) {
-              useEditorStore.getState().updateNodeTransform(d.nodeId, {
-                position: { x: d.currentX, y: d.currentY, z: 0 },
-              })
-            }
-            setDragScreen(null)
-            dragScreenRef.current = null
-            try { e.currentTarget.releasePointerCapture(e.pointerId) } catch {}
-          }}
-          title={screenLabel}
-          draggable={false}
-          onDragStart={(e) => e.preventDefault()}
-          style={{ position: 'absolute', left: drawX - w / 2, top: drawY - h / 2, width: w, height: h, background: isSelected ? 'rgba(30,40,80,0.5)' : 'rgba(16,21,32,0.5)', border: `1px dashed ${borderColor}`, borderRadius: 2, zIndex: 1, cursor: shiftHeld ? 'move' : (isSelected ? 'not-allowed' : 'default') }}
-        >
-          {shiftHeld && <>
-            <span style={{ position: 'absolute', top: 3, left: 5, fontSize: 10, color: '#8898b8', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: w - 10, pointerEvents: 'none', userSelect: 'none' }}>
-              {screenLabel}
-            </span>
-            <span style={{ position: 'absolute', top: 3, right: 5, fontSize: 9, color: isRenderer ? '#a78bfa' : '#6aa0ff', fontWeight: 600, pointerEvents: 'none', userSelect: 'none', background: 'rgba(0,0,0,0.4)', padding: '1px 4px', borderRadius: 2 }}>
-              {typeTag}
-            </span>
-          </>}
-        </div>
-        {children}
-      </>
-    )
-  }
-
-  // Model nodes: render thumbnail preview
-  if (node.kind?.type === 'model') {
-    return <ModelNode2D node={node} x={x} y={y} ratio={ratio} isSelected={isSelected} onSelect={onSelect}>{children}</ModelNode2D>
-  }
-
-  // default: draw a small dot for other nodes
-  return (
-    <>
-      <div onClick={(e) => { e.stopPropagation(); onSelect(node.id) }} style={{ position: 'absolute', left: x - 2, top: y - 2, width: 4, height: 4, background: '#5a78ff', borderRadius: 2 }} title={node.name || node.id} />
-      {children}
-    </>
-  )
-}
-
-function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
-  const [thumb, setThumb] = useState(null)
-  const uri = node.kind?.uri
-
-  useEffect(() => {
-    if (!uri) return
-    let cancelled = false
-    generateModelThumbnail(uri).then(url => {
-      if (!cancelled) setThumb(url)
-    })
-    return () => { cancelled = true }
-  }, [uri])
-
-  const sz = Math.max(40, 80 * ratio)
-  const borderColor = isSelected ? '#ffcc00' : '#a78bfa'
-
-  return (
-    <>
-      <div
-        onClick={(e) => { e.stopPropagation(); onSelect(node.id) }}
-        title={node.name || node.id}
-        style={{
-          position: 'absolute',
-          left: x - sz / 2,
-          top: y - sz / 2,
-          width: sz,
-          height: sz,
-          border: `1px dashed ${borderColor}`,
-          borderRadius: 4,
-          background: '#0b0d12',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          zIndex: 2,
-          overflow: 'hidden',
-        }}
-      >
-        {thumb ? (
-          <img src={thumb} alt={node.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
-        ) : (
-          <span className="ms" style={{ fontSize: Math.max(16, sz * 0.4), color: '#a78bfa', opacity: 0.8 }}>view_in_ar</span>
-        )}
-        <span style={{
-          position: 'absolute', bottom: 2, left: 0, right: 0,
-          fontSize: Math.max(8, Math.min(10, sz * 0.11)),
-          color: '#c7cfdb', textAlign: 'center',
-          background: 'rgba(0,0,0,0.6)', padding: '1px 4px',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {node.name || 'Model'}
-        </span>
-      </div>
-      {children}
-    </>
-  )
-}
-
-function StageMenu({ onAddScreen, onRemoveClip, onRemoveScreen }) {
-  const hasSelectedClip = useEditorStore((s) => !!s.selectedClipId)
-  const selectedId = useEditorStore((s) => s.selectedId)
-  const scene = useEditorStore((s) => s.scene)
-  const isScreenSelected = useMemo(() => {
-    if (!selectedId || !scene?.roots) return false
-    const stack = [...scene.roots]
-    while (stack.length) {
-      const n = stack.pop()
-      if (!n) continue
-      if (n.id === selectedId) return n.kind?.type === 'screen'
-      if (n.children?.length) stack.push(...n.children)
-    }
-    return false
-  }, [selectedId, scene])
-  return (
-    <div>
-      <MenuItem label="Add Web Screen" onClick={() => onAddScreen('web')} />
-      <MenuItem label="Add Renderer Screen" onClick={() => onAddScreen('renderer')} />
-      {hasSelectedClip && <MenuItem label="Remove Selected Clip" onClick={onRemoveClip} />}
-      {isScreenSelected && <MenuItem label="Remove Screen" onClick={onRemoveScreen} />}
-    </div>
-  )
-}
-
-function MenuItem({ label, onClick }) {
-  return (
-    <button type="button" onClick={onClick} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'transparent', color: '#c7cfdb', border: 'none', padding: '8px 12px', cursor: 'pointer' }}>
-      {label}
-    </button>
-  )
-}
-
-// Cache for the grid tile canvas data URL
-const _gridCache = { key: '', url: '' }
-
-function dotGridBg(center, zoom) {
-  const Z_NEUTRAL = 0.2
-  const BASE_SCALE = 50
-  const pxPerUnit = BASE_SCALE * (zoom / Z_NEUTRAL)
-
-  // Adaptive: pick smallest world-space interval that gives >= 16px on screen
-  const levels = [10, 50, 100, 500, 1000, 5000]
-  let minorWorld = 100
-  for (const lv of levels) {
-    if (lv * pxPerUnit >= 16) { minorWorld = lv; break }
-  }
-  const majorMult = 10
-  const minorPx = Math.round(minorWorld * pxPerUnit)
-  const tilePx = minorPx * majorMult // tile = one major cell = 10 minor cells
-
-  if (minorPx < 4) return { background: '#0b0d12' }
-
-  // Build a single canvas tile with both minor and major dots baked in
-  const cacheKey = `${tilePx}_${minorPx}`
-  if (_gridCache.key !== cacheKey) {
-    const c = document.createElement('canvas')
-    c.width = tilePx
-    c.height = tilePx
-    const ctx = c.getContext('2d')
-
-    // Minor dots
-    ctx.fillStyle = '#2a375b'
-    for (let gy = 0; gy < majorMult; gy++) {
-      for (let gx = 0; gx < majorMult; gx++) {
-        if (gx === 0 && gy === 0) continue // skip origin — major dot goes there
-        const x = gx * minorPx
-        const y = gy * minorPx
-        ctx.beginPath()
-        ctx.arc(x, y, 1, 0, Math.PI * 2)
-        ctx.fill()
-      }
-    }
-
-    // Major dot at tile origin (0,0) — larger and brighter
-    ctx.fillStyle = '#6a8fd8'
-    ctx.beginPath()
-    ctx.arc(0, 0, 2.5, 0, Math.PI * 2)
-    ctx.fill()
-
-    _gridCache.key = cacheKey
-    _gridCache.url = c.toDataURL()
-  }
-
-  // Offset so tile origin aligns with world origin (center of stage)
-  const mod = (v, m) => ((v % m) + m) % m
-  const offX = mod(center.x, tilePx)
-  const offY = mod(center.y, tilePx)
-
-  return {
-    backgroundImage: `url(${_gridCache.url})`,
-    backgroundSize: `${tilePx}px ${tilePx}px`,
-    backgroundPosition: `${offX}px ${offY}px`,
-    backgroundRepeat: 'repeat',
-  }
-}
-
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
-
-function SelectionOverlay({ nodes, nodeIndex, mediaById, selectedId, selectedClipId }) {
-  let text = ''
-  if (selectedClipId) {
-    // selectedClipId refers to timeline item id; resolve clip via tracks
-    try {
-      const proj = useEditorStore.getState().project
-      let mediaEntry = null
-      // `t.media` is an array of timeline items; the old code treated it as a
-      // single object, so a clip name never resolved.
-      for (const t of proj?.timeline?.tracks ?? []) {
-        const list = Array.isArray(t.media) ? t.media : (t.media ? [t.media] : [])
-        const item = list.find((m) => m?.id === selectedClipId)
-        if (item) {
-          mediaEntry = (proj.media || []).find((m) => m.id === item.clip_id)
-          break
-        }
-      }
-      text = mediaEntry?.name || mediaEntry?.id || selectedClipId
-    } catch { text = selectedClipId }
-  } else if (selectedId) {
-    const n = nodeIndex.get(selectedId)
-    if (n) {
-      const prefix = n.kind?.type === 'screen'
-        ? `Screen (${n.kind?.screenType || 'web'})`
-        : 'Node'
-      text = `${prefix}: ${n.name || n.id}`
-    }
-  }
-  if (!text) return null
-  return (
-    <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10, pointerEvents: 'none', padding: '2px 6px', fontSize: 12, color: '#b9c3d6', background: '#0f1115cc', border: '1px solid #232636', borderRadius: 4 }}>
-      {text}
-    </div>
-  )
-}
-
-function IconButton({ active, onClick, title, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      style={{
-        width: 32,
-        height: 32,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: active ? '#2a3148' : 'transparent',
-        color: active ? '#6aa0ff' : '#c7cfdb',
-        border: 'none',
-        cursor: 'pointer',
-        outline: 'none',
-      }}
-      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = '#1c202b' }}
-      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent' }}
-    >
-      {children}
-    </button>
   )
 }
 
