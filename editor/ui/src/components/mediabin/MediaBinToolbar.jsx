@@ -13,20 +13,19 @@ export default function MediaBinToolbar({ view, setView, onAddNew, count, total 
 
   return (
     <div className="media-bin__toolbar">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <div style={{ fontWeight: 600, fontSize: 12 }}>Media Bin</div>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+      <div className="panel__head">
+        <span className="panel__title">Sources</span>
+        <span className="panel__count">
           {count === total ? total : `${count} / ${total}`}
         </span>
         <button
           type="button"
-          className="btn"
-          style={{ marginLeft: 'auto', fontSize: 11 }}
+          className="btn btn--ghost panel__head-action"
           title="Add New"
           aria-label="Add New"
           onClick={onAddNew}
         >
-          Add New
+          Add
         </button>
       </div>
 

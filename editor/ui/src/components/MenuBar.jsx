@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react'
 import { useEditorStore } from '../store.js'
-import { selectSelectionSummary } from '../selectors.js'
+import { selectSelectionSummary, selectDirty } from '../selectors.js'
 import { accelFor } from '../shortcuts.js'
 import { Menu, MenuItem, MenuSeparator, MenuSection, useMenuDismiss, useMenuBarArrows } from './menu/Menu.jsx'
 
@@ -46,6 +46,13 @@ export default function MenuBar({
   const redoLabel = useEditorStore((s) => s._redoStack[s._redoStack.length - 1]?.label)
   const selectionKind = useEditorStore((s) => selectSelectionSummary(s).kind)
 
+  // The app bar's breadcrumb and telemetry read the same state the status bar
+  // does: there is no separate "show" model, so the document name stands in
+  // for the show and the outputs map supplies the live counts.
+  const documentName = useEditorStore((s) => s.documentName)
+  const dirty = useEditorStore(selectDirty)
+  const outputs = useEditorStore((s) => s.outputs)
+
   const [open, setOpen] = useState(null)
   const wrapRef = useRef(null)
   useMenuDismiss(wrapRef, open, setOpen)
@@ -53,8 +60,35 @@ export default function MenuBar({
 
   const run = (fn) => () => { setOpen(null); fn?.() }
 
+  const entries = Object.values(outputs)
+  const openCount = entries.filter((o) => o?.state === 'open' || o?.state === 'running').length
+  const failed = entries.filter((o) => o?.state === 'error').length
+  // Only renderer outputs report a frame rate; show the slowest, since that is
+  // the one that would drop a show.
+  const rates = entries.map((o) => Number(o?.fps)).filter((n) => Number.isFinite(n) && n > 0)
+  const fps = rates.length ? Math.min(...rates) : null
+
+  const MODES = [
+    { id: '2d', label: 'Stage' },
+    { id: '3d', label: 'Scene' },
+    { id: 'output', label: 'Output' },
+  ]
+
   return (
-    <div ref={wrapRef} role="menubar" className="menubar toolbar">
+    <div className="appbar">
+      <div className="appbar__brand">
+        <span className="appbar__mark" aria-hidden="true" />
+        <span className="appbar__wordmark">Constellation</span>
+      </div>
+
+      <span className="appbar__rule" aria-hidden="true" />
+
+      <div className="appbar__doc" title={documentName || 'Untitled'}>
+        <span className="appbar__doc-name">{documentName || 'Untitled'}</span>
+        {dirty && <span className="appbar__doc-dot" title="Unsaved changes" />}
+      </div>
+
+      <div ref={wrapRef} role="menubar" className="menubar toolbar">
       <Menu id="file" title="File" open={open} setOpen={setOpen}>
         <MenuItem label="New Show" accel={accelFor('newShow')} onSelect={run(onNewShow)} />
         <MenuItem label="Open Show…" accel={accelFor('openShow')} onSelect={run(onOpenProject)} />
@@ -130,8 +164,33 @@ export default function MenuBar({
       </Menu>
 
       <Menu id="help" title="Help" open={open} setOpen={setOpen}>
-        <MenuItem label="Keyboard Shortcuts…" accel={accelFor('shortcutsHelp')} onSelect={run(toggleShortcutsHelp)} />
-      </Menu>
+          <MenuItem label="Keyboard Shortcuts…" accel={accelFor('shortcutsHelp')} onSelect={run(toggleShortcutsHelp)} />
+        </Menu>
+      </div>
+
+      <div className="appbar__modes" role="group" aria-label="Viewport mode">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={'appbar__mode' + (viewMode === m.id ? ' is-active' : '')}
+            aria-pressed={viewMode === m.id}
+            onClick={() => setViewMode(m.id)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <span className="appbar__spacer" />
+
+      <div className="appbar__telemetry">
+        <span className={'appbar__stat' + (failed ? ' is-error' : '')}>
+          <span className={'appbar__dot' + (failed ? ' is-error' : openCount ? ' is-ok' : '')} />
+          {openCount}/{entries.length} outputs
+        </span>
+        {fps !== null && <span className="appbar__stat">{fps.toFixed(2)} fps</span>}
+      </div>
     </div>
   )
 }

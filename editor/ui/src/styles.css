@@ -11,65 +11,79 @@
 :root {
   color-scheme: dark;
 
-  /* Surfaces */
-  --bg-primary: #0f1115;
-  --bg-deep: #0b0d12;
-  --bg-panel: #151821;
-  --bg-hover: #1c202b;
-  --bg-selected: #354066;
-  --bg-elevated: #1b1e26;
-  --bg-inset: #13151a;
-  --bg-control: #2a2f45;
-  --bg-control-subtle: #161820;
-  --bg-stage: #283042;
+  /* Surfaces. Signal is a near-black theme: the shell is the darkest layer,
+     panels sit one step up, and controls one step up again. Nothing glows. */
+  --bg-primary: #0a0c0e;
+  --bg-deep: #08090b;
+  --bg-panel: #0e1013;
+  --bg-hover: #131619;
+  --bg-selected: #1b2530;
+  --bg-row-selected: #16202b;
+  --bg-elevated: #14181c;
+  --bg-inset: #0b0d10;
+  --bg-control: #131619;
+  --bg-control-subtle: #0f1215;
+  --bg-stage: #0a0c0e;
 
-  /* Lines */
-  --border: #232636;
-  --border-subtle: #3a4060;
+  /* Lines. `--border` is the hairline everything is divided by;
+     `--border-subtle` is the stronger one used on controls and on hover. */
+  --border: #23272d;
+  --border-subtle: #3c424a;
+  --border-faint: #12161a;
+  --border-accent: #2b4560;
 
   /* Text */
-  --text: #c7cfdb;
-  --text-secondary: #b9c3d6;
-  --text-tertiary: #8b9bb4;
-  --text-muted: #6b7280;
-  --text-strong: #e1e4e8;
+  --text: #cfd5dc;
+  --text-secondary: #b9c1ca;
+  --text-tertiary: #8a929c;
+  --text-muted: #7f8994;
+  --text-strong: #e6eaef;
 
   /* Semantic */
-  --accent: #6aa0ff;
-  --accent-glow: #6aa0ff66;
-  --accent-yellow: #ffcc00;
-  --playhead: #ff6;
-  --error: #ff4444;
-  --success: #4ade80;
-  --warn: #facc15;
-  --info: #8bc3ff;
-  --model: #a78bfa;
+  --accent: #4ea3ff;
+  --accent-glow: #4ea3ff55;
+  --accent-yellow: #e2a33c;
+  --playhead: #4ea3ff;
+  --error: #ff5f56;
+  --success: #4fb3a1;
+  --warn: #e2a33c;
+  --info: #9fc9f5;
+  --model: #7c5cff;
 
   /* Effects */
   /* Stage chrome: the axes, screen outlines and ruler ticks that are part
      of the editing surface rather than the UI shell. */
-  --stage-line: #3a4e85;
-  --stage-tick: #4a5674;
-  --stage-mode: #00e5ff;
-  --selected-glow: #ffcc0066;
+  --stage-line: #223040;
+  --stage-tick: #2f3a45;
+  --stage-mode: #4fb3a1;
+  --stage-grid: #111418;
+  --selected-glow: #4ea3ff55;
 
   /* Translucent panel background for HUD chips floating over the stage. */
-  --bg-primary-alpha: #0f1115cc;
-  --error-bg: #1a0a0a;
+  --bg-primary-alpha: #0a0c0ee6;
+  --error-bg: #1a0e0e;
 
-  --scrim: rgba(0, 0, 0, 0.6);
-  --shadow-menu: 0 8px 18px rgba(0, 0, 0, 0.5);
-  --shadow-modal: 0 20px 50px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.66);
+  --shadow-menu: 0 6px 16px rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 18px 44px rgba(0, 0, 0, 0.6);
 
-  /* Geometry */
-  --radius-sm: 4px;
-  --radius: 6px;
-  --radius-lg: 8px;
+  /* Geometry. Signal is a square-cornered theme — the radii are kept as
+     tokens so the shape language stays in one place, not scattered. */
+  --radius-sm: 0px;
+  --radius: 0px;
+  --radius-lg: 0px;
   --splitter-size: 6px;
   --statusbar-h: 24px;
 
-  /* Type */
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Type. Both faces are bundled (see main.jsx) rather than pulled from
+     Google Fonts, because the desktop shell has to render offline. */
+  --font-ui: 'Barlow Semi Condensed', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Signal leans on letter-spaced uppercase for labels instead of weight. */
+  --track-wide: 0.14em;
+  --track-mid: 0.1em;
+  --track-tight: 0.06em;
 
   /* Stacking order. Every z-index in the app references one of these. */
   --z-hud: 10;
@@ -89,11 +103,12 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--bg-primary);
+  background: var(--bg-deep);
 }
 
 body {
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: var(--font-ui);
+  font-size: 12px;
   color: var(--text);
 }
 
@@ -114,15 +129,17 @@ body {
 }
 
 .layout > header {
-  padding: 4px 8px;
-  background: var(--bg-primary);
+  padding: 0;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
   color: var(--text);
 }
 
 .layout > footer {
   padding: 0;
   box-sizing: border-box;
-  background: var(--bg-primary);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
   color: var(--text);
   display: flex;
   flex-direction: column;
@@ -133,7 +150,7 @@ body {
   display: flex;
   flex-direction: row;
   gap: 0;
-  padding: 8px;
+  padding: 0;
   overflow: hidden;
   min-width: 0;
   background: var(--bg-stage);
@@ -145,10 +162,12 @@ body {
   min-width: 0;
 }
 
+/* Panels butt directly against one another; the splitter draws the only
+   line between them, so a border here would double it up. */
 .panel {
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -162,8 +181,8 @@ body {
   width: 28px;
   flex: 0 0 auto;
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 0;
+  border-radius: 0;
   color: var(--text-tertiary);
   font-size: 11px;
   cursor: pointer;
@@ -410,6 +429,140 @@ input[type='checkbox'] {
   z-index: var(--z-menubar);
 }
 
+/* ---------------------------------------------------------------- app bar -- */
+
+/* One 38px row: identity, what is open, the menus, the viewport mode, and
+   live output telemetry pushed to the right. */
+.appbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 12px;
+  background: var(--bg-panel);
+}
+
+.appbar__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.appbar__mark {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+}
+
+.appbar__wordmark {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-strong);
+}
+
+.appbar__rule {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+.appbar__doc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-tertiary);
+}
+
+.appbar__doc-name {
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.appbar__doc-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.appbar__modes {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.appbar__mode {
+  padding: 5px 11px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.appbar__mode:hover {
+  color: var(--text-strong);
+  border-color: var(--border);
+}
+
+.appbar__mode.is-active {
+  background: var(--bg-selected);
+  border-color: var(--border-accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.appbar__spacer {
+  flex: 1;
+}
+
+.appbar__telemetry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+.appbar__stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+}
+
+.appbar__stat.is-error {
+  color: var(--error);
+}
+
+.appbar__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.appbar__dot.is-ok {
+  background: var(--success);
+}
+
+.appbar__dot.is-error {
+  background: var(--error);
+}
+
 .menubar__trigger {
   background: transparent;
   border: 1px solid transparent;
@@ -566,13 +719,14 @@ input[type='checkbox'] {
 .statusbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   height: var(--statusbar-h);
-  padding: 0 10px;
-  background: var(--bg-deep);
+  padding: 0 12px;
+  background: var(--bg-inset);
   border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
   user-select: none;
   overflow: hidden;
 }
@@ -640,30 +794,43 @@ input[type='checkbox'] {
 /* ------------------------------------------------------------ inspector -- */
 
 .category {
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
 }
 
 .category__header {
-  padding: 8px 12px;
+  padding: 6px 10px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   width: 100%;
   cursor: pointer;
   user-select: none;
-  background: var(--bg-elevated);
+  background: var(--bg-inset);
   border: none;
+  border-bottom: 1px solid var(--border-faint);
   border-radius: 0;
-  color: var(--text-strong);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
   text-align: left;
 }
 
 .category__header:hover:not(:disabled) {
-  background: var(--border);
-  border-color: transparent;
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+/* Chevron and label lead; the optional actions span (the only sibling the
+   header ever has) is pushed to the far right as monospace meta. */
+.category__header > span + span {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
 }
 
 .category__chevron {
@@ -894,10 +1061,11 @@ input[type='checkbox'] {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 0 8px;
+  padding: 0 9px;
   cursor: pointer;
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  border-bottom: 1px dashed var(--border);
+  border-radius: 0;
+  border-bottom: 1px solid var(--border-faint);
+  border-left: 2px solid transparent;
   font-size: 12px;
   color: var(--text);
 }
@@ -907,8 +1075,8 @@ input[type='checkbox'] {
 }
 
 .tl-track-header.is-selected {
-  background: var(--bg-selected);
-  border-right: 2px solid var(--accent);
+  background: var(--bg-row-selected);
+  border-left-color: var(--accent);
 }
 
 .tl-track-header__name {
@@ -923,6 +1091,8 @@ input[type='checkbox'] {
 }
 
 .tl-track-header__count {
+  font-family: var(--font-mono);
+  font-size: 9px;
   font-size: 10px;
   color: var(--text-muted);
   flex: 0 0 auto;
@@ -987,19 +1157,97 @@ input[type='checkbox'] {
 .media-bin__toolbar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: 7px;
+  padding: 0 0 8px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+}
+
+/* Shared panel header: a 30px strip with a letter-spaced title, a count and
+   an optional action. Used by every docked panel so they line up. */
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  flex: 0 0 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.panel__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.panel__count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.panel__head-action {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: var(--track-tight);
+  text-transform: uppercase;
+  padding: 3px 8px;
+}
+
+/* Group divider inside the source list ("On timeline" / "Unused"). */
+.media-bin__group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-inset);
+  border-top: 1px solid var(--border-faint);
+  border-bottom: 1px solid var(--border-faint);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.media-bin__group-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--track-tight);
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.media-bin__group:nth-of-type(n + 2) .media-bin__group-label {
+  color: var(--text-tertiary);
+}
+
+.media-bin__group-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border-faint);
+}
+
+.media-bin__group-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* The toolbar's search + filters keep their own padding now that the header
+   strip above them is flush. */
+.media-bin__toolbar > *:not(.panel__head) {
+  margin: 0 10px;
 }
 
 .media-bin__list {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px;
-  display: grid;
-  gap: 6px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
   align-content: start;
 }
 
@@ -1012,31 +1260,37 @@ input[type='checkbox'] {
 .media-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  gap: 9px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-faint);
+  border-left: 2px solid transparent;
+  border-radius: 0;
   cursor: grab;
   min-width: 0;
 }
 
 .media-row:hover {
-  border-color: var(--border-subtle);
   background: var(--bg-hover);
 }
 
 .media-row.is-selected {
-  border-color: var(--accent);
-  background: var(--bg-selected);
+  background: var(--bg-row-selected);
+  border-left-color: var(--accent);
 }
 
 .media-row.is-linked {
-  border-color: var(--accent-glow);
+  border-left-color: var(--accent-glow);
 }
 
 .media-row.is-missing {
-  border-color: var(--error);
+  border-left-color: var(--error);
+}
+
+/* Sources not on the timeline recede until hovered. */
+.media-bin__group ~ .media-row {
+  opacity: 1;
 }
 
 .media-row__body {
@@ -1054,8 +1308,9 @@ input[type='checkbox'] {
 }
 
 .media-row__meta {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
   display: flex;
   gap: 8px;
   white-space: nowrap;
