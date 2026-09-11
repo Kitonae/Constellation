@@ -33,6 +33,10 @@ export const colors = {
   warn: '#e2a33c',
   info: '#9fc9f5',
   model: '#7c5cff',
+  // Stage chrome. Exposed here because the grid is painted to a canvas tile,
+  // which cannot read a CSS variable.
+  stageLine: '#223040',
+  stageGrid: '#111418',
 }
 
 /** CSS custom-property name for a `colors` key (`accentYellow` → `--accent-yellow`). */

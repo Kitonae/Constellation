@@ -15,7 +15,7 @@ import VideoFrame from './viewport2d/VideoFrame.jsx'
 import SelectionOverlay from './viewport2d/SelectionOverlay.jsx'
 import ViewportToolbar from './viewport2d/ViewportToolbar.jsx'
 import ResizeHandles from './viewport2d/ResizeHandles.jsx'
-import { dotGridBg } from './viewport2d/dotGridBg.js'
+import { gridBg } from './viewport2d/gridBg.js'
 import {
   Z_NEUTRAL, ZOOM_MIN, ZOOM_MAX, STAGE_W, STAGE_H, STAGE_CENTER,
   clamp, ratioForZoom, scaleForZoom,
@@ -28,6 +28,7 @@ const MIN_CLIP_SIZE = 8
 
 function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
+  const gridStyle = useEditorStore((s) => s.settings.gridStyle)
   const project = useEditorStore((s) => s.project)
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
@@ -543,7 +544,7 @@ function Viewport2D() {
       >
         <div
           ref={stageRef}
-          style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
+          style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...gridBg(gridStyle, center, zoom) }}
           onClick={(e) => {
             if (draggedRef.current || e.ctrlKey || e.shiftKey) return
             setSelected(null)

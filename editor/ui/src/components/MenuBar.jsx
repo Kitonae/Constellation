@@ -34,6 +34,7 @@ export default function MenuBar({
   const clearSelection = useEditorStore((s) => s.clearSelection)
   const selectAllClips = useEditorStore((s) => s.selectAllClips)
   const toggleShortcutsHelp = useEditorStore((s) => s.toggleShortcutsHelp)
+  const toggleSettings = useEditorStore((s) => s.toggleSettings)
   const outputsEnabled = useEditorStore((s) => s.outputsEnabled)
   const setOutputsEnabled = useEditorStore((s) => s.setOutputsEnabled)
   const addLog = useEditorStore((s) => s.addLog)
@@ -124,6 +125,8 @@ export default function MenuBar({
           disabled={selectionKind === 'none'}
           onSelect={run(clearSelection)}
         />
+        <MenuSeparator />
+        <MenuItem label="Settings…" onSelect={run(toggleSettings)} />
       </Menu>
 
       <Menu id="view" title="View" open={open} setOpen={setOpen}>

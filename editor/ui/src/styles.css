@@ -707,6 +707,70 @@ input[type='checkbox'] {
   overflow: auto;
 }
 
+/* --------------------------------------------------------------- settings -- */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.settings__label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings__name {
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.settings__hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* A segmented control: the choices butt together into one unit, matching the
+   filter chips and viewport-mode tabs rather than inventing a third look. */
+.settings__control {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.settings__choice {
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: var(--track-tight);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settings__choice:hover {
+  color: var(--text-strong);
+  border-color: var(--border-subtle);
+}
+
+.settings__choice.is-active {
+  background: var(--bg-selected);
+  border-color: var(--border-accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
 .dialog__actions {
   display: flex;
   justify-content: flex-end;

@@ -12,6 +12,7 @@ import StatusBar from './components/StatusBar.jsx'
 import Splitter from './components/Splitter.jsx'
 import ShortcutsOverlay from './components/ShortcutsOverlay.jsx'
 import ConfirmHost from './components/ConfirmDialog.jsx'
+import SettingsDialog from './components/SettingsDialog.jsx'
 import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
 import { createDisplaySink, createNativeSink } from './media/sink.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
@@ -524,6 +525,7 @@ export default function App() {
       <TopConsoleDrawer />
       <LoadingOverlay />
       <ShortcutsOverlay />
+      <SettingsDialog />
       <ConfirmHost />
       <SaveShowDialog
         open={showSaveDialog}
