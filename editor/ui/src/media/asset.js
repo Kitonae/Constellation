@@ -36,6 +36,32 @@ export function extFromUri(uriOrName) {
 }
 
 /**
+ * The filename-and-extension portion of a path, URI or name.
+ *
+ * Native file dialogs on Windows hand back backslash-separated absolute
+ * paths, so an asset imported that way carried its whole path as its display
+ * name and filled a 250px panel with `C:\Users\...`. Splits on either
+ * separator, ignores any query or fragment, and un-escapes a file:// URI.
+ *
+ * A name with no separator comes back unchanged, so this is safe to apply to
+ * anything already clean.
+ *
+ * @param {string} pathOrName
+ * @returns {string}
+ */
+export function baseName(pathOrName) {
+  const raw = String(pathOrName ?? '').trim()
+  if (!raw) return ''
+  // Nothing to recover from these, and their bodies are full of slashes.
+  if (raw.startsWith('data:') || raw.startsWith('blob:')) return raw
+  let u = raw.startsWith('file://') ? raw.slice('file://'.length) : raw
+  u = u.split('?')[0].split('#')[0]
+  const parts = u.split(/[\\/]/).filter(Boolean)
+  const last = parts.length ? parts[parts.length - 1] : u
+  try { return decodeURIComponent(last) } catch { return last }
+}
+
+/**
  * Detect media type from extension.
  * @param {string} ext - lowercase extension
  * @returns {'image'|'video'|'audio'|'unknown'}

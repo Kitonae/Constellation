@@ -9,6 +9,7 @@ import IconButton from './IconButton.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import TimelineClip from './TimelineClip.jsx'
 import TrackHeader from './TrackHeader.jsx'
+import { baseName } from '../media/asset.js'
 
 // Track row geometry. Exported so the drop hit-test and the row style can
 // never drift apart again — they used to disagree (28 px rows, 40 px maths),
@@ -701,7 +702,7 @@ export default React.memo(function Timeline() {
                     const start = isTrimming ? trim.start : clipStart(m) + (isDragging ? drag.deltaTime : 0)
                     const dur = isTrimming ? trim.duration : clipDuration(m)
                     const clip = mediaById[m.clip_id]
-                    const label = m.label || clip?.name || clip?.id || m.clip_id
+                    const label = m.label || baseName(clip?.name) || clip?.id || m.clip_id
                     return (
                       <TimelineClip
                         key={m.id}

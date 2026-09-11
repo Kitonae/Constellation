@@ -9,7 +9,7 @@
 import { useEditorStore } from '../store.js'
 import { getVideoMetadata } from './videoUtils.js'
 import { toFileUri } from '../media/uri.js'
-import { isImportableFile, isVideoName, isModelName } from '../media/asset.js'
+import { isImportableFile, isVideoName, isModelName, baseName } from '../media/asset.js'
 
 const DEFAULT_CLIP_SECONDS = 10
 
@@ -41,7 +41,7 @@ export async function importEntries(entries) {
     for (const { file, path } of list) {
       if (useEditorStore.getState().importProgress?.cancelled) break
 
-      const name = String(path || file?.name || 'media').split(/[\/]/).pop()
+      const name = baseName(path || file?.name) || 'media'
       useEditorStore.getState().updateImportProgress(i, name)
       i++
 

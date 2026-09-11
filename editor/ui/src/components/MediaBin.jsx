@@ -10,6 +10,7 @@ import MediaBinToolbar from './mediabin/MediaBinToolbar.jsx'
 import MediaRow from './mediabin/MediaRow.jsx'
 import useMediaBinView from './mediabin/useMediaBinView.js'
 import { isWails } from '../wails/env.js'
+import { baseName } from '../media/asset.js'
 
 const DEFAULT_VIEW = { query: '', sort: 'added', kinds: [] }
 
@@ -75,8 +76,8 @@ export default React.memo(function MediaBin() {
     const ok = await st.askConfirm({
       title: 'Remove Media',
       message: uses
-        ? `Remove "${asset.name}"?\n${uses} timeline clip${uses === 1 ? '' : 's'} using it will also be removed.`
-        : `Remove "${asset.name}" from the media bin?`,
+        ? `Remove "${baseName(asset.name)}"?\n${uses} timeline clip${uses === 1 ? '' : 's'} using it will also be removed.`
+        : `Remove "${baseName(asset.name)}" from the media bin?`,
       confirmLabel: 'Remove',
       danger: true,
     })

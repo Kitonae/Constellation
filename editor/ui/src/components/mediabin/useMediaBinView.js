@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { assetKind } from '../../media/kind.js'
+import { baseName } from '../../media/asset.js'
 
 /**
  * Filter and sort the media list for display.
@@ -14,7 +15,7 @@ export default function useMediaBinView(media, view) {
 
     let out = media.map((m) => ({ ...m, _kind: assetKind(m.uri || m.name || '') }))
 
-    if (q) out = out.filter((m) => (m.name || m.id).toLowerCase().includes(q))
+    if (q) out = out.filter((m) => (baseName(m.name) || m.name || m.id).toLowerCase().includes(q))
     if (kinds.length) out = out.filter((m) => kinds.includes(m._kind))
 
     const sorted = [...out]

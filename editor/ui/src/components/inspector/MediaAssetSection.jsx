@@ -10,6 +10,7 @@ import { formatDuration } from '../../utils/timeFormat.js'
 import { clipInstancesOf } from '../../selectors.js'
 import { relinkAsset, revealAsset } from '../../utils/relinkMedia.js'
 import { isWails } from '../../wails/env.js'
+import { baseName } from '../../media/asset.js'
 
 /** Properties of an asset selected in the Media Bin. */
 export default function MediaAssetSection({ asset }) {
@@ -25,7 +26,7 @@ export default function MediaAssetSection({ asset }) {
   return (
     <Category title="Media">
       <PropertyRow label="Name">
-        <TextInput value={asset.name || ''} placeholder={asset.id} onCommit={(v) => renameMedia(asset.id, v)} />
+        <TextInput value={baseName(asset.name) || asset.name || ''} placeholder={asset.id} onCommit={(v) => renameMedia(asset.id, v)} />
       </PropertyRow>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

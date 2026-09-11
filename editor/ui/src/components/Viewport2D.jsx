@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
-import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
+import { extFromUri, mediaTypeFromExt , baseName} from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
 import { isEditableTarget } from '../hooks/useShortcuts.js'
@@ -733,7 +733,7 @@ function Viewport2D() {
                   commitClipDrag()
                 }}
                 onDragStart={(e) => e.preventDefault()}
-                title={`${clip?.name || tm.clip_id} (${clipStart(tm).toFixed(2)}s · ${clipDuration(tm).toFixed(2)}s)`}
+                title={`${baseName(clip?.name) || tm.clip_id} (${clipStart(tm).toFixed(2)}s · ${clipDuration(tm).toFixed(2)}s)`}
                 style={{
                   left: box.left,
                   top: box.top,
@@ -760,9 +760,9 @@ function Viewport2D() {
                 {isVideo
                   ? <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
                   : imageMeta[tm.clip_id]?.src
-                    ? <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false}
+                    ? <img src={imageMeta[tm.clip_id].src} alt={baseName(clip?.name) || tm.clip_id} draggable={false}
                       style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none' }} />
-                    : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{clip?.name || tm.clip_id}</span>}
+                    : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{baseName(clip?.name) || tm.clip_id}</span>}
               </div>
             )
           })}

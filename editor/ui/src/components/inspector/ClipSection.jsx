@@ -9,6 +9,7 @@ import { assetKind, KIND_LABEL, isTimeBased } from '../../media/kind.js'
 import { fromFileUri } from '../../media/uri.js'
 import { clipStart, clipDuration } from '../../utils/clipTime.js'
 import { formatDuration } from '../../utils/timeFormat.js'
+import { baseName } from '../../media/asset.js'
 
 /** Properties of a single selected timeline clip. */
 export default function ClipSection({ tm, asset }) {
@@ -34,12 +35,12 @@ export default function ClipSection({ tm, asset }) {
         <PropertyRow label="Name">
           <TextInput
             value={tm.label || ''}
-            placeholder={asset?.name || tm.clip_id}
+            placeholder={baseName(asset?.name) || tm.clip_id}
             onCommit={(v) => renameTimelineClip(tm.id, v)}
           />
         </PropertyRow>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <InfoRow label="Source" value={asset?.name || tm.clip_id} />
+          <InfoRow label="Source" value={baseName(asset?.name) || tm.clip_id} />
           <InfoRow label="Type" value={KIND_LABEL[kind]} />
           {natural && <InfoRow label="Natural" value={`${natural.w} × ${natural.h} px`} />}
           {isTimeBased(kind) && asset?.duration_seconds != null && (
