@@ -17,11 +17,13 @@ import {
   timelineEnd,
 } from './utils/clipTime.js'
 import { clipInstancesOf, findNode as findNodeIn } from './selectors.js'
+import { GetFileServerPort } from '@bindings/app.js'
+import { isWails } from './wails/env.js'
 
 // Initialize the file server base URL if running under Wails. This is the only
 // place it happens — App.jsx used to repeat it on mount.
-if (window.go?.main?.App?.GetFileServerPort) {
-  window.go.main.App.GetFileServerPort().then(port => {
+if (isWails()) {
+  GetFileServerPort().then(port => {
     if (port > 0) {
       setFileServerBaseUrl(`http://localhost:${port}`)
       // Store port for model URL resolution

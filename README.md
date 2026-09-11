@@ -24,7 +24,7 @@ Wails shell:
 ```powershell
 cd editor/wails
 go mod download
-wails dev
+task dev
 ```
 
 Native renderer:
@@ -38,12 +38,8 @@ cmake --build build --config Release
 ## Production build
 
 ```powershell
-cd editor/ui
-npm run build
-
-cd ../wails
-.\copy-frontend.ps1
-wails build
+cd editor/wails
+task package
 ```
 
 The renderer binary is built separately from `editor/renderer`.

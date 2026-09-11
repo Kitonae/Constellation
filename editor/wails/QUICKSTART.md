@@ -3,7 +3,8 @@
 ## First time setup
 
 ```powershell
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.20
+go install github.com/go-task/task/v3/cmd/task@latest
 
 cd editor/ui
 npm ci
@@ -16,7 +17,7 @@ go mod download
 
 ```powershell
 cd editor/wails
-wails dev
+task dev
 ```
 
 This starts the React dev server from `editor/ui` and launches the Wails desktop shell.
@@ -33,22 +34,22 @@ cmake --build build --config Release
 
 ```powershell
 cd editor/wails
-.\build.ps1
+task package
 ```
 
 Output:
-- Wails shell: `editor\wails\build\bin\constellation-editor.exe`
+- Wails shell: `editor\wails\bin\constellation-editor.exe`
 - Renderer (built separately): `editor\renderer\build\Release\constellation-renderer.exe`
 
 ## Common issues
 
-### `wails` not found
-- Install it with `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+### `wails3` or `task` not found
+- Install them with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.20`
+  and `go install github.com/go-task/task/v3/cmd/task@latest`
 - Make sure your Go bin directory is on `PATH`
 
 ### Frontend assets missing in a production build
-- Run `npm --prefix ../ui run build`
-- Then run `.\copy-frontend.ps1`
+- Run `task build`, which builds the UI and stages it into `frontend/dist`
 
 ### Renderer not launching
 - Build the renderer from `editor/renderer`
@@ -56,4 +57,4 @@ Output:
 
 ### Go tests fail on a clean checkout because no embedded frontend exists
 - The repo keeps `frontend/dist/.keep` tracked for compile-time embedding
-- Re-run `.\copy-frontend.ps1` after a real UI build if you want fresh embedded assets
+- Run `task build` for fresh embedded assets

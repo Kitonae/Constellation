@@ -19,7 +19,9 @@ const ALLOWED = new Set([
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (name === 'wailsjs' || name === '__tests__') continue
+    // Generated Wails bindings live outside src/ (ui/bindings/), so only the
+    // test directory needs skipping here.
+    if (name === '__tests__') continue
     const full = join(dir, name)
     if (statSync(full).isDirectory()) walk(full, out)
     else if (/\.jsx?$/.test(name)) out.push(full)

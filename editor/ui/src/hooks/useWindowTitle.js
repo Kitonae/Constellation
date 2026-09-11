@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
+import { Window } from '@wailsio/runtime'
 import { useEditorStore } from '../store.js'
 import { selectDirty } from '../selectors.js'
+import { isWails } from '../wails/env.js'
 
 /**
  * Keeps the window title showing the open document and whether it is dirty.
@@ -15,7 +17,7 @@ export default function useWindowTitle() {
 
   useEffect(() => {
     const title = `Constellation Editor — ${documentName || 'Untitled'}${dirty ? '*' : ''}`
-    try { window.runtime?.WindowSetTitle?.(title) } catch { }
+    try { if (isWails()) Window.SetTitle(title) } catch { }
     document.title = title
   }, [documentName, dirty])
 }

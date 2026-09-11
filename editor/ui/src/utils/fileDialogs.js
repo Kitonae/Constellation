@@ -2,6 +2,9 @@
 // fall back to HTML <input> when not in Wails.
 
 // Internal helper returning an array of { file, path } objects via HTML input.
+import { PickMediaFiles, PickMediaFolder } from '@bindings/app.js'
+import { isWails } from '../wails/env.js'
+
 function chooseFiles(accept, multiple = false, directory = false) {
   return new Promise((resolve) => {
     const input = document.createElement('input')
@@ -49,9 +52,9 @@ export async function openMediaFile() {
 export async function openMediaFiles() {
   // In Wails, use the native dialog which returns absolute paths directly.
   // This avoids blob: URIs which can't work in cross-origin display windows.
-  if (window.go?.main?.App?.PickMediaFiles) {
+  if (isWails()) {
     try {
-      const paths = await window.go.main.App.PickMediaFiles()
+      const paths = await PickMediaFiles()
       if (paths && paths.length) {
         return paths.map(p => ({ file: null, path: p }))
       }
@@ -65,9 +68,9 @@ export async function openMediaFiles() {
 
 export async function openMediaFolder() {
   // In Wails, use the native directory dialog which returns absolute paths.
-  if (window.go?.main?.App?.PickMediaFolder) {
+  if (isWails()) {
     try {
-      const paths = await window.go.main.App.PickMediaFolder()
+      const paths = await PickMediaFolder()
       if (paths && paths.length) {
         return paths.map(p => ({ file: null, path: p }))
       }

@@ -16,15 +16,16 @@ Responsibilities:
 - `sse.go` - renderer event fanout over SSE
 - `routes.go` - sidecar HTTP routing and status endpoint
 - `fileloader.go` / `fileutil.go` - local file serving helpers
-- `build.ps1` - build the Wails shell and copy frontend assets
-- `copy-frontend.ps1` - copy `editor/ui/dist` into `frontend/dist`
+- `Taskfile.yml` / `build/Taskfile.yml` - the Wails v3 build pipeline
+- `build/config.yml` - app metadata and `wails3 dev` configuration
 - `frontend/dist/.keep` - tracked placeholder so clean checkouts compile
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.25+
 - Node.js + npm
-- Wails CLI v2: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+- Wails CLI v3: `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.20`
+- Task: `go install github.com/go-task/task/v3/cmd/task@latest`
 
 ## Development
 
@@ -42,10 +43,11 @@ Run the desktop shell in development mode:
 
 ```powershell
 cd editor/wails
-wails dev
+task dev
 ```
 
-`wails dev` starts the UI dev server from `editor/ui` and launches the desktop shell.
+`task dev` starts the Vite dev server from `editor/ui` on port 5173 and launches
+the desktop shell, rebuilding the Go side when it changes.
 
 ## Native Renderer
 
@@ -62,18 +64,23 @@ The Wails shell discovers the renderer executable from common dev and production
 ## Production Build
 
 ```powershell
-cd editor/ui
-npm run build
-
-cd ../wails
-.\copy-frontend.ps1
-wails build
+cd editor/wails
+task package
 ```
 
-The frontend build is copied into `editor/wails/frontend/dist` before `wails build` so the Go binary can embed it.
+`task build` (and `task package`, which builds with `PRODUCTION=true`) runs the
+whole chain: regenerate bindings, `npm run build` in `editor/ui`, copy the output
+into `editor/wails/frontend/dist`, then compile. The copy step exists because
+Go's `//go:embed` cannot reference files outside the package directory, and the
+Vite project deliberately lives outside this Go module.
+
+The binary lands in `editor/wails/bin/constellation-editor.exe`.
 
 ## Notes
 
 - The active control path is the built-in Wails bindings plus the local sidecar/SSE flow.
+- Frontend bindings are generated into `editor/ui/bindings/` and imported through
+  the `@bindings` Vite alias. Regenerate them with `task common:generate:bindings`
+  after changing any bound method on the `App` service.
 - Generated caches and local tooling files such as `.vite/` and `.claude/settings.local.json` are intentionally ignored.
 - Run `go test ./...` from `editor/wails` to validate the Go sidecar code.

@@ -8,6 +8,8 @@
 
 import { fromFileUri } from '../media/uri.js'
 import { resolveUriSync } from '../media/uri.js'
+import { FileExists } from '@bindings/app.js'
+import { isWails } from '../wails/env.js'
 
 /** uri -> boolean | null (resolved), or a Promise while in flight. */
 const cache = new Map()
@@ -18,9 +20,8 @@ async function probe(uri) {
   // or not ours to judge.
   if (!s.startsWith('file:')) return true
 
-  const bind = window.go?.main?.App?.FileExists
-  if (typeof bind === 'function') {
-    try { return !!(await bind(fromFileUri(s))) } catch { /* fall through */ }
+  if (isWails()) {
+    try { return !!(await FileExists(fromFileUri(s))) } catch { /* fall through */ }
   }
 
   // Fallback: the Go file sidecar serves local files over HTTP, and HEAD is

@@ -1,6 +1,11 @@
-# Wails build artifacts
-build/
+# Wails build artifacts. build/ now also holds tracked source (the v3
+# Taskfiles and config.yml), so ignore only what the build generates.
+build/bin/
+build/icon.ico
+build/windows/icon.ico
+bin/
 dist/
+*.syso
 
 # Go
 *.exe

@@ -8,6 +8,9 @@
 //   DisplaySink  — web child windows via postMessage
 //   NativeSink   — DX12 renderer via Wails Go bridge (PushTime/PushSnapshot)
 
+import { PushTime, PushSnapshot, PushControl } from '@bindings/app.js'
+import { isWails } from '../wails/env.js'
+
 // --- Sink interface ---
 
 /**
@@ -136,7 +139,7 @@ export function createDisplaySink(targetWindow, opts = {}) {
  * @param {object} [opts]
  * @param {string} [opts.id]            - custom sink ID
  * @param {string} [opts.screenId]      - renderer screen identifier
- * @param {function} [opts.pushTime]    - (time) => void (default: window.go.main.App.PushTime)
+ * @param {function} [opts.pushTime]    - (time) => void (default: the PushTime binding)
  * @param {function} [opts.pushSnapshot] - (json) => void
  * @param {function} [opts.getSnapshot]  - () => snapshot object
  * @returns {MediaSink}
@@ -146,17 +149,17 @@ export function createNativeSink(opts = {}) {
   let _disposed = false
 
   const _pushTime = opts.pushTime || ((t) => {
-    try { window?.go?.main?.App?.PushTime?.(t) } catch {}
+    try { if (isWails()) PushTime(t) } catch {}
   })
 
   const _pushSnapshot = opts.pushSnapshot || ((json) => {
-    try { window?.go?.main?.App?.PushSnapshot?.(json) } catch {}
+    try { if (isWails()) PushSnapshot(json) } catch {}
   })
 
   // Go exposes PushControl but nothing used to call it, so the renderer's
   // `m_playing` never left false and it scrubbed audio instead of playing it.
   const _pushControl = opts.pushControl || ((cmd) => {
-    try { window?.go?.main?.App?.PushControl?.(cmd) } catch {}
+    try { if (isWails()) PushControl(cmd) } catch {}
   })
 
   // The native renderer reads the on-disk project wrapper schema, which is not

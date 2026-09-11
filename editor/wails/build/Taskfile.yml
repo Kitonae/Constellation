@@ -1,0 +1,98 @@
+version: '3'
+
+tasks:
+  go:mod:tidy:
+    summary: Runs `go mod tidy`
+    internal: true
+    cmds:
+      - go mod tidy
+
+  install:frontend:deps:
+    summary: Install frontend dependencies
+    dir: '{{.FRONTEND_DIR}}'
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules/*
+    preconditions:
+      - sh: npm version
+        msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
+    cmds:
+      - npm install
+
+  build:frontend:
+    label: build:frontend (PRODUCTION={{.PRODUCTION}})
+    summary: Build the frontend project and stage it for embedding
+    dir: '{{.FRONTEND_DIR}}'
+    deps:
+      - task: install:frontend:deps
+      - task: generate:bindings
+        vars:
+          BUILD_FLAGS:
+            ref: .BUILD_FLAGS
+    cmds:
+      - npm run {{.BUILD_COMMAND}}
+      - task: stage:frontend
+    env:
+      PRODUCTION: '{{.PRODUCTION | default "false"}}'
+    vars:
+      BUILD_COMMAND: '{{if eq .PRODUCTION "true"}}build{{else}}build:dev{{end}}'
+
+  stage:frontend:
+    summary: Copy the built frontend into frontend/dist so //go:embed can reach it
+    # Go's //go:embed cannot reference files outside the package directory, so
+    # the Vite output in ../ui/dist has to be copied in here before any build.
+    # The tracked .keep placeholder is restored only when absent: it carries
+    # committed content, so recreating it unconditionally would blank it.
+    internal: true
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - cmd: powershell -NoProfile -Command "if (Test-Path frontend/dist) { Remove-Item -Recurse -Force frontend/dist }; New-Item -ItemType Directory -Force frontend/dist | Out-Null; Copy-Item -Recurse -Force '{{.FRONTEND_DIR}}/dist/*' frontend/dist/; if (-not (Test-Path frontend/dist/.keep)) { Set-Content -LiteralPath 'frontend/dist/.keep' -Value 'Keep this directory tracked for clean Go/Wails builds.' }"
+        platforms: [windows]
+      - cmd: rm -rf frontend/dist && mkdir -p frontend/dist && cp -r {{.FRONTEND_DIR}}/dist/* frontend/dist/ && { [ -f frontend/dist/.keep ] || echo 'Keep this directory tracked for clean Go/Wails builds.' > frontend/dist/.keep; }
+        platforms: [linux, darwin]
+
+  generate:bindings:
+    label: generate:bindings (BUILD_FLAGS={{.BUILD_FLAGS}})
+    summary: Generates bindings for the frontend
+    deps:
+      - task: go:mod:tidy
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - '{{.FRONTEND_DIR}}/bindings/**/*'
+    cmds:
+      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true -d '{{.FRONTEND_DIR}}/bindings'
+
+  generate:icons:
+    summary: Generates Windows `.ico` and Mac `.icns` files from an image
+    dir: build
+    sources:
+      - "appicon.png"
+    generates:
+      - "windows/icon.ico"
+    cmds:
+      # -macfilename is required even on Windows: the generator writes both and
+      # fails if the darwin directory is missing.
+      - cmd: powershell -NoProfile -Command "New-Item -ItemType Directory -Force darwin | Out-Null"
+        platforms: [windows]
+      - cmd: mkdir -p darwin
+        platforms: [linux, darwin]
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico
+
+  dev:frontend:
+    summary: Runs the frontend in development mode
+    dir: '{{.FRONTEND_DIR}}'
+    deps:
+      - task: install:frontend:deps
+    cmds:
+      - npm run dev -- --port {{.VITE_PORT}}
+
+  update:build-assets:
+    summary: Updates the build assets
+    dir: build
+    cmds:
+      - wails3 update build-assets -name "{{.APP_NAME}}" -binaryname "{{.APP_NAME}}" -config config.yml -dir .

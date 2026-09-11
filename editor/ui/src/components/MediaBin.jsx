@@ -9,6 +9,7 @@ import ContextMenu from './ContextMenu.jsx'
 import MediaBinToolbar from './mediabin/MediaBinToolbar.jsx'
 import MediaRow from './mediabin/MediaRow.jsx'
 import useMediaBinView from './mediabin/useMediaBinView.js'
+import { isWails } from '../wails/env.js'
 
 const DEFAULT_VIEW = { query: '', sort: 'added', kinds: [] }
 
@@ -85,7 +86,7 @@ export default React.memo(function MediaBin() {
 
   const menuItems = useCallback((asset) => {
     const st = useEditorStore.getState()
-    const canReveal = typeof window.go?.main?.App?.RevealInExplorer === 'function'
+    const canReveal = isWails()
     if (!asset) {
       return [
         { label: 'Add Files…', icon: 'upload_file', onClick: onImportFiles },
@@ -127,7 +128,7 @@ export default React.memo(function MediaBin() {
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false) }}
       onDrop={(e) => {
         setDragOver(false)
-        if (window.runtime?.OnFileDrop) return // native path handles it
+        if (isWails()) return // native path handles it
         if (!e.dataTransfer?.files?.length) return
         e.preventDefault()
         e.stopPropagation()

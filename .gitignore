@@ -7,6 +7,18 @@ Cargo.lock
 node_modules/
 dist/
 build/
+# The Wails v3 build directory holds tracked source (Taskfiles, config.yml and
+# the Windows manifest/info), not just artifacts.
+!editor/wails/build/
+editor/wails/build/*
+!editor/wails/build/Taskfile.yml
+!editor/wails/build/config.yml
+!editor/wails/build/appicon.png
+!editor/wails/build/windows/
+editor/wails/build/windows/*
+!editor/wails/build/windows/Taskfile.yml
+!editor/wails/build/windows/info.json
+!editor/wails/build/windows/wails.exe.manifest
 .vite/
 playwright-report/
 test-results/
@@ -62,3 +74,6 @@ editor/wails/frontend/*
 !editor/wails/frontend/dist/
 editor/wails/frontend/dist/*
 !editor/wails/frontend/dist/.keep
+
+# go-task cache
+.task/

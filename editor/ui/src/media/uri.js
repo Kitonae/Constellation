@@ -6,6 +6,9 @@
 //   - MediaThumb.jsx (resolveImageSrc)
 //   - store.js, MediaBin.jsx, App.jsx (toFileUri)
 
+import { ReadFileBase64 } from '@bindings/app.js'
+import { isWails } from '../wails/env.js'
+
 let _fileServerBase = ''
 
 /**
@@ -148,10 +151,10 @@ async function _resolveFileUri(fileUri) {
   if (httpUrl !== '') return httpUrl
 
   // Try Wails Go backend ReadFileBase64
-  if (typeof window !== 'undefined' && window.go?.main?.App?.ReadFileBase64) {
+  if (isWails()) {
     try {
       const path = fromFileUri(fileUri)
-      const dataUrl = await window.go.main.App.ReadFileBase64(path)
+      const dataUrl = await ReadFileBase64(path)
       if (dataUrl) return dataUrl
     } catch { /* fall through */ }
   }

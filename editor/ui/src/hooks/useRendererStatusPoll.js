@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 import { useEditorStore } from '../store.js'
+import { GetRendererStatus } from '@bindings/app.js'
+import { isWails } from '../wails/env.js'
 
 const INTERVAL_MS = 2000
 
@@ -13,8 +15,8 @@ const INTERVAL_MS = 2000
  */
 export default function useRendererStatusPoll() {
   useEffect(() => {
-    const getStatus = window.go?.main?.App?.GetRendererStatus
-    if (typeof getStatus !== 'function') return
+    if (!isWails()) return
+    const getStatus = GetRendererStatus
     let cancelled = false
 
     const tick = async () => {

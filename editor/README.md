@@ -9,19 +9,19 @@ What is in this directory:
 
 Development workflow:
 1. `cd editor/ui && npm ci`
-2. `cd editor/wails && wails dev`
+2. `cd editor/wails && task dev`
 3. If you are working on native output, build the renderer separately:
    - `cmake -S ../renderer -B ../renderer/build -A x64`
    - `cmake --build ../renderer/build --config Release`
 
 Production shell build:
-1. `cd editor/ui && npm run build`
-2. `cd editor/wails && .\copy-frontend.ps1`
-3. `wails build`
+1. `cd editor/wails && task package`
 
 Notes:
-- `editor/wails/frontend/dist/.keep` is a tracked placeholder so clean checkouts compile before a real frontend build is copied in.
-- The renderer binary is not built by `wails build`; build it from `editor/renderer` when needed.
+- The shell runs on Wails v3. `task` (go-task) drives the build; `task build`
+  generates bindings, builds the UI, stages it for embedding and links the binary.
+- `editor/wails/frontend/dist/.keep` is a tracked placeholder so clean checkouts compile before a real frontend build is staged in.
+- The renderer binary is not built by `task build`; build it from `editor/renderer` when needed.
 - This directory is organized around the current React + Wails + DX12 workflow.
 
 Tests

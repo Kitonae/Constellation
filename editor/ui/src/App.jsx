@@ -27,6 +27,12 @@ import { buildBindings } from './shortcuts.js'
 import { selectSelectionSummary, selectDirty, clipInstancesOf, findAsset } from './selectors.js'
 import { timelineExtent } from './utils/clipTime.js'
 import { loadLayout, clampLayout, startLayoutPersistence, layoutBounds } from './layout/persistLayout.js'
+import { Application, Events } from '@wailsio/runtime'
+import { CloseRendererScreen, OpenRendererScreen } from '@bindings/app.js'
+import { isWails } from './wails/env.js'
+
+// Must match FilesDroppedEvent in editor/wails/main.go.
+const FILES_DROPPED_EVENT = 'media:filesDropped'
 
 /** Sink id for a web display window, so open/close can address it. */
 const sinkIdFor = (screenId) => `screen-${screenId}`
@@ -108,17 +114,23 @@ export default function App() {
   // --- Media import -------------------------------------------------------
 
   // Under Wails the WebView2 File object carries no `.path`, so an HTML drop
-  // produced a blob: URI the native renderer refuses to open. Use the Wails
-  // drag-and-drop runtime, which hands us absolute paths, and keep the HTML
-  // handler only for plain-browser development.
+  // produced a blob: URI the native renderer refuses to open. The native drag
+  // and drop path hands us absolute paths instead, and the HTML handler below
+  // is kept only for plain-browser development.
+  //
+  // v3 delivers the drop to Go rather than to JavaScript, so Go relays it back
+  // under FILES_DROPPED_EVENT. The drop only fires on an element marked with
+  // `data-file-drop-target` — that is the wrapper below.
   useEffect(() => {
-    if (!window.runtime?.OnFileDrop) return
-    window.runtime.OnFileDrop((x, y, paths) => { importPaths(paths) }, true)
-    return () => { try { window.runtime.OnFileDropOff?.() } catch { } }
+    if (!isWails()) return
+    return Events.On(FILES_DROPPED_EVENT, (e) => {
+      const paths = Array.isArray(e?.data) ? e.data.flat() : []
+      if (paths.length) importPaths(paths)
+    })
   }, [])
 
   useEffect(() => {
-    if (window.runtime?.OnFileDrop) return  // native drop is active
+    if (isWails()) return  // native drop is active
     const onDragOver = (e) => { e.preventDefault(); e.stopPropagation() }
     const onDrop = (e) => {
       e.preventDefault()
@@ -162,7 +174,7 @@ export default function App() {
       })
       if (!ok) return
     }
-    try { window.runtime?.Quit?.() } catch { }
+    try { if (isWails()) Application.Quit() } catch { }
     try { window.close() } catch { }
   }, [])
 
@@ -296,7 +308,7 @@ export default function App() {
       if (type === 'renderer') {
         rendererScreens.current.delete(id)
         if (rendererScreens.current.size === 0) session.removeSink(NATIVE_SINK_ID)
-        window.go?.main?.App?.CloseRendererScreen(id)?.catch((e) => console.warn('CloseRendererScreen:', e))
+        if (isWails()) CloseRendererScreen(id)?.catch((e) => console.warn('CloseRendererScreen:', e))
       } else {
         session.removeSink(sinkIdFor(id))
         closeDisplayWindow(id)
@@ -317,7 +329,7 @@ export default function App() {
       })
       if (isRenderer) {
         try {
-          await window.go?.main?.App?.OpenRendererScreen(n.id, px, py)
+          if (isWails()) await OpenRendererScreen(n.id, px, py)
         } catch (e) {
           console.error('Failed to open renderer screen:', e)
           useEditorStore.getState().setOutputStatus(n.id, { state: 'error', error: String(e) })
@@ -410,7 +422,7 @@ export default function App() {
   const viewport = viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)
 
   return (
-    <div className="layout">
+    <div className="layout" data-file-drop-target>
       <header>
         <MenuBar
           onNewShow={requestNewShow}

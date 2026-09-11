@@ -48,7 +48,7 @@ try {
 # Check/Install Wails
 Write-Host -NoNewline "Checking Wails CLI... "
 try {
-    $null = wails version 2>&1
+    $null = wails3 version 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "✓ Installed" -ForegroundColor Green
     } else {
@@ -57,12 +57,31 @@ try {
 } catch {
     Write-Host "✗ Not found" -ForegroundColor Red
     Write-Host "Installing Wails CLI..." -ForegroundColor Yellow
-    go install github.com/wailsapp/wails/v2/cmd/wails@latest
+    go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.20
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Failed to install Wails CLI" -ForegroundColor Red
         exit 1
     }
     Write-Host "✓ Wails CLI installed" -ForegroundColor Green
+}
+
+Write-Host "`nChecking Task..." -NoNewline
+try {
+    $null = task --version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "✓ Installed" -ForegroundColor Green
+    } else {
+        throw
+    }
+} catch {
+    Write-Host "✗ Not found" -ForegroundColor Red
+    Write-Host "Installing Task..." -ForegroundColor Yellow
+    go install github.com/go-task/task/v3/cmd/task@latest
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Failed to install Task" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "✓ Task installed" -ForegroundColor Green
 }
 
 Write-Host "`n[Setup Steps]" -ForegroundColor Yellow
@@ -107,9 +126,9 @@ Write-Host @"
 ╚══════════════════════════════════════════════════════════╝
 
 Next Steps:
-  • Run 'wails dev' to start development mode
+  • Run 'task dev' to start development mode
   • Build the native renderer from '..\renderer' if you are working on native output
-  • Or run '.\build.ps1' to create a production Wails shell build
+  • Or run 'task package' to create a production Wails shell build
 
 Documentation:
   • README.md        - Architecture and workflow

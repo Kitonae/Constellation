@@ -1,4 +1,4 @@
-import { GetFileServerPort } from '../wails/wailsjs/go/main/App.js'
+import { GetFileServerPort } from '@bindings/app.js'
 
 // screenId → { screenId, width, height, win }
 const opened = new Map()

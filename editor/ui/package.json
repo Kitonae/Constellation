@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:dev": "vite build --minify false --mode development",
     "preview": "vite preview",
     "test": "playwright test",
     "test:unit": "vitest run",
@@ -14,6 +15,7 @@
   "dependencies": {
     "@react-three/drei": "^9.103.0",
     "@react-three/fiber": "^8.15.16",
+    "@wailsio/runtime": "^3.0.0-beta.20",
     "material-symbols": "^0.47.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

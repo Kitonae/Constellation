@@ -13,6 +13,8 @@ import { invalidateFileExists } from './fileExists.js'
 import { invalidateNaturalSize } from '../media/naturalSize.js'
 import { getVideoMetadata } from './videoUtils.js'
 import { assetKind } from '../media/kind.js'
+import { RevealInExplorer } from '@bindings/app.js'
+import { isWails } from '../wails/env.js'
 
 /** Ask for a replacement file and point the asset at it. */
 export async function relinkAsset(mediaId) {
@@ -45,10 +47,9 @@ export async function relinkAsset(mediaId) {
 
 /** Show the asset's file in the OS file browser. */
 export async function revealAsset(asset) {
-  const reveal = window.go?.main?.App?.RevealInExplorer
-  if (typeof reveal !== 'function' || !asset?.uri) return
+  if (!isWails() || !asset?.uri) return
   try {
-    await reveal(fromFileUri(asset.uri))
+    await RevealInExplorer(fromFileUri(asset.uri))
   } catch (e) {
     useEditorStore.getState().addLog({ level: 'warn', message: `Could not reveal file: ${e}` })
   }

@@ -9,6 +9,7 @@ import { fromFileUri } from '../../media/uri.js'
 import { formatDuration } from '../../utils/timeFormat.js'
 import { clipInstancesOf } from '../../selectors.js'
 import { relinkAsset, revealAsset } from '../../utils/relinkMedia.js'
+import { isWails } from '../../wails/env.js'
 
 /** Properties of an asset selected in the Media Bin. */
 export default function MediaAssetSection({ asset }) {
@@ -19,7 +20,7 @@ export default function MediaAssetSection({ asset }) {
   const natural = useMediaNaturalSize(asset.uri, kind)
   const exists = useFileExists(asset.uri)
   const uses = clipInstancesOf(project, asset.id)
-  const canReveal = typeof window.go?.main?.App?.RevealInExplorer === 'function'
+  const canReveal = isWails()
 
   return (
     <Category title="Media">

@@ -13,12 +13,14 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
+
+// FilesDroppedEvent is the event the frontend subscribes to for native file
+// drops. Wails v3 routes drops through Go, so this name is the contract
+// between main.go and the editor's import handling.
+const FilesDroppedEvent = "media:filesDropped"
 
 var screenIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
@@ -33,9 +35,21 @@ func validateScreenID(id string) error {
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// fsMiddleware serves /fs/ media requests from the file loader and passes
+// everything else to the asset server.
+func fsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/fs/" {
+			NewFileLoader(nil).ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	// Create application instance
-	app := NewApp()
+	appService := NewApp()
 
 	// Create sub FS for assets
 	subAssets, err := fs.Sub(assets, "frontend/dist")
@@ -43,50 +57,52 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create application with options
-	err = wails.Run(&options.App{
-		Title:  "Constellation Editor",
-		Width:  1440,
-		Height: 900,
-		AssetServer: &assetserver.Options{
-			Assets: subAssets,
-			Middleware: func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/fs/" {
-						NewFileLoader(nil).ServeHTTP(w, r)
-						return
-					}
-					next.ServeHTTP(w, r)
-				})
-			},
+	app := application.New(application.Options{
+		Name:        "Constellation Editor",
+		Description: "Video display control editor",
+		Services: []application.Service{
+			application.NewService(appService),
 		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		// The WebView2 File object has no .path, so an HTML drop yields a
-		// blob: URI the native renderer cannot open. The Wails drag-and-drop
-		// runtime hands the frontend absolute paths instead.
-		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop: true,
-		},
-		Bind: []interface{}{
-			app,
-		},
-		Windows: &windows.Options{
-			WebviewIsTransparent: false,
-			WindowIsTranslucent:  false,
-			DisableWindowIcon:    false,
+		Assets: application.AssetOptions{
+			Handler:    application.AssetFileServerFS(subAssets),
+			Middleware: fsMiddleware,
 		},
 	})
 
-	if err != nil {
+	// The service reaches the runtime (native dialogs) through the app.
+	appService.app = app
+
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:            "Constellation Editor",
+		Width:            1440,
+		Height:           900,
+		BackgroundColour: application.NewRGB(27, 38, 54),
+		// The WebView2 File object has no .path, so an HTML drop yields a
+		// blob: URI the native renderer cannot open. The Wails drag-and-drop
+		// runtime hands us absolute paths instead. Files must be dropped on an
+		// element carrying `data-file-drop-target` for this to fire.
+		EnableFileDrop: true,
+	})
+
+	// Unlike v2's OnFileDrop, which handed paths straight to JavaScript, v3
+	// delivers the drop to Go. Relay it to the frontend under our own event
+	// name so the import path there stays a single subscription.
+	window.OnWindowEvent(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
+		files := e.Context().DroppedFiles()
+		if len(files) == 0 {
+			return
+		}
+		app.Event.Emit(FilesDroppedEvent, files)
+	})
+
+	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
 
 // App struct
 type App struct {
-	ctx        context.Context
+	app            *application.App
 	fileServerPort int
 	fileServer     *http.Server
 	initError      string
@@ -100,10 +116,8 @@ func NewApp() *App {
 	return &App{}
 }
 
-// startup is called at application startup
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
-
+// ServiceStartup is called when the service starts, before the window opens.
+func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	sseHub := NewSSEHub()
 	a.hub = sseHub
 	a.renderers = NewRendererManager(sseHub)
@@ -127,16 +141,18 @@ func (a *App) startup(ctx context.Context) {
 		a.initError = fmt.Sprintf("Failed to start sidecar file server: %v", err)
 		log.Printf("%s", a.initError)
 	}
+	return nil
 }
 
-// shutdown is called at application termination
-func (a *App) shutdown(ctx context.Context) {
+// ServiceShutdown is called at application termination.
+func (a *App) ServiceShutdown() error {
 	if a.renderers != nil {
 		a.renderers.ShutdownAll()
 	}
 	if a.fileServer != nil {
 		a.fileServer.Close()
 	}
+	return nil
 }
 
 // GetInitError returns any initialization error (empty string if all OK).
@@ -254,24 +270,21 @@ func (a *App) PushControl(command string) {
 // PickMediaFiles opens a native file dialog and returns absolute paths.
 // This avoids blob: URIs which don't work cross-origin in display windows.
 func (a *App) PickMediaFiles() ([]string, error) {
-	paths, err := wailsRuntime.OpenMultipleFilesDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "Import Media",
-		Filters: []wailsRuntime.FileFilter{
-			{DisplayName: "Media Files", Pattern: "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.mp4;*.mov;*.webm;*.mkv;*.avi;*.m4v;*.mpg;*.mpeg;*.gltf;*.glb;*.obj"},
-			{DisplayName: "All Files", Pattern: "*.*"},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return paths, nil
+	return a.app.Dialog.OpenFile().
+		SetTitle("Import Media").
+		CanChooseFiles(true).
+		AddFilter("Media Files", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.mp4;*.mov;*.webm;*.mkv;*.avi;*.m4v;*.mpg;*.mpeg;*.gltf;*.glb;*.obj").
+		AddFilter("All Files", "*.*").
+		PromptForMultipleSelection()
 }
 
 // PickMediaFolder opens a native directory dialog and returns absolute paths of all files in it.
 func (a *App) PickMediaFolder() ([]string, error) {
-	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "Import Folder",
-	})
+	dir, err := a.app.Dialog.OpenFile().
+		SetTitle("Import Folder").
+		CanChooseDirectories(true).
+		CanChooseFiles(false).
+		PromptForSingleSelection()
 	if err != nil || dir == "" {
 		return nil, err
 	}
