@@ -156,7 +156,15 @@ bool VideoDecoder::open(const std::string& filePath,
     // reader and validates it; on failure the reader is torn down and the next
     // mode is tried from scratch. The decode thread never changes mode.
     bool opened = false;
-    if (nv12Mode && d3d11On12Device && d3d12Queue && m_dxvaAvailable) {
+    // D3D12 video decode sits above the D3D11 paths: it is the only one that
+    // never leaves the D3D12 device, so nothing has to be unwrapped, copied
+    // or synchronised across APIs. It is also the narrowest -- H.264 frame
+    // coding on tier 2 hardware -- so everything below it stays in place.
+    if (d3d12Device && d3d12Queue) {
+        opened = tryOpen(wpath, Mode::D3D12);
+        if (!opened) printf("[VideoDecoder] D3D12 video decode unavailable, trying NV12\n");
+    }
+    if (!opened && nv12Mode && d3d11On12Device && d3d12Queue && m_dxvaAvailable) {
         opened = tryOpen(wpath, Mode::NV12);
         if (!opened) printf("[VideoDecoder] NV12 path unavailable, trying BGRA\n");
     }
@@ -177,9 +185,10 @@ bool VideoDecoder::open(const std::string& filePath,
     m_targetTime = 0.0;
     m_thread = std::thread(&VideoDecoder::decodeThread, this);
 
-    const char* mode = m_nv12Mode   ? "DXVA+NV12_ZEROCOPY" :
-                       m_gpuSharing ? "DXVA+GPU_SHARED" :
-                       m_dxvaActive ? "DXVA+CPU_READBACK" : "SOFTWARE";
+    const char* mode = m_d3d12Decoder ? "D3D12_VIDEO_DECODE" :
+                       m_nv12Mode      ? "DXVA+NV12_ZEROCOPY" :
+                       m_gpuSharing    ? "DXVA+GPU_SHARED" :
+                       m_dxvaActive    ? "DXVA+CPU_READBACK" : "SOFTWARE";
     printf("[VideoDecoder] Opened %s (%ux%u, %.1f fps, %.1fs, %s %s)\n",
         filePath.c_str(), m_width, m_height, m_fps, m_duration, m_codecName, mode);
     return true;
@@ -196,6 +205,12 @@ bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
     m_nv12Mode = false;
     m_gpuSharing = false;
     m_dxvaActive = false;
+    m_d3d12Decoder.reset();
+    m_seqHeader.clear();
+    m_colorSpace.uvScaleX = 1.0f;
+    m_colorSpace.uvScaleY = 1.0f;
+
+    if (mode == Mode::D3D12) return tryOpenD3D12(wpath);
 
     const bool wantDxva = (mode != Mode::Software) && m_dxvaAvailable;
 
@@ -275,6 +290,218 @@ bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
 
     m_mode = mode;
     return true;
+}
+
+// Open for D3D12 video decode: the source reader demultiplexes and nothing
+// more, and every picture is produced by the D3D12 video engine.
+//
+// Returns false with the reader released so open() can try the next mode.
+// Every reason to refuse here is a reason to prefer D3D11On12, never to fail
+// the file: the stream may not be H.264, it may be interlaced, the hardware
+// may be tier 1.
+bool VideoDecoder::tryOpenD3D12(const std::wstring& wpath) {
+    if (!m_d3d12Device) return false;
+
+    ComPtr<IMFAttributes> attrs;
+    MFCreateAttributes(&attrs, 2);
+    // Without this the reader inserts a decoder and hands back pixels.
+    attrs->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, TRUE);
+
+    HRESULT hr = MFCreateSourceReaderFromURL(wpath.c_str(), attrs.Get(), &m_reader);
+    if (FAILED(hr)) { m_reader.Reset(); return false; }
+
+    if (!configureCompressed()) { m_reader.Reset(); return false; }
+
+    // The decoder allocates macroblock-aligned surfaces, so ask about the
+    // aligned size rather than the cropped one the container advertises.
+    const uint32_t probeW = (m_width + 15) & ~15u;
+    const uint32_t probeH = (m_height + 15) & ~15u;
+    if (!D3D12VideoDecoder::isSupported(m_d3d12Device, probeW, probeH)) {
+        m_reader.Reset();
+        return false;
+    }
+
+    auto decoder = std::make_unique<D3D12VideoDecoder>();
+    decoder->setVerbose(m_verbose);
+    if (!decoder->init(m_d3d12Device, probeW, probeH,
+                       m_seqHeader.empty() ? nullptr : m_seqHeader.data(),
+                       m_seqHeader.size())) {
+        m_reader.Reset();
+        return false;
+    }
+    m_d3d12Decoder = std::move(decoder);
+
+    m_frameDuration = (m_fps > 0) ? (1.0 / m_fps) : (1.0 / 30.0);
+    m_dxvaActive = true;
+
+    // Prove the whole chain on this stream before committing to it, the same
+    // way the NV12 path does. A parser that cannot read these slice headers
+    // must not be discovered one frame into playback.
+    if (!probeD3D12()) {
+        m_d3d12Decoder.reset();
+        m_reader.Reset();
+        m_dxvaActive = false;
+        return false;
+    }
+
+    for (int i = 0; i < POOL_SIZE; i++) {
+        VideoFrame f;
+        f.width = m_width;
+        f.height = m_height;
+        m_writeable.push_back(std::move(f));
+    }
+    printf("[VideoDecoder] D3D12 video decode frame pool created (%d pool)\n", POOL_SIZE);
+
+    m_mode = Mode::D3D12;
+    return true;
+}
+
+// Read the compressed stream properties without setting an output type, which
+// is what keeps the reader from inserting a decoder transform.
+bool VideoDecoder::configureCompressed() {
+    ComPtr<IMFMediaType> nativeType;
+    if (FAILED(m_reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &nativeType)))
+        return false;
+
+    GUID subtype = {};
+    if (FAILED(nativeType->GetGUID(MF_MT_SUBTYPE, &subtype))) return false;
+    if (subtype != MFVideoFormat_H264 && subtype != MFVideoFormat_H264_ES) return false;
+    m_codecName = "H.264";
+
+    UINT64 frameSize = 0;
+    nativeType->GetUINT64(MF_MT_FRAME_SIZE, &frameSize);
+    m_width = (UINT32)(frameSize >> 32);
+    m_height = (UINT32)(frameSize & 0xFFFFFFFF);
+    if (m_width == 0 || m_height == 0) return false;
+
+    UINT64 frameRate = 0;
+    if (SUCCEEDED(nativeType->GetUINT64(MF_MT_FRAME_RATE, &frameRate))) {
+        UINT32 num = (UINT32)(frameRate >> 32);
+        UINT32 den = (UINT32)(frameRate & 0xFFFFFFFF);
+        if (den > 0) m_fps = (double)num / den;
+    }
+
+    PROPVARIANT var; PropVariantInit(&var);
+    if (SUCCEEDED(m_reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE,
+                                                     MF_PD_DURATION, &var))) {
+        LONGLONG d = 0; PropVariantToInt64(var, &d);
+        m_duration = (double)d / 10000000.0;
+    }
+    PropVariantClear(&var);
+
+    // Compressed output has no output media type to refine the colour
+    // metadata, so the native type is the only source for it.
+    readColorSpace(nativeType.Get());
+
+    // Parameter sets out of band. A stream that repeats SPS/PPS on every
+    // keyframe does not need these, but one that carries them only in the
+    // container would otherwise never decode its first picture.
+    UINT32 blobLen = 0;
+    if (SUCCEEDED(nativeType->GetBlobSize(MF_MT_MPEG_SEQUENCE_HEADER, &blobLen)) && blobLen > 0) {
+        m_seqHeader.resize(blobLen);
+        if (FAILED(nativeType->GetBlob(MF_MT_MPEG_SEQUENCE_HEADER,
+                                       m_seqHeader.data(), blobLen, nullptr))) {
+            m_seqHeader.clear();
+        }
+    }
+
+    m_reader->SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, FALSE);
+    m_reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
+    return true;
+}
+
+// Decode real samples until one produces a picture, then rewind. Proves the
+// parser, the picture parameters and the hardware all agree about this file.
+bool VideoDecoder::probeD3D12() {
+    VideoFrame probe;
+    bool ok = false;
+    for (int attempt = 0; attempt < 8 && !ok; attempt++) {
+        if (!readD3D12Frame(probe)) break;
+        ok = probe.d3d12Texture != nullptr;
+    }
+    releaseD3D12Picture(probe);
+
+    if (!ok) {
+        printf("[VideoDecoder] D3D12 probe produced no picture\n");
+        return false;
+    }
+
+    // Adopt the sizes the SPS reports: the container frame size can disagree
+    // with the coded size, and the shader needs the ratio between them.
+    const uint32_t w = m_d3d12Decoder->width();
+    const uint32_t h = m_d3d12Decoder->height();
+    if (w > 0 && h > 0) { m_width = w; m_height = h; }
+    m_d3d12Decoder->flush();
+
+    PROPVARIANT p; PropVariantInit(&p);
+    p.vt = VT_I8; p.hVal.QuadPart = 0;
+    m_reader->SetCurrentPosition(GUID_NULL, p);
+    PropVariantClear(&p);
+    return true;
+}
+
+// Hand a picture back to the decoder so its slot can be reused. borrowFrame
+// has already waited for the render queue to retire every read of it.
+void VideoDecoder::releaseD3D12Picture(VideoFrame& frame) {
+    if (m_d3d12Decoder && frame.d3d12Texture)
+        m_d3d12Decoder->releasePicture(frame.d3d12Texture.Get());
+    frame.d3d12Texture.Reset();
+    frame.decodeFence = nullptr;
+    frame.decodeFenceValue = 0;
+}
+
+// One decoded picture from the compressed stream.
+//
+// Samples do not map one to one onto pictures: a sample may carry only
+// parameter sets, and after a seek the samples before the next recovery point
+// decode into nothing, so keep reading until a picture comes out.
+bool VideoDecoder::readD3D12Frame(VideoFrame& dest) {
+    if (!m_d3d12Decoder || !m_reader) return false;
+    releaseD3D12Picture(dest);
+
+    for (int attempt = 0; attempt < 64; attempt++) {
+        DWORD streamIndex = 0, flags = 0;
+        LONGLONG timestamp = 0;
+        ComPtr<IMFSample> sample;
+        HRESULT hr = m_reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+                                          &streamIndex, &flags, &timestamp, &sample);
+        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) return false;
+        if (!sample) continue;
+
+        ComPtr<IMFMediaBuffer> buffer;
+        if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) return false;
+
+        BYTE* data = nullptr;
+        DWORD maxLen = 0, curLen = 0;
+        if (FAILED(buffer->Lock(&data, &maxLen, &curLen)) || !data) return false;
+        D3D12DecodedPicture pic =
+            m_d3d12Decoder->decode(data, curLen, (double)timestamp / 10000000.0);
+        buffer->Unlock();
+
+        if (!pic.valid) {
+            if (m_d3d12Decoder->failed()) return false;
+            continue;   // nothing to decode in that sample; read the next one
+        }
+
+        dest.d3d12Texture = pic.texture;
+        dest.width = pic.width;
+        dest.height = pic.height;
+        dest.timestamp = pic.pts;
+        dest.nv12 = true;
+        dest.decodeFence = m_d3d12Decoder->fence();
+        dest.decodeFenceValue = pic.fenceValue;
+
+        // The picture sits in a macroblock-aligned surface; tell the shader
+        // how much of it is the picture.
+        if (pic.codedWidth > 0 && pic.codedHeight > 0) {
+            m_colorSpace.uvScaleX = (float)pic.width / (float)pic.codedWidth;
+            m_colorSpace.uvScaleY = (float)pic.height / (float)pic.codedHeight;
+        }
+
+        m_decodedFrames.fetch_add(1);
+        return true;
+    }
+    return false;
 }
 
 // Decode one sample synchronously and confirm the whole NV12 chain works:
@@ -363,6 +590,7 @@ void VideoDecoder::close() {
             m_d3d11On12->ReturnUnderlyingResource(f.d3d11Source.Get(), 0, nullptr, nullptr);
             f.d3d11Source.Reset();
         }
+        releaseD3D12Picture(f);
     };
     for (auto& f : m_writeable) cleanupFrame(f);
     for (auto& f : m_readable) cleanupFrame(f);
@@ -377,6 +605,11 @@ void VideoDecoder::close() {
         m_d3d11Ctx = nullptr;
         m_d3d11Device = nullptr;
     }
+    // After every frame has given its picture back, so the decoder is never
+    // destroying textures the pool still points at.
+    m_d3d12Decoder.reset();
+    m_seqHeader.clear();
+
     m_ownsD3D11 = false;
     m_dxvaActive = false;
     m_gpuSharing = false;
@@ -661,6 +894,7 @@ void VideoDecoder::decodeThread() {
         p.vt = VT_I8; p.hVal.QuadPart = 0;
         m_reader->SetCurrentPosition(GUID_NULL, p);
         PropVariantClear(&p);
+        if (m_d3d12Decoder) m_d3d12Decoder->flush();
     }
 
     bool eof = false;
@@ -681,6 +915,7 @@ void VideoDecoder::decodeThread() {
                 p.vt = VT_I8; p.hVal.QuadPart = posHns;
                 m_reader->SetCurrentPosition(GUID_NULL, p);
                 PropVariantClear(&p);
+                if (m_d3d12Decoder) m_d3d12Decoder->flush();
                 m_seekCount.fetch_add(1);
                 eof = false;
 
@@ -762,6 +997,7 @@ void VideoDecoder::decodeThread() {
             p.vt = VT_I8; p.hVal.QuadPart = posHns;
             m_reader->SetCurrentPosition(GUID_NULL, p);
             PropVariantClear(&p);
+            if (m_d3d12Decoder) m_d3d12Decoder->flush();
             m_seekCount.fetch_add(1);
 
             VideoFrame temp;
@@ -795,6 +1031,8 @@ void VideoDecoder::decodeThread() {
 // ---- Read one frame (works for both DXVA and software paths) ----
 
 bool VideoDecoder::readOneFrame(VideoFrame& dest) {
+    if (m_mode == Mode::D3D12) return readD3D12Frame(dest);
+
     DWORD streamIndex = 0, flags = 0;
     LONGLONG timestamp = 0;
     ComPtr<IMFSample> sample;

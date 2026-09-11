@@ -442,6 +442,12 @@ void App::render() {
                 UINT64 pending = decoder->takePendingCopyFence();
                 if (pending > waitCopyFence) waitCopyFence = pending;
 
+                // D3D12 video decode runs on its own queue, ahead of this
+                // one. Nothing orders the two, so the render queue has to be
+                // told to wait for the decode that produced this picture.
+                if (frame2->decodeFence && frame2->decodeFenceValue > 0)
+                    m_cmdQueue->Wait(frame2->decodeFence, frame2->decodeFenceValue);
+
                 std::string texKey = "__video_" + ac.tm->id;
 
                 if (frame2->nv12 && frame2->hasGpuTexture()) {
@@ -521,6 +527,9 @@ void App::render() {
                     cs.yOffset = p.yOffset; cs.yScale = p.yScale;
                     cs.cOffset = p.cOffset; cs.cScale = p.cScale;
                     cs.kr = p.kr; cs.kb = p.kb;
+                    // Non-unit only for the D3D12 path, whose surfaces are
+                    // macroblock-aligned and so taller than the picture.
+                    cs.uvScaleX = p.uvScaleX; cs.uvScaleY = p.uvScaleY;
                 }
                 m_pipeline.drawVideoQuad(m_cmdList.Get(), transform, effects, cs,
                     tex->srvGpu, tex->srvGpuUV);

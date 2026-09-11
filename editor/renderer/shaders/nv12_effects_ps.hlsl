@@ -26,7 +26,7 @@ cbuffer ColorSpaceCB : register(b2) {
     float cScale;    // 255/224 for limited range, 1 for full
     float kr;        // luma coefficients (BT.601 / 709 / 2020)
     float kb;
-    float2 _cs_pad;
+    float2 uvScale;  // cropped size / allocated size (1,1 unless padded)
 };
 
 // NV12 planes: Y is full resolution, UV is half resolution (4:2:0)
@@ -55,9 +55,15 @@ float3 hueRotate(float3 color, float degrees) {
 }
 
 float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+    // H.264 codes whole macroblocks, so a 1080-line stream is decoded into a
+    // 1088-line surface. uvScale trims the padding the hardware wrote past
+    // the visible picture; it is (1,1) for decoders that hand back an
+    // exactly-sized texture.
+    float2 suv = uv * uvScale;
+
     // Sample NV12 planes
-    float  y_val  = texY.Sample(samp, uv);
-    float2 uv_val = texUV.Sample(samp, uv);  // bilinear upsampling of chroma
+    float  y_val  = texY.Sample(samp, suv);
+    float2 uv_val = texUV.Sample(samp, suv);  // bilinear upsampling of chroma
 
     // YCbCr to RGB using the stream's own range and matrix
     float y  = (y_val    - yOffset) * yScale;

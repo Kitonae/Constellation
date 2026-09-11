@@ -22,7 +22,12 @@ struct ColorSpaceCB {
     float cScale = 255.0f / 224.0f;
     float kr = 0.2126f;
     float kb = 0.0722f;
-    float _pad[2] = {};
+    // Visible size over allocated size. The D3D12 decode path writes into a
+    // macroblock-aligned surface, so the shader has to stop short of the
+    // padding rows; every other path hands back an exact fit and leaves this
+    // at one.
+    float uvScaleX = 1.0f;
+    float uvScaleY = 1.0f;
 };
 
 struct EffectsCB {

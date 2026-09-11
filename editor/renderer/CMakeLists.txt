@@ -22,6 +22,8 @@ add_executable(constellation-renderer
     src/render_pipeline.cpp
     src/texture_cache.cpp
     src/video_decoder.cpp
+    src/h264_parser.cpp
+    src/d3d12_video_decoder.cpp
     src/video_buffer.cpp
     src/media_loader.cpp
     src/audio_player.cpp
@@ -76,6 +78,8 @@ if(BUILD_TESTING)
         tests/regression.cpp
         src/video_buffer.cpp
         src/video_decoder.cpp
+        src/h264_parser.cpp
+        src/d3d12_video_decoder.cpp
         src/media_loader.cpp
     )
     target_include_directories(renderer-regression-tests PRIVATE src)

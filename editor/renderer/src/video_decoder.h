@@ -18,6 +18,9 @@
 #include <condition_variable>
 #include <atomic>
 #include <cstdint>
+#include <memory>
+
+#include "d3d12_video_decoder.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -39,8 +42,11 @@ struct ColorSpaceParams {
     float cScale = 255.0f / 224.0f;
     float kr = 0.2126f;   // BT.709
     float kb = 0.0722f;
-    float pad0 = 0.0f;
-    float pad1 = 0.0f;
+    // Visible size over allocated size, for decoders whose output surface is
+    // larger than the picture (see the D3D12 path, which decodes into a
+    // macroblock-aligned NV12 texture).
+    float uvScaleX = 1.0f;
+    float uvScaleY = 1.0f;
 };
 
 // A frame in the decoder's pool.
@@ -65,6 +71,11 @@ struct VideoFrame {
     // Cross-API synchronisation (see App's frame fence and the decoder's copy fence)
     UINT64 copyFenceValue = 0;     // D3D11 copy into this frame completes at this value
     UINT64 releaseFenceValue = 0;  // D3D12 finished sampling it at this frame fence value
+
+    // D3D12 video decode: the decode queue runs ahead of the render queue, so
+    // the render queue has to wait for this value before sampling the texture.
+    ID3D12Fence* decodeFence = nullptr;   // borrowed from the decoder
+    UINT64 decodeFenceValue = 0;
 
     VideoFrame() = default;
     VideoFrame(const VideoFrame&) = delete;
@@ -95,16 +106,21 @@ private:
         nv12 = o.nv12;
         copyFenceValue = o.copyFenceValue;
         releaseFenceValue = o.releaseFenceValue;
+        decodeFence = o.decodeFence;
+        decodeFenceValue = o.decodeFenceValue;
         o.width = o.height = 0;
         o.timestamp = -1.0;
         o.nv12 = false;
         o.copyFenceValue = o.releaseFenceValue = 0;
+        o.decodeFence = nullptr;
+        o.decodeFenceValue = 0;
     }
 };
 
 // Video decoder with background thread and frame dealer.
 //
-// Four decode paths (best available is selected automatically):
+// Five decode paths (best available is selected automatically):
+//   D3D12 video decode:    MF demux only → H264Parser → DecodeFrame → NV12 D3D12 texture
 //   NV12 zero-copy:        D3D11On12 DXVA decode → UnwrapUnderlyingResource → NV12 D3D12 texture
 //   DXVA + shared texture: D3D11 DXVA decode → GPU copy to shared DXGI texture → BGRA D3D12 SRV
 //   DXVA + CPU readback:   D3D11 DXVA decode → staging → CPU readback (no D3D12 device)
@@ -162,14 +178,19 @@ public:
     // changed afterwards; the old per-frame `goto bgra_fallback` cleared
     // m_nv12Mode mid-stream while the reader kept emitting NV12, so the CPU
     // readback path then copied width*4 bytes per row out of an NV12 buffer.
-    enum class Mode { NV12, DxvaRgb32, Software };
+    enum class Mode { D3D12, NV12, DxvaRgb32, Software };
 
 private:
     friend struct RendererTestAccess;
     bool initDXVA(IDXGIAdapter1* adapter);
     bool tryOpen(const std::wstring& wpath, Mode mode);
+    bool tryOpenD3D12(const std::wstring& wpath);
     bool probeNV12();
+    bool probeD3D12();
     bool configureDecoder(Mode mode);
+    bool configureCompressed();
+    bool readD3D12Frame(VideoFrame& dest);
+    void releaseD3D12Picture(VideoFrame& frame);
     void readColorSpace(IMFMediaType* type);
     bool readOneFrame(VideoFrame& dest);
     void decodeThread();
@@ -208,6 +229,11 @@ private:
     bool m_gpuSharing = false; // true if shared DXGI textures are in use
     bool m_nv12Mode = false;   // true if NV12 zero-copy via D3D11On12
     Mode m_mode = Mode::Software;
+
+    // D3D12 video decode. Owns the decoded pictures the frames point at, so
+    // it must outlive every frame in the pool.
+    std::unique_ptr<D3D12VideoDecoder> m_d3d12Decoder;
+    std::vector<uint8_t> m_seqHeader;   // out-of-band SPS/PPS from the container
     ColorSpaceParams m_colorSpace;
 
     DecoderSync m_sync;
