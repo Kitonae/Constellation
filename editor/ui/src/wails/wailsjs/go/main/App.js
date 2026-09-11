@@ -6,6 +6,14 @@ export function CloseRendererScreen(arg1) {
   return window['go']['main']['App']['CloseRendererScreen'](arg1);
 }
 
+export function FileExists(arg1) {
+  return window['go']['main']['App']['FileExists'](arg1);
+}
+
+export function RevealInExplorer(arg1) {
+  return window['go']['main']['App']['RevealInExplorer'](arg1);
+}
+
 export function GetFileServerPort() {
   return window['go']['main']['App']['GetFileServerPort']();
 }

@@ -45,14 +45,30 @@ public:
     bool dirty() const { return m_dirty; }
     void clearDirty() { m_dirty = false; }
 
+    // Rows touched since the last clear(), as a half-open [top, bottom) range.
+    // Uploading the whole full-screen RGBA buffer every frame cost ~8 MB of
+    // memcpy plus a full-surface GPU copy at 1080p, inflating the very frame
+    // times the overlay reports.
+    uint32_t dirtyTop() const { return m_dirtyTop; }
+    uint32_t dirtyBottom() const { return m_dirtyBottom; }
+
     static constexpr int GLYPH_W = 8;
     static constexpr int GLYPH_H = 8;
 
 private:
     void drawChar(int x, int y, char ch, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 
+    void touchRows(int y0, int y1);
+
     std::vector<uint8_t> m_pixels;
     uint32_t m_width = 0;
     uint32_t m_height = 0;
     bool m_dirty = false;
+    // Union of the rows written this frame and the rows written last frame:
+    // stale pixels have to be cleared on the GPU too, so the range must cover
+    // both what we drew and what we erased.
+    uint32_t m_dirtyTop = 0;      // rows to upload: cleared + drawn
+    uint32_t m_dirtyBottom = 0;
+    uint32_t m_drawnTop = 0;      // rows drawn since the last clear()
+    uint32_t m_drawnBottom = 0;
 };

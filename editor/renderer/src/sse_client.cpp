@@ -104,9 +104,12 @@ void SSEClient::run() {
                 break;
             }
             if (bytesAvailable == 0) {
-                // No data ready yet — brief sleep to avoid busy-spinning
-                Sleep(1);
-                continue;
+                // In synchronous mode WinHttpQueryDataAvailable blocks until
+                // data arrives, so zero means the response ended. Treating it
+                // as "nothing yet" left us sleeping forever with m_connected
+                // still true, so a graceful server restart never reconnected.
+                printf("[SSE] Server closed the stream\n");
+                break;
             }
             DWORD toRead = (bytesAvailable < sizeof(buf)) ? bytesAvailable : sizeof(buf);
             if (!WinHttpReadData(hRequest, buf, toRead, &bytesRead)) {

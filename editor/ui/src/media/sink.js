@@ -47,58 +47,73 @@ function sinkId(prefix) {
 export function createDisplaySink(targetWindow, opts = {}) {
   const id = opts.id || sinkId('display')
   const throttleMs = opts.throttleMs ?? 50
+  const targetOrigin = opts.targetOrigin || '*'
   let _lastSendTime = 0
   let _disposed = false
+  // The sink tracks transport state from the clock notifications it already
+  // receives, so every payload can carry `playing` without extra plumbing.
+  // DisplayWindow needs it to play video instead of scrubbing it.
+  let _playing = false
+  let _lastTime = 0
 
   function _post(event, payload) {
     if (_disposed || !targetWindow || targetWindow.closed) return
     try {
-      targetWindow.postMessage({ event, payload }, '*')
+      targetWindow.postMessage({ event, payload }, targetOrigin)
     } catch {}
   }
 
   function onClockTick(time) {
+    _lastTime = time
     const now = performance.now()
     if (now - _lastSendTime < throttleMs) return
-    _lastSendTime = now
-    _post('display:time', { time })
+    _postTime(time)
+  }
+
+  // Transport changes move the playhead; they do not change the document.
+  // Only `notifySnapshot` sends a snapshot, so a paused scrub costs one small
+  // message per move instead of a full project serialization.
+  function _postTime(time) {
+    if (Number.isFinite(time)) _lastTime = time
+    _lastSendTime = performance.now()
+    _post('display:time', { time: _lastTime, playing: _playing })
   }
 
   function onClockStart(time) {
-    _sendSnapshot()
+    _playing = true
+    _postTime(time)
   }
 
   function onClockPause() {
-    _sendSnapshot()
+    _playing = false
+    _postTime(_lastTime)
   }
 
   function onClockStop() {
-    _sendSnapshot()
+    _playing = false
+    _postTime(0)
   }
 
   function onClockSeek(time) {
-    _sendSnapshot()
+    _postTime(time)
   }
 
   function onSnapshot(snapshot) {
-    _post('display:snapshot', snapshot)
-  }
-
-  function _sendSnapshot() {
-    if (opts.getSnapshot) {
-      const snap = opts.getSnapshot()
-      if (snap) _post('display:snapshot', snap)
-    }
+    if (!snapshot) return
+    _playing = snapshot.playing ?? _playing
+    _post('display:snapshot', { ...snapshot, playing: _playing })
   }
 
   function dispose() {
     _disposed = true
-    _post('display:close', {})
+    _post('display:close', { screenId: opts.screenId || '' })
   }
 
   return {
     id,
     type: 'display',
+    screenId: opts.screenId || '',
+    targetWindow,
     onClockTick,
     onClockStart,
     onClockPause,
@@ -138,41 +153,49 @@ export function createNativeSink(opts = {}) {
     try { window?.go?.main?.App?.PushSnapshot?.(json) } catch {}
   })
 
+  // Go exposes PushControl but nothing used to call it, so the renderer's
+  // `m_playing` never left false and it scrubbed audio instead of playing it.
+  const _pushControl = opts.pushControl || ((cmd) => {
+    try { window?.go?.main?.App?.PushControl?.(cmd) } catch {}
+  })
+
+  // The native renderer reads the on-disk project wrapper schema, which is not
+  // the same object the display sinks post. `serialize` lets the two differ.
+  const _serialize = opts.serialize || ((snap) => JSON.stringify(snap))
+
   function onClockTick(time) {
     if (_disposed) return
     _pushTime(time)
   }
 
   function onClockStart(time) {
-    _sendSnapshot()
+    if (_disposed) return
+    _pushTime(time)
+    _pushControl('play')
   }
 
   function onClockPause() {
-    _sendSnapshot()
+    if (_disposed) return
+    _pushControl('pause')
   }
 
   function onClockStop() {
-    _sendSnapshot()
+    if (_disposed) return
+    _pushControl('stop')
+    _pushTime(0)
   }
 
   function onClockSeek(time) {
+    if (_disposed) return
     _pushTime(time)
-    _sendSnapshot()
   }
 
   function onSnapshot(snapshot) {
-    if (_disposed) return
+    if (_disposed || !snapshot) return
     try {
-      _pushSnapshot(JSON.stringify(snapshot))
+      const json = _serialize(snapshot)
+      if (json) _pushSnapshot(json)
     } catch {}
-  }
-
-  function _sendSnapshot() {
-    if (_disposed || !opts.getSnapshot) return
-    const snap = opts.getSnapshot()
-    if (snap) {
-      try { _pushSnapshot(JSON.stringify(snap)) } catch {}
-    }
   }
 
   function dispose() {

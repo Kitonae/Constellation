@@ -7,7 +7,8 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
-import { useEditorStore } from '../store.js'
+import { resolveUriSync } from '../media/uri.js'
+import { extFromUri } from '../media/asset.js'
 
 const THUMB_SIZE = 256
 const _cache = new Map() // uri → dataUrl
@@ -44,27 +45,10 @@ function getRenderer() {
   return { renderer: _renderer, scene: _scene, camera: _camera }
 }
 
-function resolveUrl(uri) {
-  if (!uri) return null
-  const u = String(uri)
-  if (u.startsWith('file://')) {
-    try {
-      const url = new URL(u)
-      let p = decodeURI(url.pathname)
-      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
-      const port = useEditorStore.getState()._fileServerPort
-      if (port) return `http://localhost:${port}/fs/${p}`
-      return null
-    } catch { return null }
-  }
-  if (u.startsWith('http') || u.startsWith('blob:') || u.startsWith('data:')) return u
-  return u
-}
-
-function extFromUri(uri) {
-  const parts = String(uri || '').split('.')
-  return (parts[parts.length - 1] || '').toLowerCase().split('?')[0]
-}
+// One resolver for model URLs. The hand-rolled version here decoded the path
+// and never re-encoded it, so any model in a folder with a space failed to
+// load; media/uri.js already gets this right.
+const resolveUrl = (uri) => resolveUriSync(uri) || null
 
 async function loadModel(uri) {
   const url = resolveUrl(uri)

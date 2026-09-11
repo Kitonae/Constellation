@@ -29,10 +29,6 @@ function chooseFiles(accept, multiple = false, directory = false) {
   })
 }
 
-export async function openImageDialog() {
-  const res = await chooseFiles('.png,.jpg,.jpeg,.gif,.bmp,.webp', false, false)
-  return res.length ? res[0].path : null
-}
 
 // New helper returning both file and path for richer importing (data URL fallback)
 export async function openImageFile() {

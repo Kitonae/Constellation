@@ -96,7 +96,8 @@ bool NDISender::init(ID3D12Device* device, ID3D12CommandQueue* cmdQueue,
     }
 
     // NDI CPU-side frame buffer (compact, no row pitch padding)
-    m_ndiBuffer.resize((size_t)width * height * 4);
+    m_ndiBuffers[0].resize((size_t)width * height * 4);
+    m_ndiBuffers[1].resize((size_t)width * height * 4);
 
     // Fence for tracking readback completion
     device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
@@ -109,6 +110,19 @@ bool NDISender::init(ID3D12Device* device, ID3D12CommandQueue* cmdQueue,
 
 void NDISender::capture(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* backBuffer) {
     if (!m_sender || !cmdList || !backBuffer) return;
+
+    // The staging buffers and the NDI frame description are sized for
+    // m_width x m_height; a differently sized screen must not be copied
+    // through that footprint.
+    D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
+    if (bbDesc.Width != m_width || bbDesc.Height != m_height) {
+        static int warned = 0;
+        if (warned++ % 600 == 0) {
+            fprintf(stderr, "[NDI] Skipping capture: back buffer %llux%u != sender %ux%u\n",
+                (unsigned long long)bbDesc.Width, bbDesc.Height, m_width, m_height);
+        }
+        return;
+    }
 
     // Don't queue more than RING_SIZE frames
     if (m_pendingFrames >= RING_SIZE) return;
@@ -172,13 +186,17 @@ void NDISender::send() {
         }
     }
 
+    // Alternate buffers: the SDK may still be reading the one handed to the
+    // previous async call.
+    std::vector<uint8_t>& ndiBuffer = m_ndiBuffers[m_ndiBufIdx];
+
     // Map staging buffer and copy to NDI buffer
     void* mapped = nullptr;
     D3D12_RANGE readRange = {0, (SIZE_T)m_rowPitch * m_height};
     if (SUCCEEDED(m_staging[idx]->Map(0, &readRange, &mapped))) {
         uint32_t dstPitch = m_width * 4;
         const uint8_t* src = (const uint8_t*)mapped;
-        uint8_t* dst = m_ndiBuffer.data();
+        uint8_t* dst = ndiBuffer.data();
 
         if (m_rowPitch == dstPitch) {
             memcpy(dst, src, (size_t)dstPitch * m_height);
@@ -202,12 +220,13 @@ void NDISender::send() {
     frame.picture_aspect_ratio = 0.0f;  // square pixels
     frame.frame_format_type = NDIlib_frame_format_type_progressive;
     frame.timecode = NDIlib_send_timecode_synthesize;
-    frame.p_data = m_ndiBuffer.data();
+    frame.p_data = ndiBuffer.data();
     frame.line_stride_in_bytes = (int)(m_width * 4);
     frame.p_metadata = nullptr;
     frame.timestamp = 0;
 
     NDIlib_send_send_video_async_v2(m_sender, &frame);
+    m_ndiBufIdx ^= 1;   // the SDK now owns `ndiBuffer` until the next call
 
     m_sendIdx++;
     m_pendingFrames--;
@@ -235,7 +254,9 @@ void NDISender::shutdown() {
         m_ndiInitialized = false;
     }
 
-    m_ndiBuffer.clear();
+    m_ndiBuffers[0].clear();
+    m_ndiBuffers[1].clear();
+    m_ndiBufIdx = 0;
     m_pendingFrames = 0;
     m_captureIdx = 0;
     m_sendIdx = 0;

@@ -3,23 +3,12 @@ import { Canvas, useLoader } from '@react-three/fiber'
 import { OrbitControls, TransformControls, Edges, useGLTF } from '@react-three/drei'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { useEditorStore } from '../store.js'
+import { resolveUriSync } from '../media/uri.js'
+import { extFromUri } from '../media/asset.js'
 
-function resolveModelUrl(uri) {
-  if (!uri) return null
-  const u = String(uri)
-  if (u.startsWith('file://')) {
-    try {
-      const url = new URL(u)
-      let p = decodeURI(url.pathname)
-      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
-      const port = useEditorStore.getState()._fileServerPort
-      if (port) return `http://localhost:${port}/fs/${p}`
-      return null
-    } catch { return null }
-  }
-  if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('blob:') || u.startsWith('data:')) return u
-  return u
-}
+// media/uri.js is the single resolver; the local copy here decoded the path
+// without re-encoding it, so model paths containing spaces never loaded.
+const resolveModelUrl = (uri) => resolveUriSync(uri) || null
 
 function GltfModel({ url }) {
   const { scene } = useGLTF(url)
@@ -35,11 +24,7 @@ function ObjModel({ url }) {
 
 function ModelMesh({ uri }) {
   const url = resolveModelUrl(uri)
-  const ext = useMemo(() => {
-    if (!uri) return ''
-    const parts = String(uri).split('.')
-    return (parts[parts.length - 1] || '').toLowerCase().split('?')[0]
-  }, [uri])
+  const ext = useMemo(() => extFromUri(uri), [uri])
 
   if (!url) return <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>
 

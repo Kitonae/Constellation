@@ -35,7 +35,11 @@ public:
 
     bool isOpen() const { return m_reader != nullptr; }
     bool isPlaying() const { return m_playing.load(); }
-    double currentTime() const { return m_currentTime.load(); }
+    // Position actually rendered by the device, not the decoder's read-ahead.
+    double currentTime() const;
+    // True once the stream ran out. Without it the render loop re-issued
+    // play() on every frame after the end of a clip.
+    bool atEnd() const { return m_eof.load(); }
 
     // Audio properties
     uint32_t sampleRate() const { return m_sampleRate; }
@@ -58,6 +62,11 @@ private:
     ComPtr<IMMDevice> m_device;
     ComPtr<IAudioClient> m_audioClient;
     ComPtr<IAudioRenderClient> m_renderClient;
+    ComPtr<IAudioClock> m_audioClock;   // measures what has actually played
+    UINT64 m_clockFreq = 0;
+    // Stream position at the last WASAPI Reset. IAudioClock counts from zero
+    // after a Reset, so the played position is this plus the clock.
+    std::atomic<double> m_clockBase{0.0};
     uint32_t m_bufferFrames = 0;
     HANDLE m_audioEvent = nullptr;
 
@@ -65,6 +74,7 @@ private:
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_playing{false};
+    std::atomic<bool> m_eof{false};
     std::atomic<double> m_currentTime{0.0};
 
     // Seek

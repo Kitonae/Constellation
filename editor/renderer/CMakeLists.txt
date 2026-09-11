@@ -22,6 +22,8 @@ add_executable(constellation-renderer
     src/render_pipeline.cpp
     src/texture_cache.cpp
     src/video_decoder.cpp
+    src/video_buffer.cpp
+    src/media_loader.cpp
     src/audio_player.cpp
     src/ndi_sender.cpp
     src/debug_text.cpp
@@ -66,6 +68,24 @@ if(NDI_SDK_DIR)
 else()
     message(WARNING "NDI SDK not found (NDI_SDK_DIR env var not set) -- NDI output disabled")
     target_compile_definitions(constellation-renderer PRIVATE HAS_NDI=0)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(renderer-regression-tests
+        tests/regression.cpp
+        src/video_buffer.cpp
+        src/video_decoder.cpp
+        src/media_loader.cpp
+    )
+    target_include_directories(renderer-regression-tests PRIVATE src)
+    target_link_libraries(renderer-regression-tests PRIVATE
+        d3d12 dxgi d3d11 dxguid mf mfplat mfreadwrite mfuuid windowscodecs ole32 propsys
+    )
+    foreach(case buffers pool loader)
+        add_test(NAME renderer-${case} COMMAND renderer-regression-tests ${case})
+        set_tests_properties(renderer-${case} PROPERTIES TIMEOUT 15)
+    endforeach()
 endif()
 
 target_include_directories(constellation-renderer PRIVATE src)

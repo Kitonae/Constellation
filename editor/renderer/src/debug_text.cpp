@@ -108,13 +108,42 @@ static const uint8_t g_font8x8[95][8] = {
 void DebugText::init(uint32_t width, uint32_t height) {
     m_width = width;
     m_height = height;
-    m_pixels.resize(width * height * 4, 0);
+    m_pixels.assign((size_t)width * height * 4, 0);
     m_dirty = false;
+    // A brand new texture must be uploaded in full once.
+    m_dirtyTop = 0;
+    m_dirtyBottom = height;
+    m_drawnTop = height;
+    m_drawnBottom = 0;
 }
 
+// Clearing only the rows that had content keeps both the memset and the
+// subsequent GPU copy proportional to the overlay, not to the screen.
 void DebugText::clear() {
-    std::memset(m_pixels.data(), 0, m_pixels.size());
+    uint32_t top = m_drawnTop;
+    uint32_t bottom = m_drawnBottom;
+    if (bottom > top) {
+        std::memset(m_pixels.data() + (size_t)top * m_width * 4, 0,
+                    (size_t)(bottom - top) * m_width * 4);
+    }
+    // Those rows changed (to transparent), so they still need uploading.
+    m_dirtyTop = top;
+    m_dirtyBottom = bottom;
+    m_drawnTop = m_height;
+    m_drawnBottom = 0;
     m_dirty = true;
+}
+
+void DebugText::touchRows(int y0, int y1) {
+    if (m_height == 0) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 > (int)m_height) y1 = (int)m_height;
+    if (y1 <= y0) return;
+    uint32_t t = (uint32_t)y0, b = (uint32_t)y1;
+    if (t < m_dirtyTop) m_dirtyTop = t;
+    if (b > m_dirtyBottom) m_dirtyBottom = b;
+    if (t < m_drawnTop) m_drawnTop = t;
+    if (b > m_drawnBottom) m_drawnBottom = b;
 }
 
 void DebugText::drawChar(int x, int y, char ch, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -122,6 +151,7 @@ void DebugText::drawChar(int x, int y, char ch, uint8_t r, uint8_t g, uint8_t b,
     if (idx < 0 || idx >= 95) return;
 
     const uint8_t* glyph = g_font8x8[idx];
+    touchRows(y, y + GLYPH_H);
 
     for (int row = 0; row < GLYPH_H; row++) {
         int py = y + row;
@@ -166,6 +196,7 @@ void DebugText::drawFormat(int x, int y, uint8_t r, uint8_t g, uint8_t b, const 
 }
 
 void DebugText::drawRect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    touchRows(y, y + h);
     for (int py = y; py < y + h; py++) {
         if (py < 0 || py >= (int)m_height) continue;
         for (int px = x; px < x + w; px++) {

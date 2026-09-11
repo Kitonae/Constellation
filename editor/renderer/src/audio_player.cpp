@@ -158,6 +158,13 @@ bool AudioPlayer::initWASAPI() {
     hr = m_audioClient->GetService(IID_PPV_ARGS(&m_renderClient));
     if (FAILED(hr)) return false;
 
+    // IAudioClock reports what the device has actually rendered. Reporting the
+    // decoder's read-ahead position instead made drift look larger than it was
+    // and triggered spurious re-seeks.
+    if (SUCCEEDED(m_audioClient->GetService(IID_PPV_ARGS(&m_audioClock)))) {
+        m_audioClock->GetFrequency(&m_clockFreq);
+    }
+
     // Create event for buffer notifications
     m_audioEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     m_audioClient->SetEventHandle(m_audioEvent);
@@ -172,6 +179,8 @@ void AudioPlayer::close() {
 
     if (m_audioClient) m_audioClient->Stop();
     m_renderClient.Reset();
+    m_audioClock.Reset();
+    m_clockFreq = 0;
     m_audioClient.Reset();
     m_device.Reset();
     m_enumerator.Reset();
@@ -180,14 +189,29 @@ void AudioPlayer::close() {
     m_reader.Reset();
     m_residual.clear();
     m_residualOffset = 0;
+    m_eof.store(false);
+    m_clockBase.store(0.0);
     m_sampleRate = m_channels = 0;
     printf("[Audio] Closed\n");
 }
 
 void AudioPlayer::play() {
     if (!m_audioClient) return;
+    if (m_eof.load()) return;   // caller should seek first
     m_playing = true;
     m_audioClient->Start();
+}
+
+double AudioPlayer::currentTime() const {
+    // Measure drift against what the device has actually rendered, not against
+    // how far the decoder has read ahead.
+    if (m_audioClock && m_clockFreq) {
+        UINT64 pos = 0, qpc = 0;
+        if (SUCCEEDED(m_audioClock->GetPosition(&pos, &qpc))) {
+            return m_clockBase.load() + (double)pos / (double)m_clockFreq;
+        }
+    }
+    return m_currentTime.load();
 }
 
 void AudioPlayer::pause() {
@@ -197,9 +221,12 @@ void AudioPlayer::pause() {
 }
 
 void AudioPlayer::seek(double timeSeconds) {
+    // Only records the request. The audio thread performs it; doing the work
+    // here meant the render thread blocked on the mutex the audio thread holds
+    // across SetCurrentPosition and the WASAPI Stop/Reset.
     std::lock_guard<std::mutex> lk(m_seekMu);
     m_seekRequested = true;
-    m_seekTime = std::max(0.0, timeSeconds);
+    m_seekTime = (std::max)(0.0, timeSeconds);
 }
 
 bool AudioPlayer::readAudioSamples(uint8_t* dest, uint32_t framesToRead, uint32_t& framesRead) {
@@ -274,27 +301,36 @@ void AudioPlayer::audioThread() {
     uint32_t bytesPerFrame = m_channels * m_bitsPerSample / 8;
 
     while (m_running) {
-        // Handle seek
+        // Handle seek: copy the request out under the lock, then do the
+        // slow work (MF SetCurrentPosition, WASAPI Stop/Reset/Start) unlocked
+        // so AudioPlayer::seek never blocks the render thread.
+        bool doSeek = false;
+        double seekTo = 0.0;
         {
             std::lock_guard<std::mutex> lk(m_seekMu);
             if (m_seekRequested) {
                 m_seekRequested = false;
-                LONGLONG pos = (LONGLONG)(m_seekTime * 10000000.0);
-                PROPVARIANT p;
-                PropVariantInit(&p);
-                p.vt = VT_I8;
-                p.hVal.QuadPart = pos;
-                m_reader->SetCurrentPosition(GUID_NULL, p);
-                PropVariantClear(&p);
-                m_currentTime.store(m_seekTime);
-                m_residual.clear();
-                m_residualOffset = 0;
-                // Reset WASAPI buffer
-                if (m_audioClient) {
-                    m_audioClient->Stop();
-                    m_audioClient->Reset();
-                    if (m_playing) m_audioClient->Start();
-                }
+                doSeek = true;
+                seekTo = m_seekTime;
+            }
+        }
+        if (doSeek) {
+            LONGLONG pos = (LONGLONG)(seekTo * 10000000.0);
+            PROPVARIANT p;
+            PropVariantInit(&p);
+            p.vt = VT_I8;
+            p.hVal.QuadPart = pos;
+            m_reader->SetCurrentPosition(GUID_NULL, p);
+            PropVariantClear(&p);
+            m_currentTime.store(seekTo);
+            m_eof.store(false);
+            m_residual.clear();
+            m_residualOffset = 0;
+            if (m_audioClient) {
+                m_audioClient->Stop();
+                m_audioClient->Reset();   // resets IAudioClock to zero
+                m_clockBase.store(seekTo);
+                if (m_playing) m_audioClient->Start();
             }
         }
 
@@ -337,7 +373,8 @@ void AudioPlayer::audioThread() {
         m_renderClient->ReleaseBuffer(framesRead, ok ? 0 : AUDCLNT_BUFFERFLAGS_SILENT);
 
         if (!ok) {
-            // EOF — pause
+            // EOF — stop and remember it so play() is not re-issued every frame
+            m_eof.store(true);
             m_playing = false;
         }
     }

@@ -3,7 +3,9 @@ import { useEditorStore } from '../store.js'
 import Spinner from './Spinner.jsx'
 import { generateVideoThumbnail } from '../utils/videoUtils.js'
 import { generateModelThumbnail } from '../utils/modelThumbnail.js'
+import { extFromUri } from '../media/asset.js'
 import { resolveUriSync } from '../media/uri.js'
+import { assetKind, KIND_ICON } from '../media/kind.js'
 
 const MIME_BY_EXT = {
   jpg: 'image/jpeg',
@@ -12,7 +14,6 @@ const MIME_BY_EXT = {
   gif: 'image/gif',
   webp: 'image/webp',
   bmp: 'image/bmp',
-  // Basic video types for hinting when needed
   mp4: 'video/mp4',
   mov: 'video/quicktime',
   webm: 'video/webm',
@@ -23,155 +24,150 @@ const MIME_BY_EXT = {
   mpeg: 'video/mpeg',
 }
 
-function extFromUri(uri) {
-  try {
-    const u = String(uri)
-    // blob: and data: URLs don't contain a meaningful file extension
-    if (u.startsWith('blob:') || u.startsWith('data:')) return ''
-    const q = u.split('?')[0]
-    const p = q.split('#')[0]
-    const s = p.split('.')
-    if (s.length < 2) return ''
-    return (s[s.length - 1] || '').toLowerCase()
-  } catch { return '' }
-}
-
+/**
+ * Resolve a media URI to something an `<img>` can load.
+ *
+ * `mimeHint` is used to pick a kind when the URI carries no extension —
+ * blob: and data: URLs, which is exactly when the extension sniff fails.
+ */
 export async function resolveImageSrc(uri, mimeHint = 'image/*') {
   if (!uri) return null
-  const u = String(uri)
-  if (u.startsWith('data:')) return u
-  if (u.startsWith('blob:')) return u
-  if (u.startsWith('file://')) {
-    // Use the sidecar file server to serve the image via HTTP.
-    const resolved = resolveUriSync(u)
-    return resolved || null
-  }
-  return u
+  return resolveUriSync(uri) || null
 }
 
-function isVideoExt(ext) {
-  return ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'].includes(ext)
-}
-
-function isModelExt(ext) {
-  return ['gltf', 'glb', 'obj'].includes(ext)
-}
-
-export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill = false }) {
+/**
+ * A thumbnail for one media asset.
+ *
+ * `missing` is passed in by the Media Bin from a real file-existence check.
+ * Without it a moved file and a thumbnail that merely failed to decode both
+ * rendered as the same grey word, so there was no way to tell a broken link
+ * from an unsupported codec.
+ */
+export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill = false, kind: kindProp, mimeHint, missing = false }) {
   const [src, setSrc] = useState(null)
   const [error, setError] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  const ext = useMemo(() => {
-    const e = extFromUri(uri)
-    if (e) return e
-    // Fallback: try to get extension from alt text (filename) if uri is a blob/data url
-    return extFromUri(alt)
-  }, [uri, alt])
-  const isVideo = useMemo(() => isVideoExt(ext), [ext])
-  const isModel = useMemo(() => isModelExt(ext), [ext])
-  const mime = useMemo(() => MIME_BY_EXT[ext] || (isVideo ? 'video/*' : 'image/*'), [ext, isVideo])
+
+  const ext = useMemo(() => extFromUri(uri) || extFromUri(alt), [uri, alt])
+  const kind = useMemo(() => {
+    if (kindProp) return kindProp
+    const k = assetKind(uri)
+    if (k !== 'unknown') return k
+    const byName = assetKind(alt)
+    if (byName !== 'unknown') return byName
+    // blob:/data: URIs have no extension; the caller's MIME hint is all
+    // there is to go on.
+    if (mimeHint?.startsWith('video/')) return 'video'
+    if (mimeHint?.startsWith('image/')) return 'image'
+    if (mimeHint?.startsWith('audio/')) return 'audio'
+    return 'unknown'
+  }, [kindProp, uri, alt, mimeHint])
+
+  const mime = useMemo(() => mimeHint || MIME_BY_EXT[ext] || (kind === 'video' ? 'video/*' : 'image/*'), [mimeHint, ext, kind])
 
   useEffect(() => {
     let cancelled = false
     setError(false)
     setLoaded(false)
+    setSrc(null)
 
     async function load() {
-      if (isModel) {
+      if (kind === 'model') {
         try {
           const thumb = await generateModelThumbnail(uri)
           if (cancelled) return
           setSrc(thumb)
-          setLoaded(true)
         } catch (e) {
+          if (cancelled) return
           console.warn('Failed to generate model thumbnail', e)
-          setSrc(null)
-          setLoaded(true)
+          setError(true)
         }
         return
       }
-      if (isVideo) {
+      if (kind === 'video') {
         try {
           const thumb = await generateVideoThumbnail(uri)
           if (cancelled) return
           setSrc(thumb)
         } catch (e) {
+          if (cancelled) return
           console.warn('Failed to generate video thumbnail', e)
-          useEditorStore.getState().addLog({ level: 'error', message: `Thumb error: ${e.message}` })
-          setSrc(null)
+          useEditorStore.getState().addLog({ level: 'warn', message: `No thumbnail for ${alt || uri}: ${e.message || e}` })
+          setError(true)
         }
+        return
+      }
+      if (kind === 'audio' || kind === 'unknown') {
+        setError(true)
         return
       }
       const resolved = await resolveImageSrc(uri, mime)
       if (cancelled) return
-      setSrc(resolved)
+      if (!resolved) setError(true)
+      else setSrc(resolved)
     }
     load()
     return () => { cancelled = true }
-  }, [uri, mime])
+  }, [uri, mime, kind, alt])
+
+  const box = {
+    width: fill ? '100%' : size,
+    height: fill ? '100%' : size,
+    background: 'var(--bg-primary)',
+    border: `1px solid ${missing ? 'var(--error)' : 'var(--border)'}`,
+    borderRadius: 'var(--radius-sm)',
+    overflow: 'hidden',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: '0 0 auto',
+    position: 'relative',
+  }
+
+  if (missing) {
+    return (
+      <div style={box} title="File is missing">
+        <span className="ms" style={{ fontSize: Math.max(14, size * 0.4), color: 'var(--error)' }}>link_off</span>
+      </div>
+    )
+  }
+
+  if (error || (!src && (kind === 'audio' || kind === 'unknown'))) {
+    return (
+      <div style={box} title={error ? 'No preview available' : undefined}>
+        <span className="ms" style={{ fontSize: Math.max(14, size * 0.4), color: kind === 'model' ? 'var(--model)' : 'var(--text-muted)' }}>
+          {KIND_ICON[kind] || KIND_ICON.unknown}
+        </span>
+      </div>
+    )
+  }
 
   return (
-    <div style={{
-      width: fill ? '100%' : size,
-      height: fill ? '100%' : size,
-      background: '#0f1115',
-      border: '1px solid #232636',
-      borderRadius: 4,
-      overflow: 'hidden',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flex: '0 0 auto',
-    }}>
-      {isModel ? (
-        src ? (
-          <img src={src} alt={alt} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
-        ) : (
-          <span style={{ fontSize: 11, color: '#a78bfa', opacity: 0.9, fontWeight: 600 }}>3D</span>
-        )
-      ) : isVideo ? (
-        src ? (
-          <img
-            src={src}
-            alt={alt}
-            onLoad={() => setLoaded(true)}
-            onError={() => setError(true)}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-          />
-        ) : (
-          <span style={{ fontSize: 11, color: '#c7cfdb', opacity: 0.9 }}>Video</span>
-        )
-      ) : src && !error ? (
-        loaded ? (
-          <img
-            src={src}
-            alt={alt}
-            onLoad={() => setLoaded(true)}
-            onError={async () => {
-              setError(true)
-            }}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-          />
-        ) : (
-          // Show spinner while the image source is resolving or loading
-          <>
-            <Spinner size={16} />
-            {/* Preload image invisibly to detect onLoad */}
-            <img
-              src={src}
-              alt={alt}
-              onLoad={() => setLoaded(true)}
-              onError={async () => {
-                setError(true)
-              }}
-              style={{ display: 'none' }}
-            />
-          </>
-        )
-      ) : (
-        error ? (
-          <span style={{ fontSize: 11, color: '#c7cfdb', opacity: 0.7 }}>Unavailable</span>
-        ) : <Spinner size={16} />
+    <div style={box}>
+      {/* One image element, faded in on load. There used to be a second,
+          hidden copy purely to detect the load event, so the browser
+          fetched every thumbnail twice. */}
+      {src && (
+        <img
+          src={src}
+          alt={alt}
+          draggable={false}
+          onLoad={() => setLoaded(true)}
+          onError={() => setError(true)}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: kind === 'model' ? 'contain' : 'cover',
+            display: 'block',
+            opacity: loaded ? 1 : 0,
+            transition: 'opacity 0.15s ease',
+          }}
+        />
+      )}
+      {!loaded && (
+        <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Spinner size={16} />
+        </span>
       )}
     </div>
   )

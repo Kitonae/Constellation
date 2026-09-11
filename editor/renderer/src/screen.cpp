@@ -4,6 +4,16 @@
 static const wchar_t* WINDOW_CLASS_NAME = L"ConstellationRendererScreen";
 static bool s_classRegistered = false;
 
+// Widening bytes one-to-one mangles any non-ASCII screen id; go through the
+// real UTF-8 conversion instead.
+static std::wstring utf8ToWide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring out((size_t)len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), len);
+    return out;
+}
+
 Screen::Screen(const std::string& screenId, int width, int height,
                ID3D12Device* device, ID3D12CommandQueue* cmdQueue, IDXGIFactory4* factory)
     : m_screenId(screenId), m_width(width), m_height(height)
@@ -22,7 +32,7 @@ Screen::Screen(const std::string& screenId, int width, int height,
     }
 
     // Create window
-    std::wstring title = L"Renderer: " + std::wstring(screenId.begin(), screenId.end());
+    std::wstring title = L"Renderer: " + utf8ToWide(screenId);
     RECT rect = {0, 0, width, height};
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -42,7 +52,12 @@ Screen::Screen(const std::string& screenId, int width, int height,
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
     rtvDesc.NumDescriptors = FRAME_COUNT;
     rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&m_rtvHeap));
+    if (FAILED(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&m_rtvHeap)))) {
+        fprintf(stderr, "[Screen] RTV heap creation failed for %s\n", screenId.c_str());
+        DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
+        return;
+    }
     m_rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
     // Create swap chain
@@ -56,44 +71,50 @@ Screen::Screen(const std::string& screenId, int width, int height,
     scDesc.SampleDesc.Count = 1;
 
     ComPtr<IDXGISwapChain1> sc1;
-    factory->CreateSwapChainForHwnd(cmdQueue, m_hwnd, &scDesc, nullptr, nullptr, &sc1);
-    sc1.As(&m_swapChain);
+    HRESULT hr = factory->CreateSwapChainForHwnd(cmdQueue, m_hwnd, &scDesc, nullptr, nullptr, &sc1);
+    if (FAILED(hr) || !sc1) {
+        // Unchecked, this failure surfaced later as a crash on the first
+        // GetCurrentBackBufferIndex.
+        fprintf(stderr, "[Screen] CreateSwapChainForHwnd failed for %s: 0x%08x\n",
+            screenId.c_str(), hr);
+        DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
+        return;
+    }
+    if (FAILED(sc1.As(&m_swapChain)) || !m_swapChain) {
+        fprintf(stderr, "[Screen] IDXGISwapChain3 unavailable for %s\n", screenId.c_str());
+        DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
+        return;
+    }
 
     // Disable Alt+Enter fullscreen
     factory->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER);
 
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
-    // Create RTVs and command allocators
+    // Create RTVs
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     for (UINT i = 0; i < FRAME_COUNT; i++) {
-        m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i]));
+        if (FAILED(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])))) {
+            fprintf(stderr, "[Screen] GetBuffer(%u) failed for %s\n", i, screenId.c_str());
+            m_swapChain.Reset();
+            DestroyWindow(m_hwnd);
+            m_hwnd = nullptr;
+            return;
+        }
         device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
         rtvHandle.ptr += m_rtvDescriptorSize;
-
-        device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_cmdAllocators[i]));
     }
-
-    // Create fence
-    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
-    m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
     printf("[Screen] Created %s (%dx%d)\n", screenId.c_str(), width, height);
 }
 
 Screen::~Screen() {
-    // Wait for GPU
-    if (m_fence && m_fenceEvent) {
-        for (UINT i = 0; i < FRAME_COUNT; i++) {
-            if (m_fence->GetCompletedValue() < m_fenceValues[i]) {
-                m_fence->SetEventOnCompletion(m_fenceValues[i], m_fenceEvent);
-                WaitForSingleObject(m_fenceEvent, 1000);
-            }
-        }
-        CloseHandle(m_fenceEvent);
-    }
+    // App flushes the GPU before destroying screens.
     if (m_hwnd) {
         DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
     }
 }
 
@@ -108,16 +129,6 @@ ID3D12Resource* Screen::currentBackBuffer() const {
 }
 
 void Screen::beginFrame(ID3D12GraphicsCommandList* cmdList) {
-    // Wait for the previous frame on this buffer
-    if (m_fence->GetCompletedValue() < m_fenceValues[m_frameIndex]) {
-        m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent);
-        WaitForSingleObject(m_fenceEvent, INFINITE);
-    }
-
-    m_cmdAllocators[m_frameIndex]->Reset();
-    cmdList->Reset(m_cmdAllocators[m_frameIndex].Get(), nullptr);
-
-    // Transition to render target
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = currentBackBuffer();
@@ -127,8 +138,7 @@ void Screen::beginFrame(ID3D12GraphicsCommandList* cmdList) {
     cmdList->ResourceBarrier(1, &barrier);
 }
 
-void Screen::endFrame(ID3D12GraphicsCommandList* cmdList, ID3D12CommandQueue* cmdQueue) {
-    // Transition to present
+void Screen::endFrame(ID3D12GraphicsCommandList* cmdList) {
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = currentBackBuffer();
@@ -136,17 +146,20 @@ void Screen::endFrame(ID3D12GraphicsCommandList* cmdList, ID3D12CommandQueue* cm
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cmdList->ResourceBarrier(1, &barrier);
+}
 
-    cmdList->Close();
-    ID3D12CommandList* lists[] = {cmdList};
-    cmdQueue->ExecuteCommandLists(1, lists);
-
-    m_swapChain->Present(1, 0); // vsync
-
-    // Signal fence
-    m_fenceValues[m_frameIndex]++;
-    cmdQueue->Signal(m_fence.Get(), m_fenceValues[m_frameIndex]);
+bool Screen::present(UINT syncInterval) {
+    if (!m_swapChain) return true;
+    HRESULT hr = m_swapChain->Present(syncInterval, 0);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+        fprintf(stderr, "[Screen] %s: device lost on Present: 0x%08x\n", m_screenId.c_str(), hr);
+        return false;
+    }
+    if (FAILED(hr)) {
+        fprintf(stderr, "[Screen] %s: Present failed: 0x%08x\n", m_screenId.c_str(), hr);
+    }
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+    return true;
 }
 
 LRESULT CALLBACK Screen::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
