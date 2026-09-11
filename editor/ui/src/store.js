@@ -20,6 +20,7 @@ import { clipInstancesOf, findNode as findNodeIn } from './selectors.js'
 import { GetFileServerPort } from '@bindings/app.js'
 import { isWails } from './wails/env.js'
 import { readSettings, writeSettings, isValidSetting } from './settings.js'
+import { applyTheme } from './theme.js'
 
 // Initialize the file server base URL if running under Wails. This is the only
 // place it happens — App.jsx used to repeat it on mount.
@@ -135,6 +136,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     }
     const settings = { ...s.settings, [key]: value }
     writeSettings(settings)
+    if (key === 'theme') applyTheme(value)
     return { settings }
   }),
   settingsOpen: false,

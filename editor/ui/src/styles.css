@@ -56,6 +56,9 @@
   --stage-line: #223040;
   --stage-tick: #2f3a45;
   --stage-mode: #4fb3a1;
+  /* Stage screen rectangles are translucent so the grid reads through them. */
+  --screen-fill: rgba(11, 13, 16, 0.5);
+  --screen-fill-selected: rgba(27, 37, 48, 0.55);
   --stage-grid: #111418;
   --selected-glow: #4ea3ff55;
 
@@ -94,6 +97,129 @@
   --z-console: 3000;
   --z-modal: 4000;
   --z-blocking: 9000;
+}
+
+
+
+/* ------------------------------------------------------------- themes -- */
+
+/*
+ * Signal lives in :root above and is the default. Each block below overrides
+ * the same token names, so switching theme is one attribute on <html> and
+ * every component follows without knowing themes exist.
+ *
+ * Generated from the tables in theme.js — edit there, not here.
+ */
+
+[data-theme='studio'] {
+  --bg-primary: #17140f;
+  --bg-deep: #141210;
+  --bg-panel: #1c1916;
+  --bg-hover: #232019;
+  --bg-selected: #33271a;
+  --bg-row-selected: #2b2418;
+  --bg-elevated: #201d18;
+  --bg-inset: #181510;
+  --bg-control: #232019;
+  --bg-control-subtle: #1a1713;
+  --bg-stage: #17140f;
+  --border: #322c25;
+  --border-subtle: #3f382e;
+  --border-faint: #272219;
+  --border-accent: #59431f;
+  --text: #d8cfc2;
+  --text-secondary: #cdc3b5;
+  --text-tertiary: #9c9287;
+  --text-muted: #a39889;
+  --text-strong: #efe9df;
+  --accent: #e2a33c;
+  --accent-yellow: #e2a33c;
+  --playhead: #e2a33c;
+  --error: #e06a5a;
+  --success: #94a35c;
+  --warn: #e2a33c;
+  --info: #d8b98a;
+  --model: #b08cff;
+  --stage-line: #3d3325;
+  --stage-grid: #201c16;
+  --stage-tick: #4a4034;
+  --stage-mode: #94a35c;
+  --screen-fill: rgba(24, 21, 16, 0.5);
+  --screen-fill-selected: rgba(51, 39, 26, 0.55);
+}
+
+[data-theme='technical'] {
+  --bg-primary: #22252a;
+  --bg-deep: #24272b;
+  --bg-panel: #2c3034;
+  --bg-hover: #32373d;
+  --bg-selected: #3b444c;
+  --bg-row-selected: #363d45;
+  --bg-elevated: #30353a;
+  --bg-inset: #282c30;
+  --bg-control: #32373d;
+  --bg-control-subtle: #2a2e33;
+  --bg-stage: #22252a;
+  --border: #4a5158;
+  --border-subtle: #5a6167;
+  --border-faint: #3d4349;
+  --border-accent: #6d7a86;
+  --text: #dce1e5;
+  --text-secondary: #c3c9ce;
+  --text-tertiary: #b2b9bf;
+  --text-muted: #a7aeb5;
+  --text-strong: #f0f3f5;
+  --accent: #9fb3c4;
+  --accent-yellow: #d4b483;
+  --playhead: #9fb3c4;
+  --error: #d98a80;
+  --success: #7fa899;
+  --warn: #d4b483;
+  --info: #c3d2de;
+  --model: #a9a0d8;
+  --stage-line: #565e66;
+  --stage-grid: #2f3338;
+  --stage-tick: #464e56;
+  --stage-mode: #7fa899;
+  --screen-fill: rgba(40, 44, 48, 0.5);
+  --screen-fill-selected: rgba(59, 68, 76, 0.55);
+}
+
+[data-theme='ink'] {
+  --bg-primary: #080b17;
+  --bg-deep: #060814;
+  --bg-panel: #0c1020;
+  --bg-hover: #121729;
+  --bg-selected: #231d4d;
+  --bg-row-selected: #1a1640;
+  --bg-elevated: #111630;
+  --bg-inset: #0a0d1a;
+  --bg-control: #121729;
+  --bg-control-subtle: #0e1322;
+  --bg-stage: #080b17;
+  --border: #232a45;
+  --border-subtle: #333c5e;
+  --border-faint: #151b2d;
+  --border-accent: #3f2f86;
+  --text: #c6cdea;
+  --text-secondary: #b4bbdd;
+  --text-tertiary: #8f97bd;
+  --text-muted: #9aa2c6;
+  --text-strong: #e9ecfa;
+  --accent: #7c5cff;
+  --accent-yellow: #e2a33c;
+  --playhead: #7c5cff;
+  --error: #ff6b8a;
+  --success: #3fd6a6;
+  --warn: #e2a33c;
+  --info: #c0b0ff;
+  --model: #7c5cff;
+  --stage-line: #2b3459;
+  --stage-grid: #0f1428;
+  --stage-tick: #1f2745;
+  --stage-mode: #3fd6a6;
+  --screen-fill: rgba(10, 13, 26, 0.5);
+  --screen-fill-selected: rgba(35, 29, 77, 0.55);
 }
 
 /* ---------------------------------------------------------------- reset -- */
@@ -744,7 +870,9 @@ input[type='checkbox'] {
 .settings__control {
   display: flex;
   gap: 2px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .settings__choice {

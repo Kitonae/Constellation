@@ -7,6 +7,7 @@ import {
   readSettings,
   writeSettings,
 } from '../settings.js'
+import { THEMES } from '../theme.js'
 
 describe('settings schema', () => {
   it('gives every setting a default that is one of its own options', () => {
@@ -16,8 +17,14 @@ describe('settings schema', () => {
     }
   })
 
-  it('defaults the grid to dots', () => {
+  it('defaults the grid to dots and the theme to signal', () => {
     expect(DEFAULT_SETTINGS.gridStyle).toBe('dots')
+    expect(DEFAULT_SETTINGS.theme).toBe('signal')
+  })
+
+  it('offers every theme that exists', () => {
+    const offered = SETTINGS_SCHEMA.theme.options.map((o) => o.value).sort()
+    expect(offered).toEqual(Object.keys(THEMES).sort())
   })
 
   it('accepts only the declared grid styles', () => {
@@ -42,7 +49,11 @@ describe('normalizeSettings', () => {
 
   it('drops keys that are not settings', () => {
     const out = normalizeSettings({ gridStyle: 'lines', legacyThing: 42 })
-    expect(out).toEqual({ gridStyle: 'lines' })
+    expect(out.gridStyle).toBe('lines')
+    expect('legacyThing' in out).toBe(false)
+    // Asserted against the schema rather than a literal object, so adding a
+    // setting does not fail this test.
+    expect(Object.keys(out).sort()).toEqual(Object.keys(SETTINGS_SCHEMA).sort())
   })
 
   it('survives null, a non-object, and a missing key', () => {

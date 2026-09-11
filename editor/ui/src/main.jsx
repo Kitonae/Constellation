@@ -11,6 +11,12 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.jsx'
 import DisplayWindow from './components/DisplayWindow.jsx'
+import { readSettings } from './settings.js'
+import { applyTheme } from './theme.js'
+
+// Apply the saved theme before the first paint. Doing this in a React effect
+// instead would render one frame in the default palette and then swap.
+applyTheme(readSettings().theme)
 
 const params = new URLSearchParams(window.location.search)
 const isDisplay = params.get('display') === '1'

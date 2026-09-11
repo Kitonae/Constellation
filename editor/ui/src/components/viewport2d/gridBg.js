@@ -1,9 +1,9 @@
 import { STAGE_CENTER, scaleForZoom } from './constants.js'
-import { colors } from '../../theme.js'
+import { colorsFor } from '../../theme.js'
 
-// One cached tile per (style, size) combination. Switching the grid style
-// used to be impossible, so a single-entry cache was enough; with two styles
-// a plain object keyed by style keeps both tiles warm instead of thrashing.
+// One cached tile per (style, size, theme). The key has to carry the theme as
+// well as the geometry: the tile is painted with the theme's colours baked in,
+// so keying on size alone would keep serving the previous theme's grid.
 const _gridCache = {}
 
 /**
@@ -25,7 +25,7 @@ function gridMetrics(zoom) {
   return { minorPx, majorMult, tilePx: minorPx * majorMult }
 }
 
-function paintDots(ctx, minorPx, majorMult) {
+function paintDots(ctx, minorPx, majorMult, colors) {
   ctx.fillStyle = colors.stageLine
   for (let gy = 0; gy < majorMult; gy++) {
     for (let gx = 0; gx < majorMult; gx++) {
@@ -41,7 +41,7 @@ function paintDots(ctx, minorPx, majorMult) {
   ctx.fill()
 }
 
-function paintLines(ctx, minorPx, majorMult, tilePx) {
+function paintLines(ctx, minorPx, majorMult, tilePx, colors) {
   // Half-pixel offsets keep a 1px stroke on the pixel grid instead of
   // straddling two rows and rendering as a soft 2px smear.
   ctx.strokeStyle = colors.stageGrid
@@ -71,9 +71,11 @@ function paintLines(ctx, minorPx, majorMult, tilePx) {
  * @param {'dots'|'lines'} style
  * @param {{x:number,y:number}} center - world origin in screen space
  * @param {number} zoom
+ * @param {string} themeId - which palette to paint the tile in
  * @returns {object} inline style for the stage element
  */
-export function gridBg(style = 'dots', center = STAGE_CENTER, zoom) {
+export function gridBg(style = 'dots', center = STAGE_CENTER, zoom, themeId) {
+  const colors = colorsFor(themeId)
   const { minorPx, majorMult, tilePx } = gridMetrics(zoom)
 
   // Below this the cells are closer together than the marks themselves, so
@@ -81,15 +83,15 @@ export function gridBg(style = 'dots', center = STAGE_CENTER, zoom) {
   if (minorPx < 4) return { background: 'var(--bg-deep)' }
 
   const kind = style === 'lines' ? 'lines' : 'dots'
-  const cacheKey = `${kind}_${tilePx}_${minorPx}`
+  const cacheKey = `${kind}_${themeId}_${tilePx}_${minorPx}`
   let entry = _gridCache[kind]
   if (!entry || entry.key !== cacheKey) {
     const c = document.createElement('canvas')
     c.width = tilePx
     c.height = tilePx
     const ctx = c.getContext('2d')
-    if (kind === 'lines') paintLines(ctx, minorPx, majorMult, tilePx)
-    else paintDots(ctx, minorPx, majorMult)
+    if (kind === 'lines') paintLines(ctx, minorPx, majorMult, tilePx, colors)
+    else paintDots(ctx, minorPx, majorMult, colors)
     entry = { key: cacheKey, url: c.toDataURL() }
     _gridCache[kind] = entry
   }

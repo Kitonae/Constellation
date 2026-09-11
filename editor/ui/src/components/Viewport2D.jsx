@@ -29,6 +29,7 @@ const MIN_CLIP_SIZE = 8
 function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
   const gridStyle = useEditorStore((s) => s.settings.gridStyle)
+  const themeId = useEditorStore((s) => s.settings.theme)
   const project = useEditorStore((s) => s.project)
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
@@ -544,7 +545,7 @@ function Viewport2D() {
       >
         <div
           ref={stageRef}
-          style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...gridBg(gridStyle, center, zoom) }}
+          style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...gridBg(gridStyle, center, zoom, themeId) }}
           onClick={(e) => {
             if (draggedRef.current || e.ctrlKey || e.shiftKey) return
             setSelected(null)

@@ -8,6 +8,7 @@
  */
 
 import { readPersisted, writePersisted } from './hooks/usePersistentState.js'
+import { DEFAULT_THEME } from './theme.js'
 
 export const SETTINGS_KEY = 'settings'
 
@@ -19,6 +20,17 @@ export const SETTINGS_KEY = 'settings'
  * its own to fall out of step.
  */
 export const SETTINGS_SCHEMA = {
+  theme: {
+    label: 'Theme',
+    description: 'Colour palette for the whole editor.',
+    default: DEFAULT_THEME,
+    options: [
+      { value: 'signal', label: 'Signal' },
+      { value: 'studio', label: 'Studio' },
+      { value: 'technical', label: 'Technical' },
+      { value: 'ink', label: 'Ink' },
+    ],
+  },
   gridStyle: {
     label: 'Grid style',
     description: 'How the stage grid is drawn behind your screens.',

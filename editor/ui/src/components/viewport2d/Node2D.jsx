@@ -92,7 +92,7 @@ export default function Node2D({
             top: drawY - h / 2,
             width: w,
             height: h,
-            background: isSelected ? 'rgba(30,40,80,0.5)' : 'rgba(16,21,32,0.5)',
+            background: isSelected ? 'var(--screen-fill-selected)' : 'var(--screen-fill)',
             border: `1px dashed ${borderColor}`,
             borderRadius: 2,
             zIndex: 1,
