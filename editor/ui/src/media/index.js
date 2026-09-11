@@ -25,13 +25,17 @@ export {
   extFromUri,
   mediaTypeFromExt,
   isMediaFile,
+  isVideoName,
+  isImageName,
+  isAudioName,
+  isModelName,
+  isImportableFile,
   isImage,
   isVideo,
   isAudio,
   isColor,
   isText,
   createAsset,
-  probeAsset,
   migrateAsset,
   getAssetDuration,
 } from './asset.js'
@@ -60,6 +64,40 @@ export {
   computeItemLayout,
   computeStageItemLayout,
 } from './renderer.js'
+
+export {
+  createTransform,
+  transformToCSS,
+  chainToCSS,
+  isKnownTransform,
+  migrateEffect,
+  effectsToTransforms,
+  TRANSFORM_TYPES,
+} from './transform.js'
+
+export {
+  createTopology,
+  addSourceNode,
+  addTransformNode,
+  addOutputNode,
+  connectNodes,
+  buildFromTimeline,
+  walkTopology,
+  getNodesByType,
+  getDownstream,
+  getUpstream,
+  NODE_SOURCE,
+  NODE_TRANSFORM,
+  NODE_OUTPUT,
+} from './topology.js'
+
+// --- Sinks ---
+
+export {
+  createDisplaySink,
+  createNativeSink,
+  createSinkClockAdapter,
+} from './sink.js'
 
 // --- Control ---
 

@@ -7,11 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:unit": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@react-three/drei": "^9.103.0",
     "@react-three/fiber": "^8.15.16",
+    "material-symbols": "^0.47.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "three": "^0.160.0",
@@ -19,6 +22,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
-    "vite": "^5.0.0"
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "jsdom": "^29.0.2",
+    "vite": "^5.0.0",
+    "vitest": "^4.1.3"
   }
 }

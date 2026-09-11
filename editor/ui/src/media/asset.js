@@ -8,8 +8,10 @@ import { resolveUri } from './uri.js'
 // --- Constants ---
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'])
-const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg'])
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg', 'hevc', 'h265', '265', 'ts', 'mts'])
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'])
+
+const MODEL_EXTS = new Set(['gltf', 'glb', 'obj'])
 
 const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS])
 
@@ -23,6 +25,9 @@ const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS])
 export function extFromUri(uriOrName) {
   try {
     const u = String(uriOrName || '')
+    // blob: and data: URLs carry no meaningful extension, and a base64 body
+    // is full of characters that would fool the split below.
+    if (u.startsWith('blob:') || u.startsWith('data:')) return ''
     const clean = u.split('?')[0].split('#')[0]
     const parts = clean.split('.')
     if (parts.length < 2) return ''
@@ -50,6 +55,20 @@ export function mediaTypeFromExt(ext) {
 export function isMediaFile(name) {
   return MEDIA_EXTS.has(extFromUri(name))
 }
+
+// --- Name/URI predicates ---
+//
+// These are the single source of truth for "is this a video?" and friends.
+// Ad-hoc regexes scattered across the UI disagreed with each other: a `.ts`
+// file passed isMediaFile but was treated as an image by the thumbnail and
+// never probed for duration.
+
+export function isVideoName(name) { return VIDEO_EXTS.has(extFromUri(name)) }
+export function isImageName(name) { return IMAGE_EXTS.has(extFromUri(name)) }
+export function isAudioName(name) { return AUDIO_EXTS.has(extFromUri(name)) }
+export function isModelName(name) { return MODEL_EXTS.has(extFromUri(name)) }
+/** Anything the media bin accepts: playable media plus 3D models. */
+export function isImportableFile(name) { return isMediaFile(name) || isModelName(name) }
 
 // --- Type guards ---
 
@@ -130,50 +149,6 @@ export function createAsset(type, props = {}) {
 
 // --- Probing ---
 
-/**
- * Probe a file or URI to determine its type and extract metadata.
- * This is the async equivalent of MF's source resolver — it inspects the media
- * and populates width, height, duration, frameRate, etc.
- *
- * @param {File|string} fileOrUri - File object or URI string
- * @param {string} [nameHint] - optional filename hint (for blob/data URIs)
- * @returns {Promise<object>} Populated MediaAsset
- */
-export async function probeAsset(fileOrUri, nameHint) {
-  const isFile = fileOrUri instanceof File
-  const name = nameHint || (isFile ? fileOrUri.name : String(fileOrUri).split(/[\\\/]/).pop()) || 'media'
-  const uri = isFile ? null : String(fileOrUri)
-  const ext = extFromUri(name) || extFromUri(uri || '')
-  const type = mediaTypeFromExt(ext)
-
-  // Resolve to a playable URL for probing
-  let playableUrl = null
-  if (isFile) {
-    playableUrl = URL.createObjectURL(fileOrUri)
-  } else if (uri) {
-    playableUrl = await resolveUri(uri)
-  }
-
-  try {
-    switch (type) {
-      case 'image':
-        return await _probeImage(name, uri || '', playableUrl, ext)
-      case 'video':
-        return await _probeVideo(name, uri || '', playableUrl, ext)
-      case 'audio':
-        return await _probeAudio(name, uri || '', playableUrl, ext)
-      default:
-        // Unknown type — create a basic asset
-        return createAsset('image', { name, uri: uri || '', format: ext })
-    }
-  } finally {
-    // Clean up object URL if we created one from a File
-    if (isFile && playableUrl) {
-      // Don't revoke immediately — caller may need it. Revoke after a delay.
-      setTimeout(() => { try { URL.revokeObjectURL(playableUrl) } catch {} }, 60000)
-    }
-  }
-}
 
 async function _probeImage(name, uri, playableUrl, ext) {
   const asset = createAsset('image', { name, uri, format: ext })
@@ -315,3 +290,29 @@ export function getAssetDuration(asset) {
   // Images/colors have no intrinsic duration
   return 0
 }
+
+// --- Presentation Descriptors ---
+// Analogous to MF's IMFPresentationDescriptor + IMFStreamDescriptor.
+//
+// Separates "what streams a source has" from the asset identity.
+// Enables multi-stream assets (video+audio) and stream selection.
+
+/**
+ * @typedef {object} StreamDescriptor
+ * @property {string} id         - stream identifier
+ * @property {'video'|'audio'|'image'} streamType - stream type
+ * @property {object} mediaType  - format-specific attributes
+ * @property {boolean} selected  - whether this stream is active
+ */
+
+/**
+ * @typedef {object} PresentationDescriptor
+ * @property {string} assetId     - source asset ID
+ * @property {StreamDescriptor[]} streams - available streams
+ * @property {number} duration    - presentation duration in seconds
+ */
+
+let _streamIdCounter = 0
+
+
+

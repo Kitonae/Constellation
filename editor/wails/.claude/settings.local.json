@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go vet:*)",
+      "Bash(go test:*)",
+      "Read(//c/src/Constellation/editor/ui/**)",
+      "Bash(npm install:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npx vite:*)"
+    ]
+  }
+}

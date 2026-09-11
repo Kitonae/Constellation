@@ -1,7 +1,36 @@
-import React, { useEffect, useRef } from 'react'
-import { Canvas } from '@react-three/fiber'
-import { OrbitControls, TransformControls, Edges } from '@react-three/drei'
+import React, { useEffect, useRef, useState, useMemo, Suspense } from 'react'
+import { Canvas, useLoader } from '@react-three/fiber'
+import { OrbitControls, TransformControls, Edges, useGLTF } from '@react-three/drei'
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { useEditorStore } from '../store.js'
+import { resolveUriSync } from '../media/uri.js'
+import { extFromUri } from '../media/asset.js'
+
+// media/uri.js is the single resolver; the local copy here decoded the path
+// without re-encoding it, so model paths containing spaces never loaded.
+const resolveModelUrl = (uri) => resolveUriSync(uri) || null
+
+function GltfModel({ url }) {
+  const { scene } = useGLTF(url)
+  const cloned = useMemo(() => scene.clone(true), [scene])
+  return <primitive object={cloned} />
+}
+
+function ObjModel({ url }) {
+  const obj = useLoader(OBJLoader, url)
+  const cloned = useMemo(() => obj.clone(true), [obj])
+  return <primitive object={cloned} />
+}
+
+function ModelMesh({ uri }) {
+  const url = resolveModelUrl(uri)
+  const ext = useMemo(() => extFromUri(uri), [uri])
+
+  if (!url) return <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>
+
+  if (ext === 'obj') return <ObjModel url={url} />
+  return <GltfModel url={url} />
+}
 
 function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
   const group = useRef()
@@ -61,6 +90,53 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
     return (
       <group position={[position.x, position.y, position.z]}>
         <pointLight args={[col, node.kind.light.intensity, node.kind.light.range]} />
+        {children}
+      </group>
+    )
+  }
+
+  if (node.kind?.type === 'model') {
+    const content = (
+      <group ref={group} position={[position.x, position.y, position.z]} quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]} scale={[scale.x, scale.y, scale.z]}>
+        <Suspense fallback={<mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>}>
+          <ModelMesh uri={node.kind.uri} />
+        </Suspense>
+        {isSelected && (
+          <mesh onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}>
+            <boxGeometry args={[1, 1, 1]} />
+            <meshBasicMaterial visible={false} />
+          </mesh>
+        )}
+        {children}
+      </group>
+    )
+    if (isSelected) {
+      return (
+        <TransformControls object={group} mode={gizmoMode} onObjectChange={() => {
+          const obj = group.current
+          if (!obj) return
+          onTransform(node.id, {
+            position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+            rotation: { x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w },
+            scale: { x: obj.scale.x, y: obj.scale.y, z: obj.scale.z },
+          })
+        }}>
+          {content}
+        </TransformControls>
+      )
+    }
+    // Make model clickable for selection when not selected
+    return (
+      <group
+        ref={group}
+        position={[position.x, position.y, position.z]}
+        quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]}
+        scale={[scale.x, scale.y, scale.z]}
+        onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}
+      >
+        <Suspense fallback={<mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>}>
+          <ModelMesh uri={node.kind.uri} />
+        </Suspense>
         {children}
       </group>
     )

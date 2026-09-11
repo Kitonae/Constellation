@@ -3,7 +3,7 @@
 // The top-level orchestrator that ties together:
 //   - PresentationClock (timing)
 //   - Transport state machine (idle → playing ⇄ paused → stopped)
-//   - Display window broadcasting
+//   - Sink fan-out (display windows, native renderer)
 //   - Store synchronization
 //   - Preroll management (future)
 //
@@ -11,6 +11,7 @@
 // App.jsx effects, and Timeline.jsx seek handlers.
 
 import { createPresentationClock } from './clock.js'
+import { createSinkClockAdapter } from './sink.js'
 
 /**
  * Transport states — analogous to MF's session states:
@@ -45,8 +46,7 @@ const VALID_TRANSITIONS = {
  * Create a MediaSession instance.
  *
  * @param {object} [opts]
- * @param {function} [opts.getStore] - returns the zustand store state (for broadcasting)
- * @param {function} [opts.broadcastFn] - (event, payload) => void (for display windows)
+ * @param {function} [opts.getSnapshot] - () => ({ project, scene, time, playing }) for sinks
  * @param {number}   [opts.uiUpdateInterval=100] - ms between UI time updates
  * @returns {object} MediaSession
  */
@@ -55,20 +55,22 @@ export function createMediaSession(opts = {}) {
   let _state = 'idle'
   let _lastUiUpdate = 0
   const _subscribers = new Set()
+  const _sinks = new Map()  // sinkId → MediaSink
   const _uiInterval = opts.uiUpdateInterval ?? 100
 
-  // Subscribe to clock ticks for broadcasting and UI updates
+  // Wire sinks to clock events
+  const _sinkAdapter = createSinkClockAdapter(_sinks)
+  clock.subscribe(_sinkAdapter)
+
+  // Subscribe to clock ticks purely to mirror time into the UI at a low rate.
+  // Transport output is the sinks' job — the session never broadcasts directly.
   clock.subscribe({
     onTick(time) {
-      // Throttled UI update
       const now = performance.now()
       if (now - _lastUiUpdate > _uiInterval) {
         _lastUiUpdate = now
         _notifyTimeUpdate(time)
       }
-
-      // Broadcast to display windows
-      _broadcastTime(time)
     },
   })
 
@@ -112,7 +114,6 @@ export function createMediaSession(opts = {}) {
 
     if (_transition('playing')) {
       clock.play()
-      _broadcastSnapshot()
     }
   }
 
@@ -124,7 +125,6 @@ export function createMediaSession(opts = {}) {
 
     if (_transition('paused')) {
       clock.pause()
-      _broadcastSnapshot()
     }
   }
 
@@ -136,7 +136,6 @@ export function createMediaSession(opts = {}) {
 
     if (_transition('stopped')) {
       clock.stop()
-      _broadcastSnapshot()
     }
   }
 
@@ -147,10 +146,8 @@ export function createMediaSession(opts = {}) {
   function seek(time) {
     clock.seek(time)
     _notifyTimeUpdate(time)
-    // Broadcast snapshot when not playing (paused/stopped) so displays update
-    if (_state !== 'playing') {
-      _broadcastSnapshot()
-    }
+    // The clock's onSeek reaches every sink through the adapter, so paused
+    // scrubbing needs nothing extra here.
   }
 
   /**
@@ -161,40 +158,71 @@ export function createMediaSession(opts = {}) {
     clock.setRate(rate)
   }
 
+  // --- Sink management (analogous to MF's AddClockStateSink) ---
+
+  /**
+   * Add a media sink. The sink will receive clock state notifications.
+   * @param {MediaSink} sink
+   */
+  function addSink(sink) {
+    if (!sink?.id) return
+    _sinks.set(sink.id, sink)
+    // A newly attached target has no state yet; hand it one immediately
+    // instead of waiting for the next transport change.
+    if (opts.getSnapshot) {
+      try { sink.onSnapshot?.(opts.getSnapshot()) } catch {}
+    }
+  }
+
+  /**
+   * Remove a media sink by ID. Calls dispose() on the sink.
+   * @param {string} sinkId
+   */
+  function removeSink(sinkId) {
+    const sink = _sinks.get(sinkId)
+    if (sink) {
+      try { sink.dispose?.() } catch {}
+      _sinks.delete(sinkId)
+    }
+  }
+
+  /**
+   * Get all registered sinks.
+   * @returns {MediaSink[]}
+   */
+  function getSinks() {
+    return [..._sinks.values()]
+  }
+
   /**
    * Dispose of the session and all resources.
    */
   function dispose() {
+    // Dispose all sinks
+    for (const [, sink] of _sinks) {
+      try { sink.dispose?.() } catch {}
+    }
+    _sinks.clear()
     clock.dispose()
     _subscribers.clear()
     _state = 'idle'
   }
 
-  // --- Broadcasting (analogous to MF sink notifications) ---
+  // --- Snapshot fan-out (analogous to MF sink notifications) ---
 
-  /** Broadcast time update to display windows at ~20fps */
-  let _lastBroadcastTime = 0
-  function _broadcastTime(time) {
-    const now = performance.now()
-    if (now - _lastBroadcastTime < 50) return // throttle to ~20fps
-    _lastBroadcastTime = now
-
-    if (opts.broadcastFn) {
-      try { opts.broadcastFn('display:time', { time }) } catch {}
+  /**
+   * Push the current project/scene state to every registered sink.
+   *
+   * This is the *only* snapshot path in the app. Callers that mutate the
+   * document (the editor's project/scene effect) call it through a trailing
+   * debounce so a burst of keystrokes coalesces into one serialization.
+   */
+  function notifySnapshot(snapshot) {
+    const snap = snapshot ?? (opts.getSnapshot ? opts.getSnapshot() : null)
+    if (!snap) return
+    for (const [, sink] of _sinks) {
+      try { sink.onSnapshot?.(snap) } catch {}
     }
-  }
-
-  /** Broadcast full snapshot (project + scene + time) to displays */
-  function _broadcastSnapshot() {
-    if (!opts.broadcastFn || !opts.getStore) return
-    try {
-      const s = opts.getStore()
-      opts.broadcastFn('display:snapshot', {
-        project: s.project,
-        scene: s.scene,
-        time: clock.getTime(),
-      })
-    } catch {}
   }
 
   // --- Notification helpers ---
@@ -228,6 +256,12 @@ export function createMediaSession(opts = {}) {
     stop,
     seek,
     setRate,
+
+    // Sinks
+    addSink,
+    removeSink,
+    getSinks,
+    notifySnapshot,
 
     // Subscription
     subscribe,

@@ -58,15 +58,15 @@ export default function ConsolePanel() {
   }
 
   return (
-    <div style={{ display:'grid', gridTemplateRows:'auto 1fr auto', height:'100%', background:'#0b0d12' }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 8px', color:'#c7cfdb' }}>
+    <div style={{ display:'grid', gridTemplateRows:'auto 1fr auto', height:'100%', background:'var(--bg-deep)' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 8px', color:'var(--text)' }}>
         <div style={{ fontWeight:600 }}>Console</div>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <div style={{ opacity:0.7, fontSize:12 }}>{items.length} messages</div>
           <button onClick={clearLogs}>Clear</button>
         </div>
       </div>
-      <div ref={listRef} style={{ overflow:'auto', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12, color:'#b9c3d6' }}>
+      <div ref={listRef} style={{ overflow:'auto', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12, color:'var(--text-secondary)' }}>
         {items.length === 0 && <div style={{ opacity:0.7, padding:8 }}>No logs yet.</div>}
         {items.map((l) => (
           <div key={l.id} style={{ display:'flex', gap:8, padding:'2px 8px' }}>
@@ -76,7 +76,7 @@ export default function ConsolePanel() {
           </div>
         ))}
       </div>
-      <form onSubmit={(e)=>{ e.preventDefault(); runCommand(cmd); setCmd('') }} style={{ padding:'6px 8px', borderTop:'1px solid #232636', display:'flex', gap:8 }}>
+      <form onSubmit={(e)=>{ e.preventDefault(); runCommand(cmd); setCmd('') }} style={{ padding:'6px 8px', borderTop:'1px solid var(--border)', display:'flex', gap:8 }}>
         <input
           ref={inputRef}
           value={cmd}
@@ -90,7 +90,7 @@ export default function ConsolePanel() {
             }
           }}
           placeholder="Type a command: play, pause, stop (or clear)"
-          style={{ flex:1, background:'#0f1115', color:'#c7cfdb', border:'1px solid #232636', borderRadius:4, padding:'6px 8px', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12 }}
+          style={{ flex:1, background:'var(--bg-primary)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:4, padding:'6px 8px', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12 }}
         />
         <button type="submit">Run</button>
       </form>
@@ -100,8 +100,8 @@ export default function ConsolePanel() {
 
 function colorForLevel(level){
   switch(level){
-    case 'error': return '#ff6b6b'
-    case 'warn': return '#f2c744'
-    default: return '#8bc3ff'
+    case 'error': return 'var(--error)'
+    case 'warn': return 'var(--warn)'
+    default: return 'var(--info)'
   }
 }
