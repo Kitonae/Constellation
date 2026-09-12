@@ -7,6 +7,13 @@
 #include "snappy_decode.h"
 #include "hap_decoder.h"
 #include "event_queue.h"
+#include "pixel_format.h"
+#include "platform.h"
+#include "uri_util.h"
+#ifndef _WIN32
+#include "test_helpers_mac.h"
+#include "screen.h"
+#endif
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -325,7 +332,7 @@ static void testHap() {
         check(hapDecodeFrame(frame.data(), frame.size(), 8, 4, blocks, format, error), error.c_str());
         check(format == HapFormat::RGB_DXT1, "format nibble");
         check(blocks == texture, "uncompressed blocks must pass through unchanged");
-        check(hapDxgiFormat(format) == DXGI_FORMAT_BC1_UNORM, "DXT1 is BC1");
+        check(hapPixelFormat(format) == PixelFormat::BC1, "DXT1 is BC1");
 
         // Same frame with the 32-bit size form, which encoders use freely.
         frame.clear();
@@ -411,6 +418,7 @@ static void testHap() {
     check(hapTextureBytes(HapFormat::RGB_DXT1, 1918, 1078) == 1036800, "partial blocks round up");
 }
 
+#ifdef _WIN32
 static void testBuffers() {
     constexpr uint32_t width = 3, height = 4;
     for (BOOL bottomUp : {FALSE, TRUE}) {
@@ -451,8 +459,20 @@ static void testBuffers() {
         check(!copyVideoBuffer(buffer.Get(), width, height, stride, pixels), "reject truncated buffer");
     }
 }
+#else
+// The macOS equivalent: a CVPixelBuffer whose rows are padded past width*4,
+// as VideoToolbox output usually is, copied into tightly packed BGRA.
+static void testBuffers() {
+    constexpr uint32_t width = 3, height = 4;
+    std::vector<uint8_t> pixels;
+    check(testCopyPaddedPixelBuffer(width, height, pixels), "copy padded CVPixelBuffer");
+    checkRows(pixels, width, height);
+    check(!testCopyMismatchedPixelBuffer(width, height), "reject a buffer of another size");
+}
+#endif
 
 struct RendererTestAccess {
+#ifdef _WIN32
     static void pool() {
         ComPtr<IDXGIFactory4> factory;
         ComPtr<IDXGIAdapter> warp;
@@ -481,6 +501,30 @@ struct RendererTestAccess {
         check(first.borrowFrame(out), "retired frame must become reusable");
         check(out.timestamp == 1 && out.releaseFenceValue == 0, "retirement was not cleared");
     }
+#else
+    // Same contract on Metal: a frame stamped with a render timeline value
+    // stays unavailable until the shared event has been signalled past it.
+    static void pool() {
+        ObjcRef event = testMakeSharedEvent();
+        if (!event) { printf("no Metal device; pool test skipped\n"); return; }
+        VideoDecoder first, second;
+        first.m_sync.frameEvent = second.m_sync.frameEvent = event;
+        first.m_running = second.m_running = true;
+        VideoFrame pending, free;
+        pending.releaseFenceValue = 7;
+        pending.timestamp = 1;
+        free.timestamp = 2;
+        first.m_writeable.push_back(std::move(pending));
+        second.m_writeable.push_back(std::move(free));
+        VideoFrame out;
+        check(!first.borrowFrame(out), "must not borrow a frame still sampled by the GPU");
+        check(second.borrowFrame(out), "another decoder must still make progress");
+        check(out.timestamp == 2, "borrowed wrong frame");
+        testSignalSharedEvent(event, 7);
+        check(first.borrowFrame(out), "retired frame must become reusable");
+        check(out.timestamp == 1 && out.releaseFenceValue == 0, "retirement was not cleared");
+    }
+#endif
 
     static void loader() {
         MediaLoader loader;
@@ -571,9 +615,62 @@ static void testEventQueue() {
     check(!queue.tryPop().has_value(), "tryPop returned more than was pushed");
 }
 
+// file: URIs the editor writes, decoded to the path this platform opens.
+static void testUri() {
+#ifdef _WIN32
+    check(uriToPath("file:///C:/media/a%20b.mov") == "C:\\media\\a b.mov", "Windows file URI");
+    check(uriToPath("C:/media/x.mp4") == "C:/media/x.mp4", "bare Windows path passes through");
+#else
+    check(uriToPath("file:///Users/k/a%20b.mov") == "/Users/k/a b.mov", "POSIX file URI keeps its root");
+    check(uriToPath("file://localhost/Users/k/x.mp4") == "/Users/k/x.mp4", "localhost authority");
+    check(uriToPath("/Users/k/x.mp4") == "/Users/k/x.mp4", "bare POSIX path passes through");
+#endif
+    check(uriToPath("https://example.com/x.mp4").empty(), "remote URI is not a path");
+    check(uriToPath("blob:abc").empty(), "blob URI is not a path");
+    check(isRemoteUri("https://x") && isRemoteUri("blob:x") && !isRemoteUri("file:///x"), "remote detection");
+}
+
+#ifndef _WIN32
+// Physical desktop pixels from the editor to a window's content rect in
+// points: the display is chosen by where the window lands, and its own scale
+// converts both position and size, mirroring how the editor built the
+// physical coordinates in the first place.
+static void testPlacement() {
+    // A 2x laptop display as the primary, a 1x external display to its right.
+    std::vector<DesktopDisplay> displays = {
+        { 0, 0, 1512, 982, 2.0 },
+        { 1512, -100, 1920, 1080, 1.0 },
+    };
+    ScreenPlacement p;
+    p.positioned = true;
+
+    // Top-left corner of the primary, 1920x1080 pixels -> 960x540 points.
+    p.x = 0; p.y = 0;
+    ContentRect r = placeOnDesktop(displays, p, 1920, 1080);
+    check(r.scale == 2.0 && r.x == 0 && r.y == 0 && r.width == 960 && r.height == 540,
+          "primary placement must use the 2x scale");
+
+    // Covering the external display exactly: its physical origin is
+    // (1512, -100) at scale 1, and a 1920x1080 window is 1920x1080 points.
+    p.x = 1512; p.y = -100;
+    r = placeOnDesktop(displays, p, 1920, 1080);
+    check(r.scale == 1.0 && r.x == 1512 && r.y == -100 && r.width == 1920 && r.height == 1080,
+          "external placement must use the 1x scale");
+
+    // Centred on the primary when unpositioned.
+    p.positioned = false;
+    r = placeOnDesktop(displays, p, 1280, 720);
+    check(r.scale == 2.0 && r.width == 640 && r.height == 360, "unpositioned size");
+    check(r.x == (1512 - 640) / 2.0 && r.y == (982 - 360) / 2.0, "unpositioned centring");
+
+    // Nothing to place on: pixels are points.
+    r = placeOnDesktop({}, p, 100, 50);
+    check(r.scale == 1.0 && r.width == 100 && r.height == 50, "no displays");
+}
+#endif
+
 int main(int argc, char** argv) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    MFStartup(MF_VERSION);
+    platformMediaInit();
     int result = 0;
     try {
         check(argc == 2, "expected test name");
@@ -587,13 +684,16 @@ int main(int argc, char** argv) {
         else if (name == "snappy") testSnappy();
         else if (name == "hap") testHap();
         else if (name == "events") testEventQueue();
+        else if (name == "uri") testUri();
+#ifndef _WIN32
+        else if (name == "placement") testPlacement();
+#endif
         else check(false, "unknown test");
         printf("PASS: %s\n", argv[1]);
     } catch (const std::exception& e) {
         fprintf(stderr, "FAIL: %s\n", e.what());
         result = 1;
     }
-    MFShutdown();
-    CoUninitialize();
+    platformMediaShutdown();
     return result;
 }

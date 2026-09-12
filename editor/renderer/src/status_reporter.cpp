@@ -1,10 +1,7 @@
 #include "status_reporter.h"
+#include "http_client.h"
 #include <chrono>
-#include <windows.h>
-#include <winhttp.h>
 #include <cstdio>
-
-#pragma comment(lib, "winhttp.lib")
 
 StatusReporter::StatusReporter(const std::string& host, int port, const std::string& token)
     : m_host(host), m_port(port), m_token(token) {
@@ -77,37 +74,7 @@ void StatusReporter::reportError(const std::string& screenId, const std::string&
 }
 
 void StatusReporter::post(const std::string& body) {
-    std::wstring whost(m_host.begin(), m_host.end());
-
-    HINTERNET hSession = WinHttpOpen(L"ConstellationRenderer/1.0",
-        WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return;
-
-    HINTERNET hConnect = WinHttpConnect(hSession, whost.c_str(), (INTERNET_PORT)m_port, 0);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        return;
-    }
-
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", L"/api/renderer/status",
-        NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return;
-    }
-
-    WinHttpAddRequestHeaders(hRequest, L"Content-Type: application/json", (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
-    if (!m_token.empty()) {
-        std::wstring auth = L"X-Constellation-Token: " + std::wstring(m_token.begin(), m_token.end());
-        WinHttpAddRequestHeaders(hRequest, auth.c_str(), (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
-    }
-
-    WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-        (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);
-    WinHttpReceiveResponse(hRequest, NULL);
-
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
+    std::vector<HttpHeader> headers = {{"Content-Type", "application/json"}};
+    if (!m_token.empty()) headers.push_back({"X-Constellation-Token", m_token});
+    httpPost(m_host, m_port, "/api/renderer/status", headers, body);
 }

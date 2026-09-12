@@ -5,14 +5,16 @@ The active desktop editor stack lives here.
 What is in this directory:
 - `ui/` - React + Vite editor frontend
 - `wails/` - Go/Wails desktop shell, local sidecar server, and renderer process manager
-- `renderer/` - native Windows DX12 renderer used for output windows and native playback
+- `renderer/` - native renderer (Direct3D 12 on Windows, Metal on macOS) used for output windows and native playback
 
 Development workflow:
 1. `cd editor/ui && npm ci`
 2. `cd editor/wails && task dev`
 3. If you are working on native output, build the renderer separately:
-   - `cmake -S ../renderer -B ../renderer/build -A x64`
-   - `cmake --build ../renderer/build --config Release`
+   - Windows: `cmake -S ../renderer -B ../renderer/build -A x64`, then
+     `cmake --build ../renderer/build --config Release`
+   - macOS: `cmake -S ../renderer -B ../renderer/build -DCMAKE_BUILD_TYPE=Release`,
+     then `cmake --build ../renderer/build`
 
 Production shell build:
 1. `cd editor/wails && task package`

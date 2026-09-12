@@ -367,9 +367,11 @@ bool TextureCache::blockingUpload(CachedTexture& cached, const uint8_t* pixels,
 
 const CachedTexture* TextureCache::uploadPixels(const std::string& key, const uint8_t* pixels,
                                                  uint32_t width, uint32_t height,
-                                                 DXGI_FORMAT format,
+                                                 PixelFormat pixelFormat,
                                                  uint32_t dirtyTop, uint32_t dirtyBottom) {
     if (!pixels || width == 0 || height == 0) return nullptr;
+    const DXGI_FORMAT format = toDxgi(pixelFormat);
+    if (format == DXGI_FORMAT_UNKNOWN) return nullptr;
     if (!m_frameCmdList) {
         fprintf(stderr, "[TextureCache] uploadPixels outside a frame\n");
         return nullptr;

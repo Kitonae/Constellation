@@ -1,12 +1,17 @@
 #pragma once
 
 #include "event_queue.h"
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
-#include <atomic>
 
-// SSE client that connects to the Go editor's /sse/renderer endpoint
-// via WinHTTP and pushes parsed events to an EventQueue.
+class HttpStream;
+
+// SSE client that connects to the Go editor's /sse/renderer endpoint over
+// the platform's HTTP client and pushes parsed events to an EventQueue.
 class SSEClient {
 public:
     SSEClient(EventQueue& queue, const std::string& host, int port,
@@ -30,6 +35,9 @@ private:
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};
+    // The open connection, so stop() can abort a blocked read.
+    std::mutex m_streamMu;
+    std::unique_ptr<HttpStream> m_stream;
 
     // SSE parser state
     std::string m_buffer;

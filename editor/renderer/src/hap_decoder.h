@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include <dxgiformat.h>
+#include "pixel_format.h"
 
 // Low nibble of a top-level section type: what the blocks are.
 enum class HapFormat : uint8_t {
@@ -34,8 +34,8 @@ enum class HapFormat : uint8_t {
     YCoCg_DXT5 = 0xF,   // Hap Q: DXT5 holding scaled YCoCg, not RGBA
 };
 
-/** The DXGI format that reads these blocks as the texture they are. */
-DXGI_FORMAT hapDxgiFormat(HapFormat format);
+/** The texture format that reads these blocks as the texture they are. */
+PixelFormat hapPixelFormat(HapFormat format);
 
 /** Bytes one texture of this format occupies at this size. */
 size_t hapTextureBytes(HapFormat format, uint32_t width, uint32_t height);

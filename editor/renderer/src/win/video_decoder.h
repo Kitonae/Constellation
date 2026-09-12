@@ -22,6 +22,10 @@
 
 #include "d3d12_video_decoder.h"
 #include "hap_decoder.h"
+#include "pixel_format.h"
+#include "render_constants.h"
+
+struct DecoderParams;
 
 using Microsoft::WRL::ComPtr;
 
@@ -33,17 +37,10 @@ struct DecoderSync {
     std::mutex* copySignalMutex = nullptr;
 };
 
-// Colour conversion parameters for the NV12 shader, read from the stream's
-// MF_MT_VIDEO_NOMINAL_RANGE and MF_MT_YUV_MATRIX rather than hard-coded to
-// BT.709 limited range (which made SD and full-range content look wrong).
-struct ColorSpaceParams {
-    float yOffset = 16.0f / 255.0f;
-    float yScale = 255.0f / 219.0f;
-    float cOffset = 128.0f / 255.0f;
-    float cScale = 255.0f / 224.0f;
-    float kr = 0.2126f;   // BT.709
-    float kb = 0.0722f;
-};
+// Colour conversion parameters (ColorSpaceParams, render_constants.h) are
+// read from the stream's MF_MT_VIDEO_NOMINAL_RANGE and MF_MT_YUV_MATRIX rather
+// than hard-coded to BT.709 limited range (which made SD and full-range
+// content look wrong).
 
 // A frame in the decoder's pool.
 //
@@ -73,7 +70,7 @@ struct VideoFrame {
     // CPU frames: what the bytes in `pixels` are. BGRA for the software
     // paths; a block-compressed format for HAP, whose frames *are* texture
     // blocks and go up exactly as they arrived.
-    DXGI_FORMAT pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    PixelFormat pixelFormat = PixelFormat::BGRA8;
     // Hap Q stores scaled YCoCg in its DXT5 blocks; the shader converts.
     bool ycocg = false;
 
@@ -125,7 +122,7 @@ private:
         o.codedWidth = o.codedHeight = 0;
         o.timestamp = -1.0;
         o.nv12 = false;
-        o.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        o.pixelFormat = PixelFormat::BGRA8;
         o.ycocg = false;
         o.copyFenceValue = o.releaseFenceValue = 0;
         o.decodeFence = nullptr;
@@ -160,6 +157,9 @@ public:
               ID3D12CommandQueue* d3d12Queue = nullptr,
               bool nv12Mode = false,
               const DecoderSync& sync = {});
+    // The same, with everything App supplies gathered in one struct. This
+    // is the form the shared loader calls.
+    bool open(const std::string& filePath, const DecoderParams& params);
     void close();
     bool isOpen() const { return m_reader != nullptr; }
 
@@ -178,6 +178,10 @@ public:
     double duration() const { return m_duration; }
     double fps() const { return m_fps; }
     bool isHardwareAccelerated() const { return m_dxvaActive; }
+    /** Short label for the overlay: how the picture is being produced. */
+    const char* accelLabel() const {
+        return m_dxvaActive ? "DXVA+GPU" : (m_mode == Mode::Hap ? "TEXTURE" : "SW");
+    }
     /** HAP: no decoder at all, the frames are the texture. */
     bool isTextureCodec() const { return m_mode == Mode::Hap; }
     const char* codecName() const { return m_codecName; }

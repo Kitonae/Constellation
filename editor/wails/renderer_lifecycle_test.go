@@ -9,18 +9,19 @@ import (
 )
 
 // A real executable that exits at once, so LaunchRenderer can be exercised
-// without a renderer. cmd.exe rejects the arguments and returns.
+// without a renderer. cmd.exe rejects the arguments and returns; elsewhere
+// /usr/bin/true ignores them.
 func stubRendererExe(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS != "windows" {
-		t.Skip("uses cmd.exe as a stand-in renderer")
-	}
-	exe := os.Getenv("ComSpec")
-	if exe == "" {
-		exe = `C:\Windows\System32\cmd.exe`
+	exe := "/usr/bin/true"
+	if runtime.GOOS == "windows" {
+		exe = os.Getenv("ComSpec")
+		if exe == "" {
+			exe = `C:\Windows\System32\cmd.exe`
+		}
 	}
 	if _, err := os.Stat(exe); err != nil {
-		t.Skip("no cmd.exe")
+		t.Skipf("no stand-in renderer at %s", exe)
 	}
 	return exe
 }

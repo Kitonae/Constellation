@@ -8,6 +8,7 @@
 // this thread instead.
 
 #include "video_decoder.h"
+#include "decoder_params.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -19,17 +20,6 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
-
-struct DecoderParams {
-    ID3D12Device* d3d12Device = nullptr;
-    ID3D11Device* d3d11Device = nullptr;
-    IMFDXGIDeviceManager* dxgiManager = nullptr;
-    ID3D11On12Device2* d3d11On12 = nullptr;
-    ID3D12CommandQueue* d3d12Queue = nullptr;
-    bool nv12Mode = false;
-    bool verbose = false;
-    DecoderSync sync;
-};
 
 class MediaLoader {
 public:

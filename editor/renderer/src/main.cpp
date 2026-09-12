@@ -1,32 +1,36 @@
 #include "app.h"
+#include "platform.h"
 #include "thumbnail.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <windows.h>
+#ifdef _WIN32
 #include <io.h>
-#include <fcntl.h>
+#else
+#include <unistd.h>
+#endif
 
-static const char* LOG_PATH = nullptr;
+static std::string LOG_PATH;
 
 static void initLogFile(const char* screenId) {
-    // Write logs to %TEMP%/constellation-renderer-<screenId>.log
-    char path[MAX_PATH];
-    DWORD tmpLen = GetTempPathA(MAX_PATH, path);
-    if (tmpLen == 0) return;
-    snprintf(path + tmpLen, MAX_PATH - tmpLen, "constellation-renderer-%s.log",
-        screenId && screenId[0] ? screenId : "default");
+    // Write logs to <temp>/constellation-renderer-<screenId>.log: %TEMP% on
+    // Windows, $TMPDIR on macOS, which is also where the editor's own
+    // os.TempDir() puts the SSE hub log.
+    std::string path = platformTempDir() + "constellation-renderer-" +
+        (screenId && screenId[0] ? screenId : "default") + ".log";
 
-    FILE* f = freopen(path, "w", stdout);
+    FILE* f = freopen(path.c_str(), "w", stdout);
     if (f) {
         // Redirect stderr to same file
+#ifdef _WIN32
         _dup2(_fileno(stdout), _fileno(stderr));
+#else
+        dup2(fileno(stdout), fileno(stderr));
+#endif
         // Disable buffering for real-time log reads
         setvbuf(stdout, nullptr, _IONBF, 0);
         setvbuf(stderr, nullptr, _IONBF, 0);
-        static char savedPath[MAX_PATH];
-        strncpy(savedPath, path, MAX_PATH);
-        LOG_PATH = savedPath;
+        LOG_PATH = path;
     }
 }
 
@@ -36,18 +40,13 @@ static void printUsage() {
     printf("  --ndi-screen  which screen feeds the NDI output (default: --screen)\n");
     printf("  --x <px> --y <px>  desktop position of the window (physical pixels)\n");
     printf("  --borderless  no frame: the client area is exactly width x height\n");
+    printf("  --overlay     start with the diagnostics overlay shown (F3 toggles it)\n");
     printf("\n");
     printf("       constellation-renderer --thumbnail <video> <out.png> [--time <s>] [--max <px>]\n");
     printf("  Decode one frame headlessly and write it as a PNG (for the media bin).\n");
 }
 
 int main(int argc, char* argv[]) {
-    // Per-monitor DPI awareness, before any window exists. Without it Windows
-    // virtualises coordinates and sizes for this process on any display that
-    // is not at 100% scale: a 3840x2160 window asked for on a 150% monitor
-    // came out as 2560x1440 client pixels stretched back up, and positions
-    // from the Output panel (physical pixels) landed in the wrong place.
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // Headless thumbnail mode: no window, no log file, no sidecar. The editor
     // runs this for files the browser cannot decode, so it has to stay quick
     // and quiet and report through the exit code.
@@ -63,6 +62,14 @@ int main(int argc, char* argv[]) {
         }
         return runThumbnail(argv[2], argv[3], time, maxDim > 0 ? maxDim : 256);
     }
+
+    // Per-monitor DPI awareness on Windows, before any window exists. Without
+    // it Windows virtualises coordinates and sizes for this process on any
+    // display that is not at 100% scale: a 3840x2160 window asked for on a
+    // 150% monitor came out as 2560x1440 client pixels stretched back up, and
+    // positions from the Output panel (physical pixels) landed in the wrong
+    // place. On macOS this brings up NSApplication.
+    platformProcessInit();
 
     AppConfig config;
     config.host = "localhost";
@@ -93,6 +100,8 @@ int main(int argc, char* argv[]) {
             config.token = argv[++i];
         } else if (strcmp(argv[i], "--no-audio") == 0) {
             config.audio = false;
+        } else if (strcmp(argv[i], "--overlay") == 0) {
+            config.overlay = true;
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             config.verbose = true;
         } else if (strcmp(argv[i], "--console") == 0) {
@@ -114,7 +123,7 @@ int main(int argc, char* argv[]) {
     }
 
     printf("Constellation Renderer starting\n");
-    if (LOG_PATH) printf("  Log: %s\n", LOG_PATH);
+    if (!LOG_PATH.empty()) printf("  Log: %s\n", LOG_PATH.c_str());
     printf("  Host: %s\n", config.host.c_str());
     printf("  Port: %d\n", config.port);
     printf("  Screen: %s (%dx%d)\n", config.screenId.empty() ? "(none)" : config.screenId.c_str(), config.width, config.height);

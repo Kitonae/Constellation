@@ -19,6 +19,11 @@ editor/wails/build/windows/*
 !editor/wails/build/windows/Taskfile.yml
 !editor/wails/build/windows/info.json
 !editor/wails/build/windows/wails.exe.manifest
+!editor/wails/build/darwin/
+editor/wails/build/darwin/*
+!editor/wails/build/darwin/Taskfile.yml
+!editor/wails/build/darwin/Info.plist
+!editor/wails/build/darwin/Info.dev.plist
 .vite/
 playwright-report/
 test-results/

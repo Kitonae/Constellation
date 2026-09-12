@@ -3,8 +3,14 @@
 
 #include <algorithm>
 #include <cstring>
-#include <execution>
 #include <numeric>
+#include <version>
+#if defined(__cpp_lib_execution)
+#include <execution>
+#else
+#include <atomic>
+#include <thread>
+#endif
 
 namespace {
 
@@ -149,16 +155,33 @@ bool decodeComplex(const uint8_t* payload, size_t size, uint8_t* out, size_t out
 
     // Each chunk is a self-contained stream writing a disjoint output range, so
     // they can run on every core; a 4K frame is many megabytes of Snappy.
-    std::vector<size_t> index(count);
-    std::iota(index.begin(), index.end(), (size_t)0);
     std::vector<uint8_t> failed(count, 0);
-    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](size_t i) {
+    auto decodeChunk = [&](size_t i) {
         std::string localError;
         if (!decodeOne(compressors[i], frameData + inOffset[i], sizes[i],
                        out + outOffset[i], outSize[i], localError)) {
             failed[i] = 1;
         }
-    });
+    };
+#if defined(__cpp_lib_execution)
+    std::vector<size_t> index(count);
+    std::iota(index.begin(), index.end(), (size_t)0);
+    std::for_each(std::execution::par_unseq, index.begin(), index.end(), decodeChunk);
+#else
+    // libc++ has no parallel algorithms: hand the chunks to a few threads
+    // through a shared counter instead.
+    {
+        const size_t workers = std::min<size_t>(count, std::max(1u, std::thread::hardware_concurrency()));
+        std::atomic<size_t> next{0};
+        auto worker = [&] {
+            for (size_t i = next.fetch_add(1); i < count; i = next.fetch_add(1)) decodeChunk(i);
+        };
+        std::vector<std::thread> threads;
+        for (size_t w = 1; w < workers; w++) threads.emplace_back(worker);
+        worker();
+        for (auto& t : threads) t.join();
+    }
+#endif
     for (size_t i = 0; i < count; i++) {
         if (failed[i]) { error = "a chunk failed to decompress"; return false; }
     }
@@ -167,14 +190,14 @@ bool decodeComplex(const uint8_t* payload, size_t size, uint8_t* out, size_t out
 
 }  // namespace
 
-DXGI_FORMAT hapDxgiFormat(HapFormat format) {
+PixelFormat hapPixelFormat(HapFormat format) {
     switch (format) {
-    case HapFormat::RGB_DXT1:   return DXGI_FORMAT_BC1_UNORM;
-    case HapFormat::RGBA_DXT5:  return DXGI_FORMAT_BC3_UNORM;
-    case HapFormat::YCoCg_DXT5: return DXGI_FORMAT_BC3_UNORM;
-    case HapFormat::A_RGTC1:    return DXGI_FORMAT_BC4_UNORM;
-    case HapFormat::RGBA_BC7:   return DXGI_FORMAT_BC7_UNORM;
-    default:                    return DXGI_FORMAT_UNKNOWN;
+    case HapFormat::RGB_DXT1:   return PixelFormat::BC1;
+    case HapFormat::RGBA_DXT5:  return PixelFormat::BC3;
+    case HapFormat::YCoCg_DXT5: return PixelFormat::BC3;
+    case HapFormat::A_RGTC1:    return PixelFormat::BC4;
+    case HapFormat::RGBA_BC7:   return PixelFormat::BC7;
+    default:                    return PixelFormat::Unknown;
     }
 }
 

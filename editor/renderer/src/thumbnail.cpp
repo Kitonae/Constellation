@@ -1,17 +1,15 @@
 #define NOMINMAX
 #include "thumbnail.h"
 #include "video_decoder.h"
+#include "image_io.h"
+#include "pixel_format.h"
+#include "platform.h"
 
-#include <mfapi.h>
-#include <wincodec.h>
-#include <wrl/client.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <thread>
 #include <vector>
-
-using Microsoft::WRL::ComPtr;
 
 namespace {
 
@@ -89,8 +87,8 @@ void ycocgToBgra(uint8_t* px) {
 bool blocksToBgra(const VideoFrame& f, std::vector<uint8_t>& bgra) {
     const uint32_t w = f.width, h = f.height;
     const uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
-    const bool bc1 = (f.pixelFormat == DXGI_FORMAT_BC1_UNORM);
-    const bool bc3 = (f.pixelFormat == DXGI_FORMAT_BC3_UNORM);
+    const bool bc1 = (f.pixelFormat == PixelFormat::BC1);
+    const bool bc3 = (f.pixelFormat == PixelFormat::BC3);
     if (!bc1 && !bc3) return false;
     const size_t blockBytes = bc1 ? 8 : 16;
     if (f.pixels.size() < (size_t)bw * bh * blockBytes) return false;
@@ -149,41 +147,10 @@ void downscale(const std::vector<uint8_t>& src, uint32_t sw, uint32_t sh, uint32
     }
 }
 
-bool writePng(const std::string& path, const std::vector<uint8_t>& bgra, uint32_t w, uint32_t h) {
-    ComPtr<IWICImagingFactory> factory;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&factory)))) return false;
-
-    const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::wstring wpath((size_t)wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
-
-    ComPtr<IWICStream> stream;
-    if (FAILED(factory->CreateStream(&stream))) return false;
-    if (FAILED(stream->InitializeFromFilename(wpath.c_str(), GENERIC_WRITE))) return false;
-
-    ComPtr<IWICBitmapEncoder> encoder;
-    if (FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder))) return false;
-    if (FAILED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache))) return false;
-
-    ComPtr<IWICBitmapFrameEncode> frame;
-    ComPtr<IPropertyBag2> props;
-    if (FAILED(encoder->CreateNewFrame(&frame, &props))) return false;
-    if (FAILED(frame->Initialize(props.Get()))) return false;
-    if (FAILED(frame->SetSize(w, h))) return false;
-    WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
-    if (FAILED(frame->SetPixelFormat(&fmt))) return false;
-    if (FAILED(frame->WritePixels(h, w * 4, (UINT)bgra.size(),
-                                  const_cast<BYTE*>(bgra.data())))) return false;
-    if (FAILED(frame->Commit())) return false;
-    return SUCCEEDED(encoder->Commit());
-}
-
 }  // namespace
 
 int runProbe(const std::string& inPath) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    MFStartup(MF_VERSION);
+    platformMediaInit();
 
     int rc = 1;
     {
@@ -201,15 +168,13 @@ int runProbe(const std::string& inPath) {
         }
     }
 
-    MFShutdown();
-    CoUninitialize();
+    platformMediaShutdown();
     return rc;
 }
 
 int runThumbnail(const std::string& inPath, const std::string& outPng,
                  double timeSeconds, uint32_t maxDim) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    MFStartup(MF_VERSION);
+    platformMediaInit();
 
     int rc = 1;
     {
@@ -232,10 +197,11 @@ int runThumbnail(const std::string& inPath, const std::string& outPng,
             } else {
                 std::vector<uint8_t> bgra;
                 bool ok = true;
-                if (f->pixelFormat == DXGI_FORMAT_B8G8R8A8_UNORM) {
+                if (f->pixelFormat == PixelFormat::BGRA8) {
                     bgra = f->pixels;
                 } else if (!blocksToBgra(*f, bgra)) {
-                    fprintf(stderr, "thumbnail: no CPU decoder for pixel format %d\n", (int)f->pixelFormat);
+                    fprintf(stderr, "thumbnail: no CPU decoder for pixel format %s\n",
+                        pixelFormatName(f->pixelFormat));
                     ok = false;
                 }
                 if (ok) {
@@ -243,7 +209,7 @@ int runThumbnail(const std::string& inPath, const std::string& outPng,
                     std::vector<uint8_t> scaled;
                     uint32_t sw = 0, sh = 0;
                     downscale(bgra, f->width, f->height, maxDim, scaled, sw, sh);
-                    if (writePng(outPng, scaled, sw, sh)) {
+                    if (writePngBGRA(outPng, scaled, sw, sh)) {
                         printf("thumbnail: %s (%ux%u, %s) -> %s (%ux%u)\n", inPath.c_str(),
                             f->width, f->height, dec.codecName(), outPng.c_str(), sw, sh);
                         rc = 0;
@@ -256,7 +222,6 @@ int runThumbnail(const std::string& inPath, const std::string& outPng,
         }
     }
 
-    MFShutdown();
-    CoUninitialize();
+    platformMediaShutdown();
     return rc;
 }

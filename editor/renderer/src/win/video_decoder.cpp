@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "video_decoder.h"
 #include "video_buffer.h"
+#include "decoder_params.h"
 #include <mferror.h>
 #include <propvarutil.h>
 #include <cstdio>
@@ -204,6 +205,11 @@ bool VideoDecoder::open(const std::string& filePath,
     printf("[VideoDecoder] Opened %s (%ux%u, %.1f fps, %.1fs, %s %s)\n",
         filePath.c_str(), m_width, m_height, m_fps, m_duration, m_codecName, mode);
     return true;
+}
+
+bool VideoDecoder::open(const std::string& filePath, const DecoderParams& p) {
+    return open(filePath, p.d3d12Device, p.d3d11Device, p.dxgiManager, p.d3d11On12,
+                p.d3d12Queue, p.nv12Mode, p.sync);
 }
 
 // Configure the reader for one decode mode and validate it end to end.
@@ -432,7 +438,7 @@ bool VideoDecoder::readHapFrame(VideoFrame& dest) {
         dest.codedWidth = dest.codedHeight = 0;
         dest.timestamp = (double)timestamp / 10000000.0;
         dest.nv12 = false;
-        dest.pixelFormat = hapDxgiFormat(format);
+        dest.pixelFormat = hapPixelFormat(format);
         dest.ycocg = (format == HapFormat::YCoCg_DXT5);
         m_decodedFrames.fetch_add(1);
         return true;

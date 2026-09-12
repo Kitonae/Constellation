@@ -1,15 +1,10 @@
 #include "media_loader.h"
+#include "image_io.h"
+#include "platform.h"
 #include "uri_util.h"
 
-#include <objbase.h>
-#include <wincodec.h>
-#include <wrl/client.h>
 #include <cstdio>
 #include <algorithm>
-
-#pragma comment(lib, "windowscodecs.lib")
-
-using Microsoft::WRL::ComPtr;
 
 MediaLoader::~MediaLoader() { stop(); }
 
@@ -76,7 +71,7 @@ std::vector<MediaLoader::Ready> MediaLoader::drainReady() {
 }
 
 void MediaLoader::threadMain() {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    platformThreadInit();
 
     while (m_running.load()) {
         Request req;
@@ -100,9 +95,7 @@ void MediaLoader::threadMain() {
             } else {
                 auto dec = std::make_unique<VideoDecoder>();
                 dec->setVerbose(req.params.verbose);
-                if (dec->open(path, req.params.d3d12Device, req.params.d3d11Device,
-                              req.params.dxgiManager, req.params.d3d11On12,
-                              req.params.d3d12Queue, req.params.nv12Mode, req.params.sync)) {
+                if (dec->open(path, req.params)) {
                     ready.decoder = std::move(dec);
                 } else {
                     ready.failed = true;
@@ -118,43 +111,11 @@ void MediaLoader::threadMain() {
         }
     }
 
-    CoUninitialize();
+    platformThreadShutdown();
 }
 
 bool MediaLoader::decodeImageFile(const std::string& uri, Ready& out) {
-    ComPtr<IWICImagingFactory> factory;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-        IID_PPV_ARGS(&factory)))) return false;
-
     std::string path = uriToPath(uri);
     if (path.empty()) return false;
-
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::vector<wchar_t> wpath(wlen);
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
-
-    ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(factory->CreateDecoderFromFilename(wpath.data(), nullptr, GENERIC_READ,
-        WICDecodeMetadataCacheOnDemand, &decoder))) return false;
-
-    ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) return false;
-
-    ComPtr<IWICFormatConverter> converter;
-    if (FAILED(factory->CreateFormatConverter(&converter))) return false;
-    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
-        WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) return false;
-
-    UINT w = 0, h = 0;
-    converter->GetSize(&w, &h);
-    if (w == 0 || h == 0) return false;
-
-    UINT rowPitch = w * 4;
-    out.rgba.resize((size_t)rowPitch * h);
-    if (FAILED(converter->CopyPixels(nullptr, rowPitch, (UINT)out.rgba.size(), out.rgba.data())))
-        return false;
-
-    out.width = w;
-    out.height = h;
-    return true;
+    return decodeImageFileRGBA(path, out.rgba, out.width, out.height);
 }

@@ -1,10 +1,9 @@
 #include "sse_client.h"
-#include <windows.h>
-#include <winhttp.h>
+#include "http_client.h"
+#include "platform.h"
 #include <cstdio>
-#include <charconv>
-
-#pragma comment(lib, "winhttp.lib")
+#include <cstdlib>
+#include <mutex>
 
 SSEClient::SSEClient(EventQueue& queue, const std::string& host, int port,
                      const std::string& screenId, const std::string& token)
@@ -22,6 +21,11 @@ void SSEClient::start() {
 
 void SSEClient::stop() {
     m_running = false;
+    {
+        // Wake a read that is blocked on the socket so join() is prompt.
+        std::lock_guard<std::mutex> lk(m_streamMu);
+        if (m_stream) m_stream->abort();
+    }
     if (m_thread.joinable()) {
         m_thread.join();
     }
@@ -34,107 +38,58 @@ void SSEClient::run() {
         m_eventType.clear();
         m_eventData.clear();
 
-        // Convert host to wide string
-        std::wstring whost(m_host.begin(), m_host.end());
-
-        HINTERNET hSession = WinHttpOpen(L"ConstellationRenderer/1.0",
-            WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession) {
-            fprintf(stderr, "[SSE] WinHttpOpen failed: %lu\n", GetLastError());
-            Sleep(1000);
-            continue;
-        }
-
-        HINTERNET hConnect = WinHttpConnect(hSession, whost.c_str(), (INTERNET_PORT)m_port, 0);
-        if (!hConnect) {
-            fprintf(stderr, "[SSE] WinHttpConnect failed: %lu\n", GetLastError());
-            WinHttpCloseHandle(hSession);
-            Sleep(1000);
-            continue;
-        }
-
         // Build path. The token is hex, so it needs no escaping.
         std::string path = "/sse/renderer?screen=" + m_screenId;
         if (!m_token.empty()) path += "&token=" + m_token;
-        std::wstring wpath(path.begin(), path.end());
 
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", wpath.c_str(),
-            NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-        if (!hRequest) {
-            fprintf(stderr, "[SSE] WinHttpOpenRequest failed: %lu\n", GetLastError());
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            Sleep(1000);
+        std::unique_ptr<HttpStream> stream = createHttpStream();
+        int status = 0;
+        bool opened = stream && stream->open(m_host, m_port, path,
+            {{"Accept", "text/event-stream"}}, &status);
+        if (!opened || status != 200) {
+            if (!opened) fprintf(stderr, "[SSE] Connect to %s:%d failed\n", m_host.c_str(), m_port);
+            else fprintf(stderr, "[SSE] Server answered %d (a 401 means the token does not match)\n", status);
+            if (stream) stream->close();
+            for (int i = 0; i < 10 && m_running; i++) platformSleepMs(100);
             continue;
         }
-
-        // Add Accept header for SSE
-        WinHttpAddRequestHeaders(hRequest, L"Accept: text/event-stream", (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
-
-        BOOL bResults = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-        if (!bResults) {
-            fprintf(stderr, "[SSE] WinHttpSendRequest failed: %lu\n", GetLastError());
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            Sleep(1000);
-            continue;
-        }
-
-        bResults = WinHttpReceiveResponse(hRequest, NULL);
-        if (!bResults) {
-            fprintf(stderr, "[SSE] WinHttpReceiveResponse failed: %lu\n", GetLastError());
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            Sleep(1000);
-            continue;
+        {
+            std::lock_guard<std::mutex> lk(m_streamMu);
+            m_stream = std::move(stream);
         }
 
         printf("[SSE] Connected to %s:%d%s\n", m_host.c_str(), m_port, path.c_str());
         m_connected = true;
 
-        // Read streaming response — use WinHttpQueryDataAvailable to avoid
-        // blocking until the full buffer fills (SSE events are small and frequent).
         char buf[16384];
-        DWORD bytesRead = 0;
         while (m_running) {
-            DWORD bytesAvailable = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable)) {
-                fprintf(stderr, "[SSE] QueryDataAvailable error: %lu\n", GetLastError());
+            int n = m_stream->read(buf, sizeof(buf));
+            if (n < 0) {
+                fprintf(stderr, "[SSE] Read error\n");
                 break;
             }
-            if (bytesAvailable == 0) {
-                // In synchronous mode WinHttpQueryDataAvailable blocks until
-                // data arrives, so zero means the response ended. Treating it
-                // as "nothing yet" left us sleeping forever with m_connected
-                // still true, so a graceful server restart never reconnected.
+            if (n == 0) {
+                // The response ended. Treating it as "nothing yet" left us
+                // waiting forever with m_connected still true, so a graceful
+                // server restart never reconnected.
                 printf("[SSE] Server closed the stream\n");
                 break;
             }
-            DWORD toRead = (bytesAvailable < sizeof(buf)) ? bytesAvailable : sizeof(buf);
-            if (!WinHttpReadData(hRequest, buf, toRead, &bytesRead)) {
-                fprintf(stderr, "[SSE] Read error: %lu\n", GetLastError());
-                break;
-            }
-            if (bytesRead == 0) {
-                // Connection closed
-                break;
-            }
-            m_statBytesRead.fetch_add((int)bytesRead);
-            parseSSEStream(buf, bytesRead);
+            m_statBytesRead.fetch_add(n);
+            parseSSEStream(buf, (size_t)n);
             logStats();
         }
 
         m_connected = false;
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
+        {
+            std::lock_guard<std::mutex> lk(m_streamMu);
+            m_stream->close();
+            m_stream.reset();
+        }
 
         if (m_running) {
             printf("[SSE] Disconnected, reconnecting in 1s...\n");
-            Sleep(1000);
+            for (int i = 0; i < 10 && m_running; i++) platformSleepMs(100);
         }
     }
 }
@@ -164,9 +119,7 @@ void SSEClient::parseSSEStream(const char* data, size_t len) {
 
                 if (event.type == "time") {
                     // Parse bare float
-                    double t = 0;
-                    auto [ptr, ec] = std::from_chars(m_eventData.data(), m_eventData.data() + m_eventData.size(), t);
-                    event.timeValue = t;
+                    event.timeValue = strtod(m_eventData.c_str(), nullptr);
                 } else {
                     // Parse JSON
                     try {

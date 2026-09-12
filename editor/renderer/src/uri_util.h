@@ -9,8 +9,8 @@
 #include <string>
 #include <cstdlib>
 
-// Convert a media URI to a local Windows path. Returns "" when the URI does
-// not name a local file (blob:, http:, data:, ...).
+// Convert a media URI to a local path. Returns "" when the URI does not name
+// a local file (blob:, http:, data:, ...).
 inline std::string uriToPath(const std::string& uri) {
     auto urlDecode = [](const std::string& in, bool toBackslash) {
         std::string out;
@@ -29,6 +29,7 @@ inline std::string uriToPath(const std::string& uri) {
         return out;
     };
 
+#ifdef _WIN32
     // file:///C:/path/to/file.mp4
     if (uri.compare(0, 8, "file:///") == 0) {
         return urlDecode(uri.substr(8), true);
@@ -41,6 +42,23 @@ inline std::string uriToPath(const std::string& uri) {
     if (uri.size() > 2 && uri[1] == ':') {
         return uri;
     }
+#else
+    // file:///Users/x/clip.mov -> /Users/x/clip.mov: the third slash is the
+    // root and stays. file://localhost/Users/x is the same file.
+    if (uri.compare(0, 8, "file:///") == 0) {
+        return urlDecode(uri.substr(7), false);
+    }
+    if (uri.compare(0, 17, "file://localhost/") == 0) {
+        return urlDecode(uri.substr(16), false);
+    }
+    if (uri.compare(0, 7, "file://") == 0) {
+        return urlDecode(uri.substr(7), false);
+    }
+    // Already an absolute path.
+    if (!uri.empty() && uri[0] == '/') {
+        return uri;
+    }
+#endif
     return "";
 }
 

@@ -9,9 +9,9 @@
 
 // Posts status updates back to the Go editor via HTTP POST.
 //
-// Posts are queued and sent on a worker thread: WinHttp's synchronous
-// send/receive on the render thread stalled a frame for as long as the editor
-// took to answer.
+// Posts are queued and sent on a worker thread: a synchronous send/receive
+// on the render thread stalled a frame for as long as the editor took to
+// answer.
 class StatusReporter {
 public:
     StatusReporter(const std::string& host, int port, const std::string& token = "");

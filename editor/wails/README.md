@@ -51,7 +51,7 @@ the desktop shell, rebuilding the Go side when it changes.
 
 ## Native Renderer
 
-The DX12 renderer lives in `editor/renderer` and is built separately:
+The renderer lives in `editor/renderer` and is built separately. Windows:
 
 ```powershell
 cd editor/renderer
@@ -59,7 +59,17 @@ cmake -S . -B build -A x64
 cmake --build build --config Release
 ```
 
-The Wails shell discovers the renderer executable from common dev and production paths.
+macOS:
+
+```sh
+cd editor/renderer
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+The Wails shell discovers the renderer executable from common dev and production
+paths: next to its own binary (`Contents/MacOS` inside the app bundle), then
+`editor/renderer/build/` and its `Release`/`Debug` subdirectories.
 
 ## Production Build
 
@@ -74,7 +84,9 @@ into `editor/wails/frontend/dist`, then compile. The copy step exists because
 Go's `//go:embed` cannot reference files outside the package directory, and the
 Vite project deliberately lives outside this Go module.
 
-The binary lands in `editor/wails/bin/constellation-editor.exe`.
+The binary lands in `editor/wails/bin/constellation-editor.exe` on Windows. On
+macOS `task package` also produces `bin/constellation-editor.app`, with the
+renderer and `libndi.dylib` copied in when they have been built.
 
 ## Notes
 

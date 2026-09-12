@@ -24,10 +24,20 @@ This starts the React dev server from `editor/ui` and launches the Wails desktop
 
 ## Build the native renderer (optional, but required for native output work)
 
+Windows:
+
 ```powershell
 cd editor/renderer
 cmake -S . -B build -A x64
 cmake --build build --config Release
+```
+
+macOS:
+
+```sh
+cd editor/renderer
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
 ## Production Wails build
@@ -38,8 +48,10 @@ task package
 ```
 
 Output:
-- Wails shell: `editor\wails\bin\constellation-editor.exe`
+- Wails shell: `editor\wails\bin\constellation-editor.exe` (Windows) or
+  `editor/wails/bin/constellation-editor.app` (macOS)
 - Renderer (built separately): `editor\renderer\build\Release\constellation-renderer.exe`
+  or `editor/renderer/build/constellation-renderer`
 
 ## Common issues
 
@@ -54,6 +66,8 @@ Output:
 ### Renderer not launching
 - Build the renderer from `editor/renderer`
 - Confirm the executable exists in `editor\renderer\build\Release\constellation-renderer.exe`
+  (Windows) or `editor/renderer/build/constellation-renderer` (macOS)
+- Renderer logs are written to `%TEMP%` / `$TMPDIR` as `constellation-renderer-<screen>.log`
 
 ### Go tests fail on a clean checkout because no embedded frontend exists
 - The repo keeps `frontend/dist/.keep` tracked for compile-time embedding
