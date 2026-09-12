@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
 import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
-import { extFromUri, mediaTypeFromExt } from '../media/asset.js'
+import { extFromUri, mediaTypeFromExt , baseName} from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
 import { isEditableTarget } from '../hooks/useShortcuts.js'
@@ -15,7 +15,7 @@ import VideoFrame from './viewport2d/VideoFrame.jsx'
 import SelectionOverlay from './viewport2d/SelectionOverlay.jsx'
 import ViewportToolbar from './viewport2d/ViewportToolbar.jsx'
 import ResizeHandles from './viewport2d/ResizeHandles.jsx'
-import { dotGridBg } from './viewport2d/dotGridBg.js'
+import { gridBg } from './viewport2d/gridBg.js'
 import {
   Z_NEUTRAL, ZOOM_MIN, ZOOM_MAX, STAGE_W, STAGE_H, STAGE_CENTER,
   clamp, ratioForZoom, scaleForZoom,
@@ -28,6 +28,8 @@ const MIN_CLIP_SIZE = 8
 
 function Viewport2D() {
   const scene = useEditorStore((s) => s.scene)
+  const gridStyle = useEditorStore((s) => s.settings.gridStyle)
+  const themeId = useEditorStore((s) => s.settings.theme)
   const project = useEditorStore((s) => s.project)
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
@@ -543,7 +545,7 @@ function Viewport2D() {
       >
         <div
           ref={stageRef}
-          style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...dotGridBg(center, zoom) }}
+          style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...gridBg(gridStyle, center, zoom, themeId) }}
           onClick={(e) => {
             if (draggedRef.current || e.ctrlKey || e.shiftKey) return
             setSelected(null)
@@ -733,7 +735,7 @@ function Viewport2D() {
                   commitClipDrag()
                 }}
                 onDragStart={(e) => e.preventDefault()}
-                title={`${clip?.name || tm.clip_id} (${clipStart(tm).toFixed(2)}s · ${clipDuration(tm).toFixed(2)}s)`}
+                title={`${baseName(clip?.name) || tm.clip_id} (${clipStart(tm).toFixed(2)}s · ${clipDuration(tm).toFixed(2)}s)`}
                 style={{
                   left: box.left,
                   top: box.top,
@@ -760,9 +762,9 @@ function Viewport2D() {
                 {isVideo
                   ? <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
                   : imageMeta[tm.clip_id]?.src
-                    ? <img src={imageMeta[tm.clip_id].src} alt={clip?.name || tm.clip_id} draggable={false}
+                    ? <img src={imageMeta[tm.clip_id].src} alt={baseName(clip?.name) || tm.clip_id} draggable={false}
                       style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none' }} />
-                    : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{clip?.name || tm.clip_id}</span>}
+                    : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{baseName(clip?.name) || tm.clip_id}</span>}
               </div>
             )
           })}

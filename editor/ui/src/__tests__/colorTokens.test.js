@@ -13,7 +13,6 @@ const ALLOWED = new Set([
   'theme.js',
   join('components', 'Viewport.jsx'),
   join('components', 'DisplayWindow.jsx'),
-  join('components', 'viewport2d', 'dotGridBg.js'),
   join('media', 'asset.js'),
 ])
 

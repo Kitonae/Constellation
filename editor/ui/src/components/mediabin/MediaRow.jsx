@@ -6,6 +6,7 @@ import useMediaNaturalSize from '../../hooks/useMediaNaturalSize.js'
 import { KIND_ICON, isTimeBased, hasNaturalSize } from '../../media/kind.js'
 import { formatDuration } from '../../utils/timeFormat.js'
 import { setDragClipId, clearDragClipId } from '../../utils/dragPayload.js'
+import { baseName } from '../../media/asset.js'
 
 /** One asset in the media bin. */
 export default function MediaRow({
@@ -24,12 +25,17 @@ export default function MediaRow({
   // menu can start an edit on a row it does not own.
   useEffect(() => {
     if (!editing) return
-    setDraft(asset.name || '')
+    setDraft(baseName(asset.name) || asset.name || '')
     inputRef.current?.select()
   }, [editing, asset.name])
 
   const commitRename = () => onRenameEnd(draft)
   const cancelRename = () => onRenameEnd(null)
+
+  // Assets imported before the path-splitting fix carry a full absolute path
+  // as their name, so shorten at the point of display rather than rewriting
+  // saved projects.
+  const label = baseName(asset.name) || asset.name || asset.id
 
   const meta = []
   if (isTimeBased(kind) && asset.duration_seconds) meta.push(formatDuration(asset.duration_seconds))
@@ -58,7 +64,7 @@ export default function MediaRow({
       onDragEnd={clearDragClipId}
       title={asset.uri}
     >
-      <MediaThumb uri={asset.uri} alt={asset.name || asset.id} size={44} kind={kind} missing={missing} />
+      <MediaThumb uri={asset.uri} alt={label} size={44} kind={kind} missing={missing} />
 
       <div className="media-row__body">
         {editing ? (
@@ -81,7 +87,7 @@ export default function MediaRow({
               <span className="ms" style={{ fontSize: 12, verticalAlign: '-2px', marginRight: 4, color: 'var(--text-muted)' }} aria-hidden="true">
                 {KIND_ICON[kind]}
               </span>
-              {asset.name || asset.id}
+              {label}
             </div>
             <div className="media-row__meta">
               {missing ? (

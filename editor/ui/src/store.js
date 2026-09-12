@@ -19,6 +19,8 @@ import {
 import { clipInstancesOf, findNode as findNodeIn } from './selectors.js'
 import { GetFileServerPort } from '@bindings/app.js'
 import { isWails } from './wails/env.js'
+import { readSettings, writeSettings, isValidSetting } from './settings.js'
+import { applyTheme } from './theme.js'
 
 // Initialize the file server base URL if running under Wails. This is the only
 // place it happens — App.jsx used to repeat it on mount.
@@ -122,6 +124,23 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   // Keyboard-shortcut help overlay
   shortcutsHelpOpen: false,
   toggleShortcutsHelp: () => set((s) => ({ shortcutsHelpOpen: !s.shortcutsHelpOpen })),
+
+  // Editor preferences. These describe the editor, not the show, so they are
+  // read from local storage at startup, written straight back on change, and
+  // deliberately kept out of the project and the undo stack.
+  settings: readSettings(),
+  setSetting: (key, value) => set((s) => {
+    if (!isValidSetting(key, value)) {
+      queueLog('warn', `Ignored unknown setting ${key}=${value}`)
+      return {}
+    }
+    const settings = { ...s.settings, [key]: value }
+    writeSettings(settings)
+    if (key === 'theme') applyTheme(value)
+    return { settings }
+  }),
+  settingsOpen: false,
+  toggleSettings: () => set((s) => ({ settingsOpen: !s.settingsOpen })),
   // Console/logging state
   logs: [], // { id, level, message, time }
   consoleOpen: false,

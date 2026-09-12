@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { baseName } from '../../media/asset.js'
 
 /** A poster frame for a video clip on the stage. */
 export default function VideoFrame({ clip, style }) {
@@ -19,7 +20,7 @@ export default function VideoFrame({ clip, style }) {
   }, [uri])
 
   if (thumb) {
-    return <img src={thumb} alt={clip?.name || ''} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
+    return <img src={thumb} alt={baseName(clip?.name) || ''} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', ...style }} />
   }
-  return <span style={{ padding: '0 4px', color: 'var(--text-muted)', fontSize: 11, userSelect: 'none', ...style }}>{clip?.name || 'video'}</span>
+  return <span style={{ padding: '0 4px', color: 'var(--text-muted)', fontSize: 11, userSelect: 'none', ...style }}>{baseName(clip?.name) || 'video'}</span>
 }

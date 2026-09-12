@@ -10,6 +10,7 @@ import MediaBinToolbar from './mediabin/MediaBinToolbar.jsx'
 import MediaRow from './mediabin/MediaRow.jsx'
 import useMediaBinView from './mediabin/useMediaBinView.js'
 import { isWails } from '../wails/env.js'
+import { baseName } from '../media/asset.js'
 
 const DEFAULT_VIEW = { query: '', sort: 'added', kinds: [] }
 
@@ -75,8 +76,8 @@ export default React.memo(function MediaBin() {
     const ok = await st.askConfirm({
       title: 'Remove Media',
       message: uses
-        ? `Remove "${asset.name}"?\n${uses} timeline clip${uses === 1 ? '' : 's'} using it will also be removed.`
-        : `Remove "${asset.name}" from the media bin?`,
+        ? `Remove "${baseName(asset.name)}"?\n${uses} timeline clip${uses === 1 ? '' : 's'} using it will also be removed.`
+        : `Remove "${baseName(asset.name)}" from the media bin?`,
       confirmLabel: 'Remove',
       danger: true,
     })
@@ -112,6 +113,18 @@ export default React.memo(function MediaBin() {
   }, [onImportFiles, onImportFolder, insertAtPlayhead, removeAsset, addModelNode, setSelectedClips])
 
   const total = media?.length || 0
+
+  // The bin is mostly a staging area, so what matters first is which sources
+  // the show actually uses. Split on the use count the rows already carry
+  // rather than introducing any new state.
+  const groups = useMemo(() => {
+    const onTimeline = list.filter((m) => (useCounts.get(m.id) || 0) > 0)
+    const unused = list.filter((m) => !(useCounts.get(m.id) || 0))
+    return [
+      { id: 'on-timeline', label: 'On timeline', items: onTimeline },
+      { id: 'unused', label: 'Unused', items: unused },
+    ]
+  }, [list, useCounts])
 
   return (
     <div
@@ -149,30 +162,41 @@ export default React.memo(function MediaBin() {
       <div className="media-bin__list">
         {!total && <div style={{ opacity: 0.6, fontSize: 12, padding: 4 }}>No media yet. Drop files here or use Add New.</div>}
         {!!total && !list.length && <div style={{ opacity: 0.6, fontSize: 12, padding: 4 }}>No media matches this filter.</div>}
-        {list.map((m) => (
-          <MediaRow
-            key={m.id}
-            asset={m}
-            kind={m._kind}
-            selected={selectedMediaId === m.id}
-            linked={linkedAssetIds.has(m.id)}
-            uses={useCounts.get(m.id) || 0}
-            renaming={renamingId === m.id}
-            onSelect={() => setSelectedMedia(m.id)}
-            onInsert={() => insertAtPlayhead(m.id)}
-            onRenameStart={() => setRenamingId(m.id)}
-            onRenameEnd={(name) => {
-              setRenamingId(null)
-              if (name != null) useEditorStore.getState().renameMedia(m.id, name)
-            }}
-            onRelink={() => relinkAsset(m.id)}
-            onContextMenu={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              setSelectedMedia(m.id)
-              setMenu({ x: e.clientX, y: e.clientY, asset: m })
-            }}
-          />
+        {groups.map((g) => (
+          <React.Fragment key={g.id}>
+            {g.items.length > 0 && (
+              <div className="media-bin__group">
+                <span className="media-bin__group-label">{g.label}</span>
+                <span className="media-bin__group-rule" />
+                <span className="media-bin__group-count">{g.items.length}</span>
+              </div>
+            )}
+            {g.items.map((m) => (
+            <MediaRow
+              key={m.id}
+              asset={m}
+              kind={m._kind}
+              selected={selectedMediaId === m.id}
+              linked={linkedAssetIds.has(m.id)}
+              uses={useCounts.get(m.id) || 0}
+              renaming={renamingId === m.id}
+              onSelect={() => setSelectedMedia(m.id)}
+              onInsert={() => insertAtPlayhead(m.id)}
+              onRenameStart={() => setRenamingId(m.id)}
+              onRenameEnd={(name) => {
+                setRenamingId(null)
+                if (name != null) useEditorStore.getState().renameMedia(m.id, name)
+              }}
+              onRelink={() => relinkAsset(m.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setSelectedMedia(m.id)
+                setMenu({ x: e.clientX, y: e.clientY, asset: m })
+              }}
+            />
+            ))}
+          </React.Fragment>
         ))}
       </div>
 
