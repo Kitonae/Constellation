@@ -521,13 +521,20 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
       media: trackMedia(t).map((m) => {
         if (!m || m.id !== timelineId) return m
         const nextDur = Math.max(MIN_CLIP_DURATION, numOr(duration, clipDuration(m)))
-        const nextStart = Math.max(0, numOr(start, clipStart(m)))
+        const oldStart = clipStart(m)
+        const nextStart = Math.max(0, numOr(start, oldStart))
+        // Moving the left edge moves the source in-point with it: trimming
+        // three seconds off the front means the clip now begins three
+        // seconds into its media. Keeping the old in-point showed source
+        // time zero at the new start and re-timed every frame after it.
+        const inSec = Math.max(0, numOr(m.in_seconds, 0) + (nextStart - oldStart))
         return {
           ...m,
           start: nextStart,
           start_at_seconds: nextStart,
           duration: nextDur,
-          out_seconds: numOr(m.in_seconds, 0) + nextDur,
+          in_seconds: inSec,
+          out_seconds: inSec + nextDur,
         }
       }),
     }))

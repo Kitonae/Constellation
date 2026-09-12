@@ -10,6 +10,11 @@ import { extFromUri } from '../media/asset.js'
 // without re-encoding it, so model paths containing spaces never loaded.
 const resolveModelUrl = (uri) => resolveUriSync(uri) || null
 
+// The document measures screens in pixels; this stage is in world units. One
+// conversion, applied to size and position alike, so a 1920x1080 screen is
+// 1.92 by 1.08 units and a screen 500 px to the right sits 0.5 units right.
+const PX_PER_UNIT = 1000
+
 function GltfModel({ url }) {
   const { scene } = useGLTF(url)
   const cloned = useMemo(() => scene.clone(true), [scene])
@@ -46,10 +51,16 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
   const isSelected = node.id === selectedId
 
   if (node.kind?.type === 'screen') {
-    const w = scale.x
-    const h = scale.y
+    // The plane is the screen's pixel size in world units; the group applies
+    // the transform once on top. The geometry used to be built from
+    // scale.x/scale.y and then scaled by the same values again, so a scale of
+    // two was four times as wide, and pixels were never consulted at all, so
+    // every screen was a square.
+    const px = node.kind.pixels || [1920, 1080]
+    const w = (px[0] > 0 ? px[0] : 1920) / PX_PER_UNIT
+    const h = (px[1] > 0 ? px[1] : 1080) / PX_PER_UNIT
     const content = (
-      <group ref={group} position={[position.x, position.y, position.z]} quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]} scale={[scale.x, scale.y, scale.z]}>
+      <group ref={group} position={[position.x / PX_PER_UNIT, position.y / PX_PER_UNIT, position.z / PX_PER_UNIT]} quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]} scale={[scale.x, scale.y, scale.z]}>
         <mesh onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}>
           <planeGeometry args={[w, h]} />
           <meshStandardMaterial color={isSelected ? '#2f3b6a' : '#222'} emissive={isSelected ? '#1a2250' : '#111'} />
@@ -64,7 +75,8 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
           const obj = group.current
           if (!obj) return
           onTransform(node.id, {
-            position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+            // Back to the document's pixels, by the same conversion.
+            position: { x: obj.position.x * PX_PER_UNIT, y: obj.position.y * PX_PER_UNIT, z: obj.position.z * PX_PER_UNIT },
             rotation: { x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w },
             scale: { x: obj.scale.x, y: obj.scale.y, z: obj.scale.z },
           })

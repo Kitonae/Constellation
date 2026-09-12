@@ -166,6 +166,14 @@ function EffectControl({ effect, cfg, media }) {
           }}
         />
         <span style={{ opacity: enabled ? 1 : 0.7 }}>{EFFECT_LABEL[effect] || effect}</span>
+        {cfg.nativeSupported === false && (
+          <span
+            title="Shown in the web preview and web outputs. Native (DirectX) outputs do not apply this effect yet."
+            style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}
+          >
+            web only
+          </span>
+        )}
       </label>
       {!cfg.toggleOnly && (
         <div style={{ width: 84, opacity: enabled ? 1 : 0.5 }}>

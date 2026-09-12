@@ -142,11 +142,13 @@ describe('batched clip actions produce one undo entry each', () => {
 
 describe('trimClip', () => {
   it('sets start and duration together', () => {
-    st().trimClip('c2', { start: 6, duration: 2 })
+    st().trimClip('c2', { start: 6, duration: 2 })   // c2 started at 5
     const c = findClip('c2')
     expect(c.start).toBe(6)
     expect(c.duration).toBe(2)
-    expect(c.out_seconds).toBe(2) // in_seconds 0 + duration
+    // The left edge moved one second later, so the source in-point did too.
+    expect(c.in_seconds).toBe(1)
+    expect(c.out_seconds).toBe(3) // in_seconds 1 + duration
     expect(undoDepth()).toBe(1)
   })
 
@@ -158,6 +160,23 @@ describe('trimClip', () => {
   it('never moves a clip before zero', () => {
     st().trimClip('c1', { start: -5, duration: 2 })
     expect(findClip('c1').start).toBe(0)
+  })
+
+  // Trimming the left edge moves the source in-point with it. It used to keep
+  // in_seconds at zero, so the new first frame was still the media's first
+  // frame and every frame after it was three seconds early.
+  it('moves the source in-point with a left-edge trim', () => {
+    st().trimClip('c3', { start: 4, duration: 1 })   // c3 spanned 1..5
+    const c = findClip('c3')
+    expect(c.start).toBe(4)
+    expect(c.in_seconds).toBe(3)
+    expect(c.out_seconds).toBe(4)
+  })
+
+  it('leaves the in-point alone when only the duration changes', () => {
+    st().trimClip('c3', { start: 1, duration: 2 })
+    expect(findClip('c3').in_seconds).toBe(0)
+    expect(findClip('c3').out_seconds).toBe(2)
   })
 })
 

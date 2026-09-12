@@ -21,17 +21,21 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
     let cancelled = false
     async function ensureMeta() {
       for (const { clip, tm } of placements) {
-        if (!clip?.uri || imageMeta[tm.clip_id]) continue
+        if (!clip?.uri) continue
+        // Keyed by asset id, but only current while the URI matches: relinking
+        // keeps the id and changes the URI, and an entry that was skipped on
+        // id alone kept showing the old file at the old size.
+        if (imageMeta[tm.clip_id]?.uri === clip.uri) continue
         const kind = assetKind(clip.uri) === 'unknown' ? assetKind(clip.name || '') : assetKind(clip.uri)
         const size = await getNaturalSize(clip.uri, kind)
         if (cancelled) return
         const src = kind === 'video' ? resolveFileUrl(clip.uri) : resolveUriSync(clip.uri)
         if (kind === 'video') {
-          setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: size?.w || 1920, h: size?.h || 1080, src: src || null } }))
+          setImageMeta((m) => ({ ...m, [tm.clip_id]: { uri: clip.uri, w: size?.w || 1920, h: size?.h || 1080, src: src || null } }))
           continue
         }
         if (!size || !src) continue
-        setImageMeta((m) => ({ ...m, [tm.clip_id]: { w: size.w, h: size.h, src } }))
+        setImageMeta((m) => ({ ...m, [tm.clip_id]: { uri: clip.uri, w: size.w, h: size.h, src } }))
       }
     }
     ensureMeta()

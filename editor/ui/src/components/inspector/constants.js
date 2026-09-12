@@ -14,20 +14,30 @@ export const FIELD = {
   clipDuration: { step: 0.1, min: 0.01, unit: 's' },
   clipFade: { step: 0.1, min: 0, unit: 's' },
   // Opacity is stored 0..1 but shown as a percentage: 0.05 is a meaningless
-  // number to type, 5 is not.
-  opacity: { step: 1, min: 0, max: 100, unit: '%', displayScale: 100 },
+  // number to type, 5 is not. `step` is in stored units, like every other
+  // field here; NumberInput multiplies it by displayScale for the arrows and
+  // the scrub. A step of 1 here meant one ArrowUp went from 50% to 100%.
+  opacity: { step: 0.01, min: 0, max: 100, unit: '%', displayScale: 100 },
   nodePosition: { step: 1 },
   nodeScale: { step: 0.01, min: 0.001 },
   nodeRotation: { step: 1, unit: '°' },
 }
 
-/** Ranges the store also enforces, so a scrub cannot escape them. */
+/**
+ * Ranges the store also enforces, so a scrub cannot escape them.
+ *
+ * `nativeSupported: false` marks an effect the web preview renders but the
+ * native output does not; the Inspector says so next to the control, so an
+ * operator is not surprised at the wall.
+ */
 export const EFFECT_RANGES = {
   brightness: { min: 0, max: 10, step: 0.05, defaultValue: 1 },
   contrast: { min: 0, max: 10, step: 0.05, defaultValue: 1 },
   saturate: { min: 0, max: 10, step: 0.05, defaultValue: 1 },
   'hue-rotate': { min: 0, max: 360, step: 1, unit: '°', defaultValue: 0 },
-  blur: { min: 0, max: 100, step: 0.5, unit: 'px', defaultValue: 0 },
+  // A CSS-matching Gaussian needs a separable two-pass offscreen target in
+  // the native pipeline; until it has one, the effect is web-only.
+  blur: { min: 0, max: 100, step: 0.5, unit: 'px', defaultValue: 0, nativeSupported: false },
   grayscale: { toggleOnly: true, defaultValue: 1 },
   sepia: { toggleOnly: true, defaultValue: 1 },
   invert: { toggleOnly: true, defaultValue: 1 },

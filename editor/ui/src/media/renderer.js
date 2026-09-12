@@ -68,9 +68,12 @@ export function computeRenderList(timeline, assets, time, opts = {}) {
  * @param {number} viewportW - viewport width in pixels
  * @param {number} viewportH - viewport height in pixels
  * @param {object} [naturalSize] - { w, h } natural pixel dimensions of the media
+ * @param {object} [screenOffset] - { x, y } the viewport's own position on the
+ *        stage; clips are placed in stage space, so a screen at X=500 shows a
+ *        clip at X=500 in its centre. Omit for a viewport at the origin.
  * @returns {{ left: number, top: number, width: number, height: number }}
  */
-export function computeItemLayout(item, viewportW, viewportH, naturalSize) {
+export function computeItemLayout(item, viewportW, viewportH, naturalSize, screenOffset) {
   const baseW = naturalSize?.w || 100
   const baseH = naturalSize?.h || 100
   const w = Math.max(2, (item.width > 0) ? item.width : baseW)
@@ -78,13 +81,42 @@ export function computeItemLayout(item, viewportW, viewportH, naturalSize) {
 
   const cx = viewportW / 2
   const cy = viewportH / 2
+  const ox = Number(screenOffset?.x) || 0
+  const oy = Number(screenOffset?.y) || 0
 
   return {
-    left: cx + (item.x || 0) - w / 2,
-    top: cy - (item.y || 0) - h / 2, // Y is inverted (positive = up)
+    left: cx + ((item.x || 0) - ox) - w / 2,
+    top: cy - ((item.y || 0) - oy) - h / 2, // Y is inverted (positive = up)
     width: w,
     height: h,
   }
+}
+
+/**
+ * The stage position of a screen node, for use as the offset above.
+ *
+ * The same subtraction the native renderer applies (see App::render), so a
+ * web output and a native output of the same screen agree about where a
+ * clip lands. A screen that cannot be found sits at the origin.
+ *
+ * @param {object} scene - the document's scene ({ roots: [...] })
+ * @param {string} screenId
+ * @returns {{ x: number, y: number }}
+ */
+export function screenOffset(scene, screenId) {
+  const none = { x: 0, y: 0 }
+  if (!scene || !screenId) return none
+  const stack = [...(scene.roots || [])]
+  while (stack.length) {
+    const node = stack.pop()
+    if (!node) continue
+    if (node.id === screenId && node.kind?.type === 'screen') {
+      const p = node.transform?.position || {}
+      return { x: Number(p.x) || 0, y: Number(p.y) || 0 }
+    }
+    if (node.children?.length) stack.push(...node.children)
+  }
+  return none
 }
 
 /**

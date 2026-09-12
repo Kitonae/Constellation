@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { resolveImageSrc } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
-import { computeRenderList, computeItemLayout } from '../media/renderer.js'
+import { computeRenderList, computeItemLayout, screenOffset } from '../media/renderer.js'
 
 export default function DisplayWindow() {
   const params = new URLSearchParams(window.location.search)
@@ -99,19 +99,21 @@ export default function DisplayWindow() {
     let cancelled = false
     async function ensureMeta() {
       for (const item of renderItems) {
-        if (imageMeta[item.assetId]) continue
         const uriStr = String(item.asset?.uri || item.src || '')
+        // Keyed by asset id, but only current while the URI matches:
+        // relinking keeps the id and changes the URI.
+        if (imageMeta[item.assetId]?.uri === uriStr) continue
         if (item.mediaType === 'video') {
           if (!uriStr.startsWith('blob:')) {
             try {
               const { getVideoMetadata } = await import('../utils/videoUtils.js')
               const meta = await getVideoMetadata(item.asset?.uri || uriStr)
-              if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { w: meta.width || 1920, h: meta.height || 1080, src: null } }))
+              if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { uri: uriStr, w: meta.width || 1920, h: meta.height || 1080, src: null } }))
             } catch {
-              if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { w: 1920, h: 1080, src: null } }))
+              if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { uri: uriStr, w: 1920, h: 1080, src: null } }))
             }
           } else {
-            if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { w: 1920, h: 1080, src: null } }))
+            if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { uri: uriStr, w: 1920, h: 1080, src: null } }))
           }
           continue
         }
@@ -120,7 +122,7 @@ export default function DisplayWindow() {
         if (cancelled || !src) continue
         await new Promise((resolve) => {
           const img = new Image()
-          img.onload = () => { if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { w: img.naturalWidth, h: img.naturalHeight, src } })); resolve() }
+          img.onload = () => { if (!cancelled) setImageMeta(m => ({ ...m, [item.assetId]: { uri: uriStr, w: img.naturalWidth, h: img.naturalHeight, src } })); resolve() }
           img.onerror = () => resolve()
           img.src = src
         })
@@ -130,12 +132,18 @@ export default function DisplayWindow() {
     return () => { cancelled = true }
   }, [renderItems, imageMeta])
 
+  // This window is one screen on the stage, and clips are placed in stage
+  // space. Composing every screen around the stage origin put a clip
+  // centred on a screen at X=500 five hundred pixels off; the native output
+  // subtracts the screen's position, and so does this now.
+  const offset = useMemo(() => screenOffset(snapshot?.scene, screenId), [snapshot, screenId])
+
   return (
     <div style={{ position: 'relative', width, height, background: '#000', overflow: 'hidden' }}>
       {renderItems.map((item) => {
         const meta = imageMeta[item.assetId]
         const naturalSize = meta ? { w: meta.w, h: meta.h } : null
-        const layout = computeItemLayout(item, width, height, naturalSize)
+        const layout = computeItemLayout(item, width, height, naturalSize, offset)
 
         return (
           <div key={item.clipId} style={{ position: 'absolute', left: layout.left, top: layout.top, width: layout.width, height: layout.height, overflow: 'hidden', opacity: item.opacity, filter: item.filter }}>
