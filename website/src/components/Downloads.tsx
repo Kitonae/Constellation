@@ -1,86 +1,84 @@
+import { Link } from 'react-router-dom';
+
 interface DownloadsProps {
     isDarkMode: boolean;
 }
 
 const Downloads = ({ isDarkMode }: DownloadsProps) => {
-    const downloadOptions = [
+    const recentProgress = [
         {
-            platform: 'Windows',
-            icon: (
-                <svg className="w-16 h-16" viewBox="0 0 88 88" fill="currentColor">
-                    <path d="M0 12.402l35.687-4.86.016 34.423-35.67.203zm35.67 33.529l.028 34.453L.028 75.48.026 45.7zm4.326-39.025L87.314 0v41.527l-47.318.376zm47.329 39.349l-.011 41.34-47.318-6.678-.066-34.739z" />
-                </svg>
-            ),
-            version: '1.0.0',
-            size: '85 MB',
-            requirements: 'Windows 10 or later',
-            downloadUrl: '#',
+            title: 'Native Direct3D 12 output',
+            text: 'Renderer screens open as native Windows processes that draw the show on the GPU, and report their state, frame rate and errors back to the editor.',
         },
         {
-            platform: 'macOS',
-            icon: (
-                <svg className="w-16 h-16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" />
-                </svg>
-            ),
-            version: '1.0.0',
-            size: '120 MB',
-            requirements: 'macOS 11.0 or later',
-            downloadUrl: '#',
+            title: 'Hardware video playback',
+            text: 'H.264 decodes on the GPU video engine and stays in video memory, with HEVC, VP9 and AV1 on the same path. The HAP family — Hap, Hap Alpha, Hap Q and Hap R — plays and thumbnails natively.',
+        },
+        {
+            title: 'A clock in every output',
+            text: 'The shell broadcasts a transport anchor and each output advances its own playhead from it, so a busy editor window does not hold up the picture on stage.',
+        },
+        {
+            title: 'One owner for the document',
+            text: 'The desktop shell owns the open show, its unsaved state and the bytes written to disk. Shows are validated and migrated once on load, and unknown data is carried through untouched.',
+        },
+        {
+            title: 'A settled editor shell',
+            text: 'Rebuilt on Wails v3, with four selectable themes, design tokens behind every colour and shadow, gesture-level undo, and one shortcut table driving the keys, menus and help.',
         },
     ];
 
     return (
-        <div className="flex flex-col items-center justify-center text-center px-4 py-16 max-w-6xl mx-auto">
-            <h1 className={`text-[3rem] leading-[1.1] font-[450] ${isDarkMode ? 'text-white' : 'text-[#121317]'} mb-4`}>
-                Download Constellation
-            </h1>
-            <p className={`text-xl ${isDarkMode ? 'text-gray-400' : 'text-[#5f6368]'} mb-16 max-w-2xl`}>
-                Choose your platform and start organizing your media universe today
-            </p>
-
-            <div className="grid md:grid-cols-2 gap-8 w-full">
-                {downloadOptions.map((option) => (
-                    <div
-                        key={option.platform}
-                        className={`${isDarkMode ? 'bg-[#1a1a1a] border-gray-700' : 'bg-white border-gray-200'
-                            } border rounded-2xl p-8 transition-all duration-300 hover:shadow-2xl ${isDarkMode ? 'hover:border-gray-500' : 'hover:border-gray-300'
-                            }`}
-                    >
-                        <div className={`${isDarkMode ? 'text-blue-400' : 'text-[#1a73e8]'} mb-6 flex justify-center`}>
-                            {option.icon}
-                        </div>
-
-                        <h2 className={`text-2xl font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-[#121317]'}`}>
-                            {option.platform}
-                        </h2>
-
-                        <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-[#5f6368]'} mb-6 space-y-1`}>
-                            <p>Version {option.version}</p>
-                            <p>{option.size}</p>
-                            <p>{option.requirements}</p>
-                        </div>
-
-                        <a
-                            href={option.downloadUrl}
-                            className="inline-block w-full bg-[#1a73e8] text-white px-6 py-3 rounded-full font-medium hover:bg-[#1557b0] transition-colors"
-                        >
-                            Download for {option.platform}
-                        </a>
-                    </div>
-                ))}
+        <div className="flex flex-col items-center px-4 py-16 max-w-4xl mx-auto w-full">
+            <div className="text-center">
+                <h1 className={`text-[3rem] leading-[1.1] font-[450] ${isDarkMode ? 'text-white' : 'text-[#121317]'} mb-4`}>
+                    Development status
+                </h1>
+                <p className={`text-xl ${isDarkMode ? 'text-gray-400' : 'text-[#5f6368]'} mb-12 max-w-2xl mx-auto`}>
+                    Constellation is in development for show creators.
+                </p>
             </div>
 
-            <div className={`mt-16 p-6 rounded-lg ${isDarkMode ? 'bg-[#1a1a1a]' : 'bg-gray-50'} max-w-3xl`}>
-                <h3 className={`text-lg font-semibold mb-3 ${isDarkMode ? 'text-white' : 'text-[#121317]'}`}>
-                    Installation Notes
-                </h3>
-                <ul className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-[#5f6368]'} space-y-2 text-left`}>
-                    <li>• After downloading, open the installer and follow the on-screen instructions</li>
-                    <li>• You may need to allow installation from unidentified developers in your system settings</li>
-                    <li>• For updates and release notes, visit our documentation</li>
+            <section className="glass-panel w-full p-8 md:p-12 text-center">
+                <h2 className={`text-2xl font-semibold mb-4 ${isDarkMode ? 'text-white' : 'text-[#121317]'}`}>
+                    Public downloads are not yet available
+                </h2>
+                <p className={`text-base leading-relaxed ${isDarkMode ? 'text-gray-300' : 'text-[#45474d]'} mb-6`}>
+                    The current work centres on preparing media, editing timelines, composing the stage, and driving native display outputs. These workflows are still evolving.
+                </p>
+                <p className={`text-base leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-[#5f6368]'} mb-8`}>
+                    Release details and platform availability will be shared here when public downloads are ready.
+                </p>
+                <div className="flex flex-col sm:flex-row justify-center gap-4">
+                    <Link to="/use-cases" className="bg-[#1a73e8] text-white px-6 py-3 rounded-full font-medium hover:bg-[#1557b0] transition-colors">
+                        Explore use cases
+                    </Link>
+                    <Link to="/blog" className={`px-6 py-3 rounded-full font-medium transition-colors border ${isDarkMode ? 'text-white border-gray-600 hover:bg-gray-800' : 'text-[#1a73e8] border-[#dadce0] hover:bg-gray-100'}`}>
+                        Read about the editor
+                    </Link>
+                </div>
+            </section>
+
+            <section className="w-full mt-16">
+                <h2 className={`text-2xl font-semibold mb-8 text-center ${isDarkMode ? 'text-white' : 'text-[#121317]'}`}>
+                    Recent progress
+                </h2>
+                <ul className="flex flex-col gap-4">
+                    {recentProgress.map((item) => (
+                        <li key={item.title} className="glass-panel glass-card p-6 text-left">
+                            <h3 className={`text-lg font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-[#121317]'}`}>
+                                {item.title}
+                            </h3>
+                            <p className={`text-base leading-relaxed ${isDarkMode ? 'text-gray-300' : 'text-[#45474d]'}`}>
+                                {item.text}
+                            </p>
+                        </li>
+                    ))}
                 </ul>
-            </div>
+                <p className={`mt-8 text-center text-sm ${isDarkMode ? 'text-gray-400' : 'text-[#5f6368]'}`}>
+                    Native output and hardware video playback are Windows features today.
+                </p>
+            </section>
         </div>
     );
 };

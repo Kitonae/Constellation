@@ -1,3 +1,86 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.site-shell {
+    --glass-border: #353841;
+    --glass-solid: #23262f;
+    --glass-hover-border: #4a4f5c;
+    --ambient-blue: rgba(57, 106, 197, 0.2);
+    --ambient-violet: rgba(116, 77, 180, 0.18);
+    isolation: isolate;
+}
+
+.site-shell[data-theme='light'] {
+    --glass-border: #c8ccd5;
+    --glass-solid: #f4f5f8;
+    --glass-hover-border: #969eae;
+    --ambient-blue: rgba(121, 179, 255, 0.22);
+    --ambient-violet: rgba(176, 148, 246, 0.18);
+}
+
+.site-shell::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(ellipse at 12% 15%, var(--ambient-blue), transparent 58%),
+        radial-gradient(ellipse at 90% 75%, var(--ambient-violet), transparent 58%);
+}
+
+.site-shell > canvas {
+    opacity: 0.5;
+}
+
+.glass-panel {
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+}
+
+.glass-header {
+    width: calc(100% - 2rem);
+    margin-top: 1rem;
+}
+
+.glass-hero {
+    width: calc(100% - 2rem);
+    max-width: 64rem;
+    margin: 3rem auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.25rem, 4vw, 3rem);
+}
+
+.glass-card {
+    transition: border-color 200ms ease;
+}
+
+@media (hover: hover) {
+    .glass-card:hover {
+        border-color: var(--glass-hover-border);
+    }
+}
+
+/* Keep the same readable surfaces when background blur is unavailable. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .glass-panel {
+        background: var(--glass-solid);
+    }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    .glass-panel {
+        background: var(--glass-solid);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .glass-card {
+        transition: none;
+    }
+}

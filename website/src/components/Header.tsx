@@ -10,45 +10,27 @@ const Header = ({ isDarkMode, setIsDarkMode }: HeaderProps) => {
     const navLinks = [
         { name: 'Product', href: '/' },
         { name: 'Blog', href: '/blog' },
-        { name: 'Resources', href: '#' },
-        { name: 'Download', href: '/downloads' },
+        { name: 'Use Cases', href: '/use-cases' },
+        { name: 'Development status', href: '/downloads' },
     ];
 
     return (
-        <header className="flex items-center justify-between px-8 py-6 max-w-7xl mx-auto w-full">
-            <div className="flex items-center gap-2">
+        <header className="glass-panel glass-header relative z-10 flex flex-wrap items-center justify-between gap-y-5 px-4 sm:px-8 py-5 max-w-7xl mx-auto">
+            <Link to="/" aria-label="Constellation home" className="flex items-center gap-2">
                 <img src={logo} alt="Constellation Logo" className="w-8 h-8" />
                 <span className={`text-xl font-light ${isDarkMode ? 'text-gray-300' : 'text-[#5f6368]'}`}>Constellation</span>
-            </div>
+            </Link>
 
-            <nav className="hidden md:flex items-center gap-8">
+            <nav aria-label="Main navigation" className="order-last md:order-none w-full md:w-auto flex flex-wrap justify-center gap-x-6 gap-y-3 md:gap-x-8">
                 {navLinks.map((link) => (
-                    link.name === 'Download' || link.name === 'Product' || link.name === 'Blog' ? (
-                        <Link
-                            key={link.name}
-                            to={link.href}
-                            className={`text-[14.5px] ${isDarkMode ? 'text-gray-300 hover:text-white' : 'text-[#45474d] hover:text-black'} transition-colors font-sans relative after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-0 ${isDarkMode ? 'after:bg-white' : 'after:bg-black'} after:transition-all after:duration-300 hover:after:w-full`}
-                        >
-                            {link.name}
-                        </Link>
-                    ) : (
-                        <a
-                            key={link.name}
-                            href={link.href}
-                            className={`text-[14.5px] ${isDarkMode ? 'text-gray-300 hover:text-white' : 'text-[#45474d] hover:text-black'} transition-colors font-sans relative after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-0 ${isDarkMode ? 'after:bg-white' : 'after:bg-black'} after:transition-all after:duration-300 hover:after:w-full`}
-                        >
-                            {link.name}
-                        </a>
-                    )
+                    <Link
+                        key={link.href}
+                        to={link.href}
+                        className={`text-[14.5px] ${isDarkMode ? 'text-gray-300 hover:text-white' : 'text-[#45474d] hover:text-black'} transition-colors font-sans relative after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-0 ${isDarkMode ? 'after:bg-white' : 'after:bg-black'} after:transition-all after:duration-300 hover:after:w-full`}
+                    >
+                        {link.name}
+                    </Link>
                 ))}
-
-                {/* Use Cases Link */}
-                <Link
-                    to="/use-cases"
-                    className={`text-[14.5px] ${isDarkMode ? 'text-gray-300 hover:text-white' : 'text-[#45474d] hover:text-black'} transition-colors font-sans relative after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-0 ${isDarkMode ? 'after:bg-white' : 'after:bg-black'} after:transition-all after:duration-300 hover:after:w-full`}
-                >
-                    Use Cases
-                </Link>
             </nav>
 
             <div className="flex items-center gap-4">
@@ -57,6 +39,7 @@ const Header = ({ isDarkMode, setIsDarkMode }: HeaderProps) => {
                     onClick={() => setIsDarkMode(!isDarkMode)}
                     className={`p-2 rounded-full ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'} transition-colors`}
                     aria-label="Toggle dark mode"
+                    aria-pressed={isDarkMode}
                 >
                     {isDarkMode ? (
                         <svg className="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
