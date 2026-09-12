@@ -5,6 +5,7 @@ import { selectSelectionSummary, selectDirty } from '../selectors.js'
 import { accelFor } from '../shortcuts.js'
 import { Menu, MenuItem, MenuSeparator, MenuSection, useMenuDismiss, useMenuBarArrows } from './menu/Menu.jsx'
 import WindowControls, { toggleMaximiseFromDragRegion } from './WindowControls.jsx'
+import constellationMark from '../assets/constellation-mark.png'
 
 const MENU_ORDER = ['file', 'edit', 'view', 'displays', 'help']
 
@@ -86,7 +87,7 @@ export default function MenuBar({
   return (
     <div className="appbar" onDoubleClick={toggleMaximiseFromDragRegion}>
       <div className="appbar__brand">
-        <span className="appbar__mark" aria-hidden="true" />
+        <img className="appbar__mark" src={constellationMark} alt="" draggable={false} />
         <span className="appbar__wordmark">Constellation</span>
       </div>
 

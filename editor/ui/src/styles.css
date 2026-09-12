@@ -638,9 +638,11 @@ input[type='checkbox'] {
 }
 
 .appbar__mark {
-  width: 12px;
-  height: 12px;
-  background: var(--accent);
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  flex: 0 0 auto;
 }
 
 .appbar__wordmark {
