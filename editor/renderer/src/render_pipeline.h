@@ -46,7 +46,11 @@ struct EffectsCB {
     float sepia;
     float hue_rotate_deg;
     float invert;
-    float _pad[3];
+    // How to read the sampled texel. 0: it is colour. 1: it is Hap Q, scaled
+    // YCoCg packed into a DXT5 block, and has to be converted before any
+    // effect sees it.
+    float colorMode;
+    float _pad[2];
 };
 
 // Manages the DX12 pipeline state for rendering textured quads with effects.

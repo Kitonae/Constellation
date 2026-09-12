@@ -156,6 +156,13 @@ bool VideoDecoder::open(const std::string& filePath,
     // reader and validates it; on failure the reader is torn down and the next
     // mode is tried from scratch. The decode thread never changes mode.
     bool opened = false;
+
+    // HAP is not another way of decoding the same stream but a different codec
+    // altogether -- one Media Foundation has no decoder for, so every path
+    // below would fail on it. Its frames are GPU texture blocks under Snappy;
+    // the only work is undoing the Snappy.
+    opened = tryOpen(wpath, Mode::Hap);
+
     // D3D12 video decode sits above the D3D11 paths: it is the only one that
     // never leaves the D3D12 device, so nothing has to be unwrapped, copied
     // or synchronised across APIs. It is also the narrowest -- H.264 frame
@@ -164,7 +171,7 @@ bool VideoDecoder::open(const std::string& filePath,
     // the flag when the NV12 pipeline state failed to build. This path emits
     // nothing else, so without it the frames would be dropped at draw time and
     // the clip would render as nothing at all.
-    if (d3d12Device && d3d12Queue && nv12Mode) {
+    if (!opened && d3d12Device && d3d12Queue && nv12Mode) {
         opened = tryOpen(wpath, Mode::D3D12);
         if (!opened) printf("[VideoDecoder] D3D12 video decode unavailable, trying NV12\n");
     }
@@ -189,7 +196,8 @@ bool VideoDecoder::open(const std::string& filePath,
     m_targetTime = 0.0;
     m_thread = std::thread(&VideoDecoder::decodeThread, this);
 
-    const char* mode = m_d3d12Decoder ? "D3D12_VIDEO_DECODE" :
+    const char* mode = m_mode == Mode::Hap ? "HAP_TEXTURE_BLOCKS" :
+                       m_d3d12Decoder  ? "D3D12_VIDEO_DECODE" :
                        m_nv12Mode      ? "DXVA+NV12_ZEROCOPY" :
                        m_gpuSharing    ? "DXVA+GPU_SHARED" :
                        m_dxvaActive    ? "DXVA+CPU_READBACK" : "SOFTWARE";
@@ -212,7 +220,9 @@ bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
     m_d3d12Decoder.reset();
     m_seqHeader.clear();
     m_poolSize = POOL_SIZE;
+    m_hapFormat = HapFormat::Unknown;
 
+    if (mode == Mode::Hap) return tryOpenHap(wpath);
     if (mode == Mode::D3D12) return tryOpenD3D12(wpath);
 
     const bool wantDxva = (mode != Mode::Software) && m_dxvaAvailable;
@@ -293,6 +303,141 @@ bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
 
     m_mode = mode;
     return true;
+}
+
+// Open a HAP file: the source reader demultiplexes and the frames are the
+// texture. Returns false quietly for anything that is not HAP so the ladder
+// carries on; loudly for a HAP variant the renderer cannot show.
+bool VideoDecoder::tryOpenHap(const std::wstring& wpath) {
+    ComPtr<IMFAttributes> attrs;
+    MFCreateAttributes(&attrs, 2);
+    attrs->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, TRUE);
+
+    HRESULT hr = MFCreateSourceReaderFromURL(wpath.c_str(), attrs.Get(), &m_reader);
+    if (FAILED(hr)) { m_reader.Reset(); return false; }
+
+    ComPtr<IMFMediaType> nativeType;
+    if (FAILED(m_reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &nativeType))) {
+        m_reader.Reset();
+        return false;
+    }
+
+    // The QuickTime sample description tag arrives as the first field of the
+    // subtype GUID; hapFormatFromFourcc accepts either byte order.
+    GUID subtype = {};
+    HapFormat declared = HapFormat::Unknown;
+    if (FAILED(nativeType->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+        !hapFormatFromFourcc(subtype.Data1, declared)) {
+        m_reader.Reset();
+        return false;
+    }
+    if (declared == HapFormat::Unknown || declared == HapFormat::A_RGTC1) {
+        printf("[VideoDecoder] %s is not supported: only Hap, Hap Alpha, Hap Q and Hap R\n",
+            declared == HapFormat::A_RGTC1 ? "Hap Alpha-Only" : "Hap Q Alpha");
+        m_reader.Reset();
+        return false;
+    }
+    m_hapFormat = declared;
+    m_codecName = hapFormatName(declared);
+
+    UINT64 frameSize = 0;
+    nativeType->GetUINT64(MF_MT_FRAME_SIZE, &frameSize);
+    m_width = (UINT32)(frameSize >> 32);
+    m_height = (UINT32)(frameSize & 0xFFFFFFFF);
+    if (m_width == 0 || m_height == 0) { m_reader.Reset(); return false; }
+
+    UINT64 frameRate = 0;
+    if (SUCCEEDED(nativeType->GetUINT64(MF_MT_FRAME_RATE, &frameRate))) {
+        UINT32 num = (UINT32)(frameRate >> 32);
+        UINT32 den = (UINT32)(frameRate & 0xFFFFFFFF);
+        if (den > 0) m_fps = (double)num / den;
+    }
+    m_frameDuration = (m_fps > 0) ? (1.0 / m_fps) : (1.0 / 30.0);
+
+    PROPVARIANT var; PropVariantInit(&var);
+    if (SUCCEEDED(m_reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE,
+                                                     MF_PD_DURATION, &var))) {
+        LONGLONG d = 0; PropVariantToInt64(var, &d);
+        m_duration = (double)d / 10000000.0;
+    }
+    PropVariantClear(&var);
+
+    m_reader->SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, FALSE);
+    m_reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
+
+    // Prove the first frame decodes before committing: a container can carry
+    // the right tag over frames this parser cannot read.
+    m_mode = Mode::Hap;
+    VideoFrame probe;
+    if (!readHapFrame(probe)) {
+        printf("[VideoDecoder] %s: first frame did not decode\n", m_codecName);
+        m_reader.Reset();
+        m_mode = Mode::Software;
+        return false;
+    }
+    {
+        PROPVARIANT p; PropVariantInit(&p);
+        p.vt = VT_I8; p.hVal.QuadPart = 0;
+        m_reader->SetCurrentPosition(GUID_NULL, p);
+        PropVariantClear(&p);
+    }
+
+    // Every frame is a keyframe and they arrive in order, so the default pool
+    // is plenty; the block buffers are sized by the first decode into them.
+    for (int i = 0; i < m_poolSize; i++) {
+        VideoFrame f;
+        f.width = m_width;
+        f.height = m_height;
+        m_writeable.push_back(std::move(f));
+    }
+    return true;
+}
+
+// One HAP frame: one sample, one Snappy pass, one texture.
+bool VideoDecoder::readHapFrame(VideoFrame& dest) {
+    if (!m_reader) return false;
+
+    int failures = 0;
+    for (int attempt = 0; attempt < 64; attempt++) {
+        DWORD streamIndex = 0, flags = 0;
+        LONGLONG timestamp = 0;
+        ComPtr<IMFSample> sample;
+        HRESULT hr = m_reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+                                          &streamIndex, &flags, &timestamp, &sample);
+        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) return false;
+        if (!sample) continue;
+
+        ComPtr<IMFMediaBuffer> buffer;
+        if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) return false;
+
+        BYTE* data = nullptr;
+        DWORD maxLen = 0, curLen = 0;
+        if (FAILED(buffer->Lock(&data, &maxLen, &curLen)) || !data) return false;
+        HapFormat format = HapFormat::Unknown;
+        std::string error;
+        const bool ok = hapDecodeFrame(data, curLen, m_width, m_height,
+                                       dest.pixels, format, error);
+        buffer->Unlock();
+
+        if (!ok) {
+            // A damaged frame is skipped, not treated as the end of the file;
+            // only a run of them means the stream is unreadable.
+            if (failures++ == 0) printf("[VideoDecoder] HAP frame rejected: %s\n", error.c_str());
+            if (failures >= 16) return false;
+            continue;
+        }
+
+        dest.width = m_width;
+        dest.height = m_height;
+        dest.codedWidth = dest.codedHeight = 0;
+        dest.timestamp = (double)timestamp / 10000000.0;
+        dest.nv12 = false;
+        dest.pixelFormat = hapDxgiFormat(format);
+        dest.ycocg = (format == HapFormat::YCoCg_DXT5);
+        m_decodedFrames.fetch_add(1);
+        return true;
+    }
+    return false;
 }
 
 // Open for D3D12 video decode: the source reader demultiplexes and nothing
@@ -639,6 +784,7 @@ void VideoDecoder::close() {
     // destroying textures the pool still points at.
     m_d3d12Decoder.reset();
     m_seqHeader.clear();
+    m_hapFormat = HapFormat::Unknown;
 
     m_ownsD3D11 = false;
     m_dxvaActive = false;
@@ -1106,6 +1252,7 @@ void VideoDecoder::decodeThread() {
 // ---- Read one frame (works for both DXVA and software paths) ----
 
 bool VideoDecoder::readOneFrame(VideoFrame& dest) {
+    if (m_mode == Mode::Hap) return readHapFrame(dest);
     if (m_mode == Mode::D3D12) return readD3D12Frame(dest);
 
     DWORD streamIndex = 0, flags = 0;

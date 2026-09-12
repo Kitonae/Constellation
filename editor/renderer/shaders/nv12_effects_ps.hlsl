@@ -13,7 +13,8 @@ cbuffer EffectsCB : register(b1) {
     float sepia;            // apply sepia matrix, lerp by amount
     float hue_rotate_deg;   // rotate hue in degrees
     float invert;           // lerp(color, 1-color, amount)
-    float3 _pad;
+    float colorMode;        // unused here; keeps the layout shared with effects_ps
+    float2 _pad;
 };
 
 // Conversion parameters supplied by the decoder from the stream's

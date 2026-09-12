@@ -21,6 +21,7 @@
 #include <memory>
 
 #include "d3d12_video_decoder.h"
+#include "hap_decoder.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -69,6 +70,13 @@ struct VideoFrame {
     double timestamp = -1.0;
     bool nv12 = false;  // true if d3d12Texture is NV12 format
 
+    // CPU frames: what the bytes in `pixels` are. BGRA for the software
+    // paths; a block-compressed format for HAP, whose frames *are* texture
+    // blocks and go up exactly as they arrived.
+    DXGI_FORMAT pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    // Hap Q stores scaled YCoCg in its DXT5 blocks; the shader converts.
+    bool ycocg = false;
+
     // Cross-API synchronisation (see App's frame fence and the decoder's copy fence)
     UINT64 copyFenceValue = 0;     // D3D11 copy into this frame completes at this value
     UINT64 releaseFenceValue = 0;  // D3D12 finished sampling it at this frame fence value
@@ -107,6 +115,8 @@ private:
         codedHeight = o.codedHeight;
         timestamp = o.timestamp;
         nv12 = o.nv12;
+        pixelFormat = o.pixelFormat;
+        ycocg = o.ycocg;
         copyFenceValue = o.copyFenceValue;
         releaseFenceValue = o.releaseFenceValue;
         decodeFence = o.decodeFence;
@@ -115,6 +125,8 @@ private:
         o.codedWidth = o.codedHeight = 0;
         o.timestamp = -1.0;
         o.nv12 = false;
+        o.pixelFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+        o.ycocg = false;
         o.copyFenceValue = o.releaseFenceValue = 0;
         o.decodeFence = nullptr;
         o.decodeFenceValue = 0;
@@ -123,7 +135,8 @@ private:
 
 // Video decoder with background thread and frame dealer.
 //
-// Five decode paths (best available is selected automatically):
+// Six decode paths (best available is selected automatically):
+//   HAP:                   MF demux only → Snappy → DXT/BC blocks uploaded as the texture
 //   D3D12 video decode:    MF demux only → H264Parser → DecodeFrame → NV12 D3D12 texture
 //   NV12 zero-copy:        D3D11On12 DXVA decode → UnwrapUnderlyingResource → NV12 D3D12 texture
 //   DXVA + shared texture: D3D11 DXVA decode → GPU copy to shared DXGI texture → BGRA D3D12 SRV
@@ -165,6 +178,8 @@ public:
     double duration() const { return m_duration; }
     double fps() const { return m_fps; }
     bool isHardwareAccelerated() const { return m_dxvaActive; }
+    /** HAP: no decoder at all, the frames are the texture. */
+    bool isTextureCodec() const { return m_mode == Mode::Hap; }
     const char* codecName() const { return m_codecName; }
     const ColorSpaceParams& colorSpace() const { return m_colorSpace; }
 
@@ -182,13 +197,15 @@ public:
     // changed afterwards; the old per-frame `goto bgra_fallback` cleared
     // m_nv12Mode mid-stream while the reader kept emitting NV12, so the CPU
     // readback path then copied width*4 bytes per row out of an NV12 buffer.
-    enum class Mode { D3D12, NV12, DxvaRgb32, Software };
+    enum class Mode { Hap, D3D12, NV12, DxvaRgb32, Software };
 
 private:
     friend struct RendererTestAccess;
     bool initDXVA(IDXGIAdapter1* adapter);
     bool tryOpen(const std::wstring& wpath, Mode mode);
     bool tryOpenD3D12(const std::wstring& wpath);
+    bool tryOpenHap(const std::wstring& wpath);
+    bool readHapFrame(VideoFrame& dest);
     bool probeNV12();
     bool probeD3D12();
     bool configureDecoder(Mode mode);
@@ -239,6 +256,11 @@ private:
     // it must outlive every frame in the pool.
     std::unique_ptr<D3D12VideoDecoder> m_d3d12Decoder;
     std::vector<uint8_t> m_seqHeader;   // out-of-band SPS/PPS from the container
+
+    // HAP: which variant the container declares. Frames say for themselves
+    // what they hold; this is for the label and for refusing what the
+    // renderer cannot show before a single sample is read.
+    HapFormat m_hapFormat = HapFormat::Unknown;
     ColorSpaceParams m_colorSpace;
 
     DecoderSync m_sync;

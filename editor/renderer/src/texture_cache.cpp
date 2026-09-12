@@ -22,6 +22,23 @@ D3D12_RESOURCE_DESC texture2DDesc(uint32_t width, uint32_t height, DXGI_FORMAT f
     return d;
 }
 
+// Block-compressed formats are addressed in 4x4 blocks: a "row" of the
+// upload is a row of blocks, and a copy box must stop on a block boundary.
+bool isBlockCompressed(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_BC1_UNORM: case DXGI_FORMAT_BC1_UNORM_SRGB:
+    case DXGI_FORMAT_BC2_UNORM: case DXGI_FORMAT_BC2_UNORM_SRGB:
+    case DXGI_FORMAT_BC3_UNORM: case DXGI_FORMAT_BC3_UNORM_SRGB:
+    case DXGI_FORMAT_BC4_UNORM: case DXGI_FORMAT_BC4_SNORM:
+    case DXGI_FORMAT_BC5_UNORM: case DXGI_FORMAT_BC5_SNORM:
+    case DXGI_FORMAT_BC6H_UF16: case DXGI_FORMAT_BC6H_SF16:
+    case DXGI_FORMAT_BC7_UNORM: case DXGI_FORMAT_BC7_UNORM_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
 D3D12_RESOURCE_BARRIER transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from,
                                   D3D12_RESOURCE_STATES to) {
     D3D12_RESOURCE_BARRIER b = {};
@@ -376,8 +393,16 @@ const CachedTexture* TextureCache::uploadPixels(const std::string& key, const ui
 
     D3D12_RESOURCE_DESC texDesc = texture2DDesc(width, height, format);
     UINT64 uploadSize = 0;
+    UINT numRows = 0;
+    UINT64 rowBytes = 0;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
-    m_device->GetCopyableFootprints(&texDesc, 0, 1, 0, &footprint, nullptr, nullptr, &uploadSize);
+    // numRows and rowBytes describe the source as the copy wants it: pixel rows
+    // of width*4 for BGRA, block rows for a compressed format. Deriving them
+    // from the format here is what lets HAP frames go through the same path
+    // as software-decoded ones.
+    m_device->GetCopyableFootprints(&texDesc, 0, 1, 0, &footprint, &numRows, &rowBytes, &uploadSize);
+    const bool blockCompressed = isBlockCompressed(format);
+    const uint32_t rowsPerSourceRow = blockCompressed ? 4 : 1;
 
     if (!reuse) {
         // A key changing dimensions (swapping a clip's media for a different
@@ -447,8 +472,10 @@ const CachedTexture* TextureCache::uploadPixels(const std::string& key, const ui
         dirtyBottom = UINT32_MAX;
     }
 
-    // A new texture must be filled completely regardless of the dirty hint.
-    if (!reuse) { dirtyTop = 0; dirtyBottom = UINT32_MAX; }
+    // A new texture must be filled completely regardless of the dirty hint,
+    // and so must a block-compressed one: every frame replaces the whole
+    // texture, and a partial box would have to land on block boundaries.
+    if (!reuse || blockCompressed) { dirtyTop = 0; dirtyBottom = UINT32_MAX; }
     uint32_t top = (std::min)(dirtyTop, height);
     uint32_t bottom = (std::min)(dirtyBottom, height);
     if (bottom <= top) {
@@ -457,20 +484,27 @@ const CachedTexture* TextureCache::uploadPixels(const std::string& key, const ui
         return &cached;
     }
 
-    const UINT rowPitch = width * 4;
+    // Source rows to copy: pixel rows, or block rows covering those pixels.
+    const uint32_t rowTop = top / rowsPerSourceRow;
+    const uint32_t rowBottom = (std::min)((bottom + rowsPerSourceRow - 1) / rowsPerSourceRow, numRows);
+
     void* mapped = nullptr;
     // Map/Unmap with an empty read range: we only write.
     D3D12_RANGE noRead = { 0, 0 };
     if (FAILED(uploadBuffer->Map(0, &noRead, &mapped))) return nullptr;
-    for (uint32_t y = top; y < bottom; y++) {
-        memcpy((uint8_t*)mapped + (size_t)y * footprint.Footprint.RowPitch,
-               pixels + (size_t)y * rowPitch, rowPitch);
+    for (uint32_t r = rowTop; r < rowBottom; r++) {
+        memcpy((uint8_t*)mapped + (size_t)r * footprint.Footprint.RowPitch,
+               pixels + (size_t)r * rowBytes, (size_t)rowBytes);
     }
-    // The last row occupies only width*4 bytes, so bottom*RowPitch can run
-    // past the end of the buffer; clamp it (the range is only a hint).
-    D3D12_RANGE written = { (SIZE_T)top * footprint.Footprint.RowPitch,
-                            (SIZE_T)(std::min)((UINT64)bottom * footprint.Footprint.RowPitch, uploadSize) };
+    // The last row occupies only rowBytes, so rowBottom*RowPitch can run past
+    // the end of the buffer; clamp it (the range is only a hint).
+    D3D12_RANGE written = { (SIZE_T)rowTop * footprint.Footprint.RowPitch,
+                            (SIZE_T)(std::min)((UINT64)rowBottom * footprint.Footprint.RowPitch, uploadSize) };
     uploadBuffer->Unmap(0, &written);
+
+    // The box is in texels either way; for blocks it snaps to block edges.
+    top = rowTop * rowsPerSourceRow;
+    bottom = (std::min)(rowBottom * rowsPerSourceRow, height);
 
     // Record into the frame's command list — no private allocator, no fence,
     // no submit. The frame's own fence already guarantees this slot is free.

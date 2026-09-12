@@ -24,6 +24,8 @@ add_executable(constellation-renderer
     src/video_decoder.cpp
     src/h264_parser.cpp
     src/d3d12_video_decoder.cpp
+    src/snappy_decode.cpp
+    src/hap_decoder.cpp
     src/video_buffer.cpp
     src/media_loader.cpp
     src/audio_player.cpp
@@ -80,13 +82,15 @@ if(BUILD_TESTING)
         src/video_decoder.cpp
         src/h264_parser.cpp
         src/d3d12_video_decoder.cpp
+        src/snappy_decode.cpp
+        src/hap_decoder.cpp
         src/media_loader.cpp
     )
     target_include_directories(renderer-regression-tests PRIVATE src)
     target_link_libraries(renderer-regression-tests PRIVATE
         d3d12 dxgi d3d11 dxguid mf mfplat mfreadwrite mfuuid windowscodecs ole32 propsys
     )
-    foreach(case buffers pool loader bitstream nal sps)
+    foreach(case buffers pool loader bitstream nal sps snappy hap)
         add_test(NAME renderer-${case} COMMAND renderer-regression-tests ${case})
         set_tests_properties(renderer-${case} PROPERTIES TIMEOUT 15)
     endforeach()

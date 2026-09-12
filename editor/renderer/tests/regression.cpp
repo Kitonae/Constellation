@@ -4,6 +4,8 @@
 #include "media_loader.h"
 #include "h264_parser.h"
 #include "h264_bitstream.h"
+#include "snappy_decode.h"
+#include "hap_decoder.h"
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -255,6 +257,159 @@ static void testSps() {
               "PPS matrix falls back to the SPS matrix, not to flat");
 }
 
+static void testSnappy() {
+    // Literal then an overlapping short copy: "abc" followed by nine bytes
+    // copied from three back, which is how a run is encoded. The overlap is
+    // the case a memmove-based copy gets wrong.
+    {
+        const uint8_t stream[] = { 0x0C, 0x08, 'a', 'b', 'c', 0x15, 0x03 };
+        uint8_t out[12] = {};
+        check(snappyUncompress(stream, sizeof(stream), out, sizeof(out)), "run stream must decode");
+        check(memcmp(out, "abcabcabcabc", 12) == 0, "overlapping copy produced the wrong run");
+    }
+
+    // Copy with a two-byte offset.
+    {
+        const uint8_t stream[] = { 0x08, 0x0C, 'w', 'x', 'y', 'z', 0x0E, 0x04, 0x00 };
+        uint8_t out[8] = {};
+        check(snappyUncompress(stream, sizeof(stream), out, sizeof(out)), "two-byte offset copy");
+        check(memcmp(out, "wxyzwxyz", 8) == 0, "two-byte offset copied the wrong bytes");
+    }
+
+    // A literal longer than 60 bytes carries its length in following bytes.
+    {
+        std::vector<uint8_t> stream = { 70, 0xF0, 69 };
+        for (int i = 0; i < 70; i++) stream.push_back((uint8_t)i);
+        uint8_t out[70] = {};
+        check(snappyUncompress(stream.data(), stream.size(), out, sizeof(out)), "long literal");
+        for (int i = 0; i < 70; i++) check(out[i] == (uint8_t)i, "long literal bytes");
+    }
+
+    // Declared length is authoritative and everything is bounds-checked.
+    {
+        const uint8_t good[] = { 0x0C, 0x08, 'a', 'b', 'c', 0x15, 0x03 };
+        uint8_t out[12] = {};
+        check(!snappyUncompress(good, sizeof(good), out, 11), "wrong output size must be refused");
+        check(!snappyUncompress(good, sizeof(good) - 1, out, 12), "truncated stream must be refused");
+        const uint8_t backRef[] = { 0x04, 0x00, 'a', 0x0D, 0x05 };   // copy from 5 back after 1 byte
+        check(!snappyUncompress(backRef, sizeof(backRef), out, 4), "reference before the start must be refused");
+        const uint8_t zeroOff[] = { 0x08, 0x0C, 'w', 'x', 'y', 'z', 0x0E, 0x00, 0x00 };
+        check(!snappyUncompress(zeroOff, sizeof(zeroOff), out, 8), "zero offset must be refused");
+    }
+}
+
+// A 24-bit section header, or the 32-bit form when `extended`.
+static void hapHeader(std::vector<uint8_t>& out, uint32_t size, uint8_t type, bool extended = false) {
+    if (extended) {
+        out.insert(out.end(), { 0, 0, 0, type,
+            (uint8_t)size, (uint8_t)(size >> 8), (uint8_t)(size >> 16), (uint8_t)(size >> 24) });
+    } else {
+        out.insert(out.end(), { (uint8_t)size, (uint8_t)(size >> 8), (uint8_t)(size >> 16), type });
+    }
+}
+
+static void testHap() {
+    std::vector<uint8_t> blocks;
+    HapFormat format;
+    std::string error;
+
+    // 8x4 DXT1 is two 8-byte blocks. Uncompressed, plain header.
+    {
+        std::vector<uint8_t> texture(16);
+        for (size_t i = 0; i < texture.size(); i++) texture[i] = (uint8_t)(0xA0 + i);
+        std::vector<uint8_t> frame;
+        hapHeader(frame, 16, 0xAB);                     // None | RGB_DXT1
+        frame.insert(frame.end(), texture.begin(), texture.end());
+
+        check(hapDecodeFrame(frame.data(), frame.size(), 8, 4, blocks, format, error), error.c_str());
+        check(format == HapFormat::RGB_DXT1, "format nibble");
+        check(blocks == texture, "uncompressed blocks must pass through unchanged");
+        check(hapDxgiFormat(format) == DXGI_FORMAT_BC1_UNORM, "DXT1 is BC1");
+
+        // Same frame with the 32-bit size form, which encoders use freely.
+        frame.clear();
+        hapHeader(frame, 16, 0xAB, true);
+        frame.insert(frame.end(), texture.begin(), texture.end());
+        check(hapDecodeFrame(frame.data(), frame.size(), 8, 4, blocks, format, error), "extended header");
+        check(blocks == texture, "extended header payload");
+    }
+
+    // Snappy-wrapped 4x4 DXT5: one 16-byte block as a single literal.
+    {
+        std::vector<uint8_t> texture(16, 0x5A);
+        std::vector<uint8_t> frame;
+        hapHeader(frame, 2 + 16, 0xBE);                 // Snappy | RGBA_DXT5
+        frame.push_back(16);                             // uncompressed length
+        frame.push_back(0x3C);                           // literal, 16 bytes
+        frame.insert(frame.end(), texture.begin(), texture.end());
+
+        check(hapDecodeFrame(frame.data(), frame.size(), 4, 4, blocks, format, error), error.c_str());
+        check(format == HapFormat::RGBA_DXT5 && blocks == texture, "snappy-wrapped DXT5");
+    }
+
+    // Chunked ("complex") 8x8 DXT1: four blocks as two uncompressed chunks,
+    // described by a decode-instructions container with both tables.
+    {
+        std::vector<uint8_t> texture(32);
+        for (size_t i = 0; i < texture.size(); i++) texture[i] = (uint8_t)i;
+
+        std::vector<uint8_t> instructions;
+        hapHeader(instructions, 2, 0x02);               // compressor table
+        instructions.insert(instructions.end(), { 0xA0 >> 4, 0xA0 >> 4 });
+        hapHeader(instructions, 8, 0x03);               // size table
+        instructions.insert(instructions.end(), { 16, 0, 0, 0, 16, 0, 0, 0 });
+
+        std::vector<uint8_t> payload;
+        hapHeader(payload, (uint32_t)instructions.size(), 0x01);
+        payload.insert(payload.end(), instructions.begin(), instructions.end());
+        payload.insert(payload.end(), texture.begin(), texture.end());
+
+        std::vector<uint8_t> frame;
+        hapHeader(frame, (uint32_t)payload.size(), 0xCB);   // Complex | RGB_DXT1
+        frame.insert(frame.end(), payload.begin(), payload.end());
+
+        check(hapDecodeFrame(frame.data(), frame.size(), 8, 8, blocks, format, error), error.c_str());
+        check(blocks == texture, "chunks must concatenate in order");
+    }
+
+    // Refusals: the wrong size for the texture, two textures in one frame,
+    // and a matte-only stream.
+    {
+        std::vector<uint8_t> frame;
+        hapHeader(frame, 15, 0xAB);
+        frame.resize(frame.size() + 15, 0);
+        check(!hapDecodeFrame(frame.data(), frame.size(), 8, 4, blocks, format, error),
+              "a payload that is not the texture size must be refused");
+
+        frame.clear();
+        hapHeader(frame, 4, 0x0D);
+        frame.resize(frame.size() + 4, 0);
+        check(!hapDecodeFrame(frame.data(), frame.size(), 4, 4, blocks, format, error),
+              "Hap Q Alpha must be refused, not misread");
+
+        frame.clear();
+        hapHeader(frame, 8, 0xA1);                      // None | A_RGTC1
+        frame.resize(frame.size() + 8, 0);
+        check(!hapDecodeFrame(frame.data(), frame.size(), 4, 4, blocks, format, error),
+              "Hap Alpha-Only must be refused");
+    }
+
+    // The container tag, in the byte order Media Foundation delivers and the
+    // order MAKEFOURCC produces.
+    {
+        HapFormat f;
+        check(hapFormatFromFourcc(0x48617031, f) && f == HapFormat::RGB_DXT1, "Hap1 big-endian tag");
+        check(hapFormatFromFourcc(0x31706148, f) && f == HapFormat::RGB_DXT1, "Hap1 little-endian tag");
+        check(hapFormatFromFourcc(0x48617059, f) && f == HapFormat::YCoCg_DXT5, "HapY tag");
+        check(hapFormatFromFourcc(0x4861704D, f) && f == HapFormat::Unknown, "HapM is recognised as unsupported");
+        check(!hapFormatFromFourcc(0x31637661, f), "avc1 is not HAP");
+    }
+
+    check(hapTextureBytes(HapFormat::RGB_DXT1, 1920, 1080) == 1036800, "1080p DXT1 size");
+    check(hapTextureBytes(HapFormat::YCoCg_DXT5, 1920, 1080) == 2073600, "1080p DXT5 size");
+    check(hapTextureBytes(HapFormat::RGB_DXT1, 1918, 1078) == 1036800, "partial blocks round up");
+}
+
 static void testBuffers() {
     constexpr uint32_t width = 3, height = 4;
     for (BOOL bottomUp : {FALSE, TRUE}) {
@@ -374,6 +529,8 @@ int main(int argc, char** argv) {
         else if (name == "bitstream") testBitstream();
         else if (name == "nal") testNalSplitting();
         else if (name == "sps") testSps();
+        else if (name == "snappy") testSnappy();
+        else if (name == "hap") testHap();
         else check(false, "unknown test");
         printf("PASS: %s\n", argv[1]);
     } catch (const std::exception& e) {

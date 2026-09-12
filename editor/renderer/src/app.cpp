@@ -424,6 +424,7 @@ void App::render() {
             // the values always describe this picture.
             float cropScaleX = 1.0f, cropScaleY = 1.0f;
             float cropMaxX = 1.0f, cropMaxY = 1.0f;
+            float colorMode = 0.0f;   // 1 when the texture holds Hap Q YCoCg
 
             if (isVideoFile(uri)) {
                 // Decoders are keyed by timeline item so two clips of the same
@@ -472,9 +473,11 @@ void App::render() {
                     tex = m_textureCache.registerExternal(texKey, frame2->d3d12Texture.Get(),
                         frame2->width, frame2->height, DXGI_FORMAT_B8G8R8A8_UNORM);
                 } else if (!frame2->pixels.empty()) {
-                    // CPU fallback path: upload pixel data
+                    // CPU frames: software-decoded BGRA, or HAP's block-
+                    // compressed texture data, which uploads as what it is.
                     tex = m_textureCache.uploadPixels(texKey, frame2->pixels.data(),
-                        frame2->width, frame2->height, DXGI_FORMAT_B8G8R8A8_UNORM);
+                        frame2->width, frame2->height, frame2->pixelFormat);
+                    colorMode = frame2->ycocg ? 1.0f : 0.0f;
                 }
 
                 if (!tex) {
@@ -514,6 +517,7 @@ void App::render() {
             effects.brightness = 1.0f;
             effects.contrast = 1.0f;
             effects.saturate_amount = 1.0f;
+            effects.colorMode = colorMode;
 
             // Apply effects from clip
             for (const auto& [name, ep] : ac.tm->effects) {
@@ -616,7 +620,8 @@ void App::render() {
                         int seeks = dec->seekCount();
                         uint8_t dr = drops > 0 ? (uint8_t)255 : (uint8_t)120;
                         uint8_t dg = drops > 0 ? (uint8_t)180 : (uint8_t)200;
-                        const char* decMode = dec->isHardwareAccelerated() ? "DXVA+GPU" : "SW";
+                        const char* decMode = dec->isHardwareAccelerated() ? "DXVA+GPU"
+                                            : dec->isTextureCodec() ? "TEXTURE" : "SW";
                         m_debugText.drawFormat(18, ty, dr, dg, 120,
                             "shown=%d drops=%d dec=%d buf=%d seeks=%d [%.0ffps %.1fms %s %s]",
                             shown, drops, decoded, buf, seeks, dec->fps(), dec->decodeMs(),

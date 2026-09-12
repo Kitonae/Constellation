@@ -12,7 +12,8 @@ cbuffer EffectsCB : register(b1) {
     float sepia;            // apply sepia matrix, lerp by amount
     float hue_rotate_deg;   // rotate hue in degrees
     float invert;           // lerp(color, 1-color, amount)
-    float3 _pad;
+    float colorMode;        // 0 = colour, 1 = Hap Q scaled YCoCg (see below)
+    float2 _pad;
 };
 
 Texture2D tex : register(t0);
@@ -41,6 +42,17 @@ float3 hueRotate(float3 color, float degrees) {
 
 float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     float4 color = tex.Sample(samp, uv);
+
+    // Hap Q packs Co, Cg, a per-block scale and Y into the four DXT5 channels.
+    // The channels are unsigned, so chroma is re-centred; the scale is stored
+    // as (scale - 1) * 8 / 255 so that a scale of one reads as zero.
+    if (colorMode == 1.0) {
+        float scale = color.b * (255.0 / 8.0) + 1.0;
+        float Co = (color.r - (128.0 / 255.0)) / scale;
+        float Cg = (color.g - (128.0 / 255.0)) / scale;
+        float Y = color.a;
+        color = float4(Y + Co - Cg, Y + Cg, Y - Co - Cg, 1.0);
+    }
 
     // Apply effects in CSS filter order
 
