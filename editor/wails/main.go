@@ -238,7 +238,7 @@ func (a *App) OpenRendererScreen(screenID string, width, height int) error {
 		log.Printf("Renderer launch error for %s: %v", screenID, err)
 		return err
 	}
-	a.hub.BroadcastScreenOpen(screenID, width, height)
+	a.hub.SendScreenOpen(screenID, width, height)
 	return nil
 }
 
@@ -248,7 +248,7 @@ func (a *App) CloseRendererScreen(screenID string) {
 		log.Printf("Invalid screen ID in CloseRendererScreen: %v", err)
 		return
 	}
-	a.hub.BroadcastScreenClose(screenID)
+	a.hub.SendScreenClose(screenID)
 	a.renderers.StopRenderer(screenID)
 }
 

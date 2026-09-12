@@ -88,17 +88,31 @@ static const uint8_t kDefault4x4Intra[16] = {
 static const uint8_t kDefault4x4Inter[16] = {
     10,14,14,20,20,20,24,24,24,24,27,27,27,30,30,34
 };
+// Every list here is in scan (zig-zag) order, which is how the bitstream
+// codes them and how DXVA wants them, so a parsed list and a default list are
+// interchangeable. Table 7-4 prints the 8x8 defaults as a raster matrix, so
+// these are that matrix permuted once rather than at every use -- copying the
+// printed form straight across silently dequantises High-profile streams that
+// select the default 8x8 matrices with the wrong coefficients.
 static const uint8_t kDefault8x8Intra[64] = {
-     6,10,13,16,18,23,25,27,10,11,16,18,23,25,27,29,
-    13,16,18,23,25,27,29,31,16,18,23,25,27,29,31,33,
-    18,23,25,27,29,31,33,36,23,25,27,29,31,33,36,38,
-    25,27,29,31,33,36,38,40,27,29,31,33,36,38,40,42
+     6,10,10,13,11,13,16,16,
+    16,16,18,18,18,18,18,23,
+    23,23,23,23,23,25,25,25,
+    25,25,25,25,27,27,27,27,
+    27,27,27,27,29,29,29,29,
+    29,29,29,31,31,31,31,31,
+    31,33,33,33,33,33,36,36,
+    36,36,38,38,38,40,40,42
 };
 static const uint8_t kDefault8x8Inter[64] = {
-     9,13,15,17,19,21,22,24,13,13,17,19,21,22,24,25,
-    15,17,19,21,22,24,25,27,17,19,21,22,24,25,27,28,
-    19,21,22,24,25,27,28,30,21,22,24,25,27,28,30,32,
-    22,24,25,27,28,30,32,33,24,25,27,28,30,32,33,35
+     9,13,13,15,13,15,17,17,
+    17,17,19,19,19,19,19,21,
+    21,21,21,21,21,22,22,22,
+    22,22,22,22,24,24,24,24,
+    24,24,24,24,25,25,25,25,
+    25,25,25,27,27,27,27,27,
+    27,28,28,28,28,28,30,30,
+    30,30,32,32,32,33,33,35
 };
 static const uint8_t kFlat[64] = {
     16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,
@@ -162,6 +176,78 @@ static void parseScalingMatrix(H264Bitstream& bs, int numLists,
 static void fillFlat(uint8_t list4x4[6][16], uint8_t list8x8[6][64]) {
     for (int i = 0; i < 6; i++) memcpy(list4x4[i], kFlat, 16);
     for (int i = 0; i < 6; i++) memcpy(list8x8[i], kFlat, 64);
+}
+
+// --- VUI -----------------------------------------------------------------
+
+// E.1.2. Parsed for two things the renderer needs -- the colour signal and the
+// reorder depth -- and skipped past for everything else. None of it is fixed
+// length, so the tail cannot be reached without walking the head.
+static void parseVUI(H264Bitstream& bs, H264SPS& sps) {
+    if (bs.readBit()) {                       // aspect_ratio_info_present_flag
+        const uint32_t idc = bs.readBits(8);
+        if (idc == 255) { bs.readBits(16); bs.readBits(16); }   // Extended_SAR
+    }
+    if (bs.readBit()) bs.readBit();           // overscan_info -> overscan_appropriate
+
+    if (bs.readBit()) {                       // video_signal_type_present_flag
+        bs.readBits(3);                       // video_format
+        sps.video_full_range = bs.readBit() != 0;
+        if (bs.readBit()) {                   // colour_description_present_flag
+            sps.colour_description_present = true;
+            sps.colour_primaries = (uint8_t)bs.readBits(8);
+            sps.transfer_characteristics = (uint8_t)bs.readBits(8);
+            sps.matrix_coefficients = (uint8_t)bs.readBits(8);
+        }
+    }
+
+    if (bs.readBit()) { bs.readUE(); bs.readUE(); }   // chroma_loc top/bottom
+
+    if (bs.readBit()) {                       // timing_info_present_flag
+        bs.readBits(32);                      // num_units_in_tick
+        bs.readBits(32);                      // time_scale
+        bs.readBit();                         // fixed_frame_rate_flag
+    }
+
+    // hrd_parameters appears up to twice, and low_delay_hrd_flag is present
+    // only when at least one of them was.
+    auto hrd = [&bs]() {
+        const uint32_t cpbCnt = bs.readUE() + 1;
+        bs.readBits(4);                       // bit_rate_scale
+        bs.readBits(4);                       // cpb_size_scale
+        for (uint32_t i = 0; i < cpbCnt && i < 32 && !bs.overrun(); i++) {
+            bs.readUE();                      // bit_rate_value_minus1
+            bs.readUE();                      // cpb_size_value_minus1
+            bs.readBit();                     // cbr_flag
+        }
+        bs.readBits(5);                       // initial_cpb_removal_delay_length_minus1
+        bs.readBits(5);                       // cpb_removal_delay_length_minus1
+        bs.readBits(5);                       // dpb_output_delay_length_minus1
+        bs.readBits(5);                       // time_offset_length
+    };
+    const bool nalHrd = bs.readBit() != 0;
+    if (nalHrd) hrd();
+    const bool vclHrd = bs.readBit() != 0;
+    if (vclHrd) hrd();
+    if (nalHrd || vclHrd) bs.readBit();       // low_delay_hrd_flag
+
+    bs.readBit();                             // pic_struct_present_flag
+
+    if (bs.readBit()) {                       // bitstream_restriction_flag
+        bs.readBit();                         // motion_vectors_over_pic_boundaries
+        bs.readUE();                          // max_bytes_per_pic_denom
+        bs.readUE();                          // max_bits_per_mb_denom
+        bs.readUE();                          // log2_max_mv_length_horizontal
+        bs.readUE();                          // log2_max_mv_length_vertical
+        const uint32_t reorder = bs.readUE();
+        const uint32_t buffering = bs.readUE();
+        // A malformed tail must not shrink the reorder window to nothing.
+        if (!bs.overrun() && reorder <= 16 && buffering <= 16) {
+            sps.bitstream_restriction = true;
+            sps.max_num_reorder_frames = (uint8_t)reorder;
+            sps.max_dec_frame_buffering = (uint8_t)buffering;
+        }
+    }
 }
 
 // --- SPS -----------------------------------------------------------------
@@ -241,8 +327,13 @@ bool H264Parser::parseSPS(const uint8_t* data, size_t size, H264SPS& sps) {
         sps.crop_bottom = bs.readUE();
     }
 
-    // VUI carries no field the decoder needs; parsing stops here.
+    // The VUI is where the colour signal and the reorder depth live, so it is
+    // parsed rather than skipped. Anything it gets wrong leaves the defaults
+    // in place; only a malformed SPS *before* this point is fatal.
     if (bs.overrun()) return false;
+    sps.vui_present = bs.readBit() != 0;
+    if (sps.vui_present) parseVUI(bs, sps);
+
     if (sps.pic_width_in_mbs == 0 || sps.pic_height_in_map_units == 0) return false;
 
     sps.valid = true;

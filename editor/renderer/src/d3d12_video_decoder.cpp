@@ -118,16 +118,24 @@ bool D3D12VideoDecoder::init(ID3D12Device* device, uint32_t width, uint32_t heig
         ingestParameterSets(nals);
     }
 
-    if (!m_haveParameterSets && width > 0 && height > 0) {
-        // No parameter sets yet: size the pool from the container's frame size
-        // so the first picture does not stall on an allocation. A later SPS
-        // with a different coded size reallocates.
-        if (!createDecoder(width, (height + 15) & ~15u)) return false;
-        if (!createPictures(m_codedWidth, m_codedHeight)) return false;
+    // A parameter set this decoder cannot honour is a hard failure, not
+    // something to work around: building an 8-bit progressive decoder anyway
+    // and feeding it a 10-bit or interlaced stream produces pictures the
+    // caller cannot use and skips the fallback that would have played them.
+    if (m_spsRefused) {
+        shutdown();
+        return false;
     }
 
-    printf("[D3D12VDec] initialised (%ux%u coded, %d picture pool)\n",
-        m_codedWidth, m_codedHeight, D3D12_DEC_PIC_POOL);
+    // Nothing allocated yet: everything waits for the first in-band parameter
+    // set, which is the only thing that says how deep the pool has to be.
+    if (!m_haveParameterSets) {
+        printf("[D3D12VDec] initialised, waiting for in-band parameter sets\n");
+        return true;
+    }
+
+    printf("[D3D12VDec] initialised (%ux%u coded, %d pictures)\n",
+        m_codedWidth, m_codedHeight, m_picCount);
     return true;
 }
 
@@ -155,7 +163,7 @@ bool D3D12VideoDecoder::createDecoder(uint32_t codedWidth, uint32_t codedHeight)
     hd.Format = DXGI_FORMAT_NV12;
     hd.FrameRate = { 30, 1 };
     hd.BitRate = 0;
-    hd.MaxDecodePictureBufferCount = D3D12_DEC_PIC_POOL;
+    hd.MaxDecodePictureBufferCount = m_picCount;
 
     m_decoderHeap.Reset();
     hr = m_videoDevice->CreateVideoDecoderHeap(&hd, IID_PPV_ARGS(&m_decoderHeap));
@@ -186,8 +194,13 @@ bool D3D12VideoDecoder::createPictures(uint32_t codedWidth, uint32_t codedHeight
     // sample a picture the decode queue is still using as a reference.
     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 
-    for (int i = 0; i < D3D12_DEC_PIC_POOL; i++) {
-        m_pics[i].tex.Reset();
+    m_picTextures.fill(nullptr);
+    for (int i = 0; i < m_picCount; i++) {
+        // Every slot is replaced, so all of its state goes with it -- including
+        // heldByClient. Keeping that flag across a rebuild would strand the
+        // slot forever, because releasePicture matches on the texture pointer
+        // and the caller is holding the old texture, not this new one.
+        m_pics[i] = Picture{};
         HRESULT hr = m_device->CreateCommittedResource(
             &hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COMMON,
             nullptr, IID_PPV_ARGS(&m_pics[i].tex));
@@ -199,31 +212,54 @@ bool D3D12VideoDecoder::createPictures(uint32_t codedWidth, uint32_t codedHeight
         m_picTextures[i] = m_pics[i].tex.Get();
         m_picSubresources[i] = 0;
     }
+    for (int i = m_picCount; i < D3D12_DEC_PIC_POOL_MAX; i++) m_pics[i] = Picture{};
+    return true;
+}
+
+// What this decoder can actually handle. Kept separate from applySPS so that
+// every picture can be checked against its own active SPS: a stream may carry
+// several, and only the first one seen used to decide anything.
+bool D3D12VideoDecoder::spsSupported(const H264SPS& sps, const char** why) {
+    if (!sps.valid) { *why = "the parameter set did not parse"; return false; }
+    if (!sps.frame_mbs_only) { *why = "the stream is interlaced (frame_mbs_only=0)"; return false; }
+    if (sps.chroma_format_idc != 1) { *why = "only 4:2:0 chroma is supported"; return false; }
+    if (sps.bit_depth_luma != 8 || sps.bit_depth_chroma != 8) {
+        *why = "only 8-bit sample depth is supported";
+        return false;
+    }
     return true;
 }
 
 bool D3D12VideoDecoder::applySPS(const H264SPS& sps) {
-    if (!sps.valid) return false;
+    const char* why = nullptr;
+    if (!spsSupported(sps, &why)) {
+        printf("[D3D12VDec] %s; falling back to the D3D11On12 path\n", why);
+        return false;
+    }
 
-    if (!sps.frame_mbs_only) {
-        printf("[D3D12VDec] interlaced stream (frame_mbs_only=0) is not supported\n");
-        return false;
-    }
-    if (sps.chroma_format_idc != 1 || sps.bit_depth_luma != 8 || sps.bit_depth_chroma != 8) {
-        printf("[D3D12VDec] only 8-bit 4:2:0 is supported (chroma_format_idc=%u, %u/%u bit)\n",
-            sps.chroma_format_idc, sps.bit_depth_luma, sps.bit_depth_chroma);
-        return false;
-    }
+    // Size the pool for this stream. Reference frames must all stay resident,
+    // the caller holds a reorder window plus the picture on screen, and one
+    // more is being decoded into.
+    const int refs = (int)(sps.max_num_ref_frames < 16 ? sps.max_num_ref_frames : 16);
+    m_reorderDepth = (int)(sps.reorderDepth() < 16 ? sps.reorderDepth() : 16);
+    m_framePool = m_reorderDepth + 4;
+    if (m_framePool < 4) m_framePool = 4;
+    if (m_framePool > 12) m_framePool = 12;
+    int wanted = refs + m_framePool + 2;
+    if (wanted < 8) wanted = 8;
+    if (wanted > D3D12_DEC_PIC_POOL_MAX) wanted = D3D12_DEC_PIC_POOL_MAX;
 
     const uint32_t cw = sps.codedWidth();
     const uint32_t ch = sps.codedHeight();
     m_dispWidth = sps.displayWidth();
     m_dispHeight = sps.displayHeight();
+    m_activeSps = sps;
 
     if (m_decoder && m_decoderHeap && cw == m_codedWidth && ch == m_codedHeight &&
-        m_pics[0].tex) {
-        return true;   // same geometry, nothing to rebuild
+        m_pics[0].tex && wanted <= m_picCount) {
+        return true;   // same geometry and a deep enough pool, nothing to rebuild
     }
+    m_picCount = wanted;
 
     // Resolution change: everything in flight refers to the old pictures.
     if (m_fenceValue > 0 && m_fence->GetCompletedValue() < m_fenceValue) {
@@ -235,8 +271,10 @@ bool D3D12VideoDecoder::applySPS(const H264SPS& sps) {
     if (!createDecoder(cw, ch)) return false;
     if (!createPictures(cw, ch)) return false;
 
-    printf("[D3D12VDec] stream is %ux%u (coded %ux%u), profile %u level %u\n",
-        m_dispWidth, m_dispHeight, cw, ch, sps.profile_idc, sps.level_idc);
+    printf("[D3D12VDec] stream is %ux%u (coded %ux%u), profile %u level %u, "
+           "%d refs, reorder %d, %d pictures\n",
+        m_dispWidth, m_dispHeight, cw, ch, sps.profile_idc, sps.level_idc,
+        refs, m_reorderDepth, m_picCount);
     return true;
 }
 
@@ -247,6 +285,7 @@ void D3D12VideoDecoder::ingestParameterSets(const std::vector<H264NalUnit>& nals
             if (H264Parser::parseSPS(nal.data, nal.size, sps) && sps.sps_id < m_sps.size()) {
                 m_sps[sps.sps_id] = sps;
                 if (applySPS(sps)) m_haveParameterSets = true;
+                else m_spsRefused = true;
             }
         } else if (nal.type == NAL_PPS) {
             // A PPS scaling matrix falls back to its SPS, so the SPS has to be
@@ -295,15 +334,16 @@ void D3D12VideoDecoder::flush() {
         WaitForSingleObject(m_fenceEvent, 2000);
     }
     resetDpb();
+    m_awaitingRecovery = true;
 }
 
 int D3D12VideoDecoder::allocPicture() {
     // A picture is reusable once it is neither a reference nor on screen.
-    for (int i = 0; i < D3D12_DEC_PIC_POOL; i++) {
+    for (int i = 0; i < m_picCount; i++) {
         const Picture& p = m_pics[i];
         if (!p.inUse && !p.heldByClient) return i;
     }
-    for (int i = 0; i < D3D12_DEC_PIC_POOL; i++) {
+    for (int i = 0; i < m_picCount; i++) {
         Picture& p = m_pics[i];
         if (!p.isReference() && !p.heldByClient) { p.inUse = false; return i; }
     }
@@ -362,13 +402,20 @@ void D3D12VideoDecoder::computePoc(const H264SPS& sps, const H264SliceHeader& sl
             m_prevPocMsb = msb;
             m_prevPocLsb = lsb;
         }
+        m_prevFrameNum = (int32_t)slice.frame_num;
         return;
     }
 
+    // A picture carrying MMCO 5 is treated afterwards as though its frame_num
+    // were zero and its offset reset, so the picture that follows must not
+    // inherit the values from before the reset.
+    const int32_t prevOffset = m_prevHadMMCO5 ? 0 : m_prevFrameNumOffset;
+    const int32_t prevNum = m_prevHadMMCO5 ? 0 : m_prevFrameNum;
+
     int32_t frameNumOffset;
     if (slice.idr) frameNumOffset = 0;
-    else if (m_prevFrameNum > (int32_t)slice.frame_num) frameNumOffset = m_prevFrameNumOffset + maxFrameNum;
-    else frameNumOffset = m_prevFrameNumOffset;
+    else if (prevNum > (int32_t)slice.frame_num) frameNumOffset = prevOffset + maxFrameNum;
+    else frameNumOffset = prevOffset;
 
     if (sps.pic_order_cnt_type == 1) {
         const int cycle = sps.num_ref_frames_in_poc_cycle;
@@ -410,7 +457,7 @@ void D3D12VideoDecoder::slidingWindow(const H264SPS& sps) {
     while (numRefs >= maxRefs) {
         // Evict the short-term reference with the smallest FrameNumWrap.
         int victim = -1;
-        for (int i = 0; i < D3D12_DEC_PIC_POOL; i++) {
+        for (int i = 0; i < m_picCount; i++) {
             const Picture& p = m_pics[i];
             if (!p.inUse || !p.shortTerm) continue;
             if (victim < 0 || p.frameNumWrap < m_pics[victim].frameNumWrap) victim = i;
@@ -426,7 +473,7 @@ void D3D12VideoDecoder::markReferences(const H264SPS& sps, const H264SliceHeader
     Picture& curr = m_pics[slot];
 
     if (slice.idr) {
-        for (int i = 0; i < D3D12_DEC_PIC_POOL; i++) {
+        for (int i = 0; i < m_picCount; i++) {
             if (i == slot) continue;
             m_pics[i].shortTerm = false;
             m_pics[i].longTerm = false;
@@ -489,7 +536,7 @@ void D3D12VideoDecoder::markReferences(const H264SPS& sps, const H264SliceHeader
             break;
         }
         case 5: {   // reset everything, as if this were an IDR
-            for (int i = 0; i < D3D12_DEC_PIC_POOL; i++) {
+            for (int i = 0; i < m_picCount; i++) {
                 if (i == slot) continue;
                 m_pics[i].shortTerm = false;
                 m_pics[i].longTerm = false;
@@ -560,13 +607,17 @@ void D3D12VideoDecoder::fillPicParams(DXVA_PicParams_H264& pp, const H264SPS& sp
     // UsedForReferenceFlags all share one index: position in this list, not
     // the picture's slot in the pool.
     int n = 0;
-    for (int i = 0; i < D3D12_DEC_PIC_POOL && n < 16; i++) {
+    for (int i = 0; i < m_picCount && n < 16; i++) {
         const Picture& p = m_pics[i];
         if (!p.inUse || !p.isReference() || i == slot) continue;
 
         pp.RefFrameList[n].Index7Bits = (UCHAR)i;
         pp.RefFrameList[n].AssociatedFlag = p.longTerm ? 1 : 0;
-        pp.FrameNumList[n] = (USHORT)(p.longTerm ? p.longTermFrameIdx : p.frameNumWrap);
+        // Short-term entries carry the coded frame_num; the driver derives
+        // FrameNumWrap and PicNum from it relative to pp.frame_num. Passing the
+        // already-wrapped value makes every reference unresolvable after
+        // frame_num wraps, because a negative wrap becomes a huge USHORT.
+        pp.FrameNumList[n] = (USHORT)(p.longTerm ? p.longTermFrameIdx : p.frameNum);
         pp.FieldOrderCntList[n][0] = p.topPoc;
         pp.FieldOrderCntList[n][1] = p.bottomPoc;
         pp.UsedForReferenceFlags |= 3u << (2 * n);   // both fields of a frame
@@ -729,7 +780,7 @@ bool D3D12VideoDecoder::submit(const DXVA_PicParams_H264& pp, const DXVA_Qmatrix
 
     // The whole pool is passed so that a slot index means the same thing here
     // as it does in CurrPic and RefFrameList.
-    in.ReferenceFrames.NumTexture2Ds = D3D12_DEC_PIC_POOL;
+    in.ReferenceFrames.NumTexture2Ds = m_picCount;
     in.ReferenceFrames.ppTexture2Ds = m_picTextures.data();
     in.ReferenceFrames.pSubresources = m_picSubresources.data();
     in.ReferenceFrames.ppHeaps = nullptr;
@@ -797,6 +848,16 @@ D3D12DecodedPicture D3D12VideoDecoder::decode(const uint8_t* data, size_t size, 
     if (pps.sps_id >= m_sps.size() || !m_sps[pps.sps_id].valid) return result;
     const H264SPS& sps = m_sps[pps.sps_id];
 
+    // Checked per picture, not once at startup: a stream can carry several
+    // parameter sets and activate a different one part-way through, and the
+    // one this picture names is the only one that matters.
+    const char* why = nullptr;
+    if (!spsSupported(sps, &why)) {
+        printf("[D3D12VDec] %s; cannot decode this stream\n", why);
+        m_lastFailed = true;
+        return result;
+    }
+
     if (!m_decoder || !m_decoderHeap || !m_pics[0].tex) {
         if (!applySPS(sps)) { m_lastFailed = true; return result; }
     }
@@ -813,6 +874,25 @@ D3D12DecodedPicture D3D12VideoDecoder::decode(const uint8_t* data, size_t size, 
         return result;
     }
 
+    bool intraOnly = true;
+    for (const auto& nal : slices) {
+        H264Bitstream b(nal.data, nal.size);
+        b.readUE();
+        const uint32_t t = b.readUE() % 5;
+        if (t != SLICE_I && t != SLICE_SI) { intraOnly = false; break; }
+    }
+
+    // Nothing has been decoded since the last flush, so the buffer this
+    // picture would predict from is empty. Submitting it anyway hands the
+    // hardware an empty reference list; wait for a picture that stands alone.
+    if (m_awaitingRecovery) {
+        if (!slice.idr && !intraOnly) {
+            if (m_verbose) printf("[D3D12VDec] waiting for a recovery point, dropping a picture\n");
+            return result;
+        }
+        m_awaitingRecovery = false;
+    }
+
     if (slice.idr) resetDpb();
 
     updateFrameNumWrap((int32_t)slice.frame_num, sps.maxFrameNum());
@@ -824,17 +904,9 @@ D3D12DecodedPicture D3D12VideoDecoder::decode(const uint8_t* data, size_t size, 
     if (slot < 0) {
         // Every picture is either a live reference or still on screen. This
         // means the pool is undersized for the stream, not a transient.
-        printf("[D3D12VDec] picture pool exhausted (%d slots)\n", D3D12_DEC_PIC_POOL);
+        printf("[D3D12VDec] picture pool exhausted (%d slots)\n", m_picCount);
         m_lastFailed = true;
         return result;
-    }
-
-    bool intraOnly = true;
-    for (const auto& nal : slices) {
-        H264Bitstream b(nal.data, nal.size);
-        b.readUE();
-        const uint32_t t = b.readUE() % 5;
-        if (t != SLICE_I && t != SLICE_SI) { intraOnly = false; break; }
     }
 
     DXVA_PicParams_H264 pp;
@@ -875,7 +947,22 @@ D3D12DecodedPicture D3D12VideoDecoder::decode(const uint8_t* data, size_t size, 
     // Marking happens after the picture exists, per 8.2.5: an MMCO can retire
     // a reference the picture being decoded still needed.
     markReferences(sps, slice, slot);
-    m_prevHadMMCO5 = slice.hasMMCO5();
+
+    // 8.2.1: after MMCO 5 the picture is held as though its frame_num were
+    // zero and its count rebased to zero, and that is what later pictures
+    // measure themselves against.
+    const bool hadMMCO5 = slice.hasMMCO5();
+    if (hadMMCO5) {
+        const int32_t base = (picture.topPoc < picture.bottomPoc)
+            ? picture.topPoc : picture.bottomPoc;
+        picture.topPoc -= base;
+        picture.bottomPoc -= base;
+        picture.frameNum = 0;
+        picture.frameNumWrap = 0;
+    }
+    // Only a reference picture supplies the previous state, so a non-reference
+    // picture in between must not clear the flag the next reference reads.
+    if (slice.nal_ref_idc != 0) m_prevHadMMCO5 = hadMMCO5;
 
     if (m_verbose) {
         printf("[D3D12VDec] slot %2d  frame_num=%-5u poc=%-6d %s %zu slice(s) %zu bytes t=%.3f\n",
@@ -919,6 +1006,11 @@ void D3D12VideoDecoder::shutdown() {
     m_videoDevice.Reset();
     for (auto& p : m_pics) { p.tex.Reset(); p = Picture{}; }
     m_picTextures.fill(nullptr);
+    m_picCount = 0;
+    m_framePool = 4;
+    m_reorderDepth = 0;
+    m_spsRefused = false;
+    m_awaitingRecovery = true;
 
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
 

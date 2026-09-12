@@ -11,11 +11,11 @@ type mockBroadcaster struct {
 	controls  []string
 }
 
-func (m *mockBroadcaster) BroadcastSnapshot(data []byte)                        { m.snapshots = append(m.snapshots, data) }
-func (m *mockBroadcaster) BroadcastTime(t float64)                              { m.times = append(m.times, t) }
-func (m *mockBroadcaster) BroadcastControl(command string)                      { m.controls = append(m.controls, command) }
-func (m *mockBroadcaster) BroadcastScreenOpen(screenID string, w, h int)        {}
-func (m *mockBroadcaster) BroadcastScreenClose(screenID string)                 {}
+func (m *mockBroadcaster) BroadcastSnapshot(data []byte)            { m.snapshots = append(m.snapshots, data) }
+func (m *mockBroadcaster) BroadcastTime(t float64)                  { m.times = append(m.times, t) }
+func (m *mockBroadcaster) BroadcastControl(command string)          { m.controls = append(m.controls, command) }
+func (m *mockBroadcaster) SendScreenOpen(screenID string, w, h int) {}
+func (m *mockBroadcaster) SendScreenClose(screenID string)          {}
 
 func TestRendererManager_GetStatus_UnknownScreen(t *testing.T) {
 	hub := &mockBroadcaster{}

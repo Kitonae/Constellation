@@ -420,6 +420,10 @@ void App::render() {
             }
 
             const CachedTexture* tex = nullptr;
+            // Filled in from the frame being drawn, not from the decoder, so
+            // the values always describe this picture.
+            float cropScaleX = 1.0f, cropScaleY = 1.0f;
+            float cropMaxX = 1.0f, cropMaxY = 1.0f;
 
             if (isVideoFile(uri)) {
                 // Decoders are keyed by timeline item so two clips of the same
@@ -447,6 +451,15 @@ void App::render() {
                 // told to wait for the decode that produced this picture.
                 if (frame2->decodeFence && frame2->decodeFenceValue > 0)
                     m_cmdQueue->Wait(frame2->decodeFence, frame2->decodeFenceValue);
+
+                if (frame2->codedWidth > frame2->width && frame2->codedWidth > 0) {
+                    cropScaleX = (float)frame2->width / (float)frame2->codedWidth;
+                    cropMaxX = ((float)frame2->width - 0.5f) / (float)frame2->codedWidth;
+                }
+                if (frame2->codedHeight > frame2->height && frame2->codedHeight > 0) {
+                    cropScaleY = (float)frame2->height / (float)frame2->codedHeight;
+                    cropMaxY = ((float)frame2->height - 0.5f) / (float)frame2->codedHeight;
+                }
 
                 std::string texKey = "__video_" + ac.tm->id;
 
@@ -527,10 +540,11 @@ void App::render() {
                     cs.yOffset = p.yOffset; cs.yScale = p.yScale;
                     cs.cOffset = p.cOffset; cs.cScale = p.cScale;
                     cs.kr = p.kr; cs.kb = p.kb;
-                    // Non-unit only for the D3D12 path, whose surfaces are
-                    // macroblock-aligned and so taller than the picture.
-                    cs.uvScaleX = p.uvScaleX; cs.uvScaleY = p.uvScaleY;
                 }
+                // Non-unit only for the D3D12 path, whose surfaces are
+                // macroblock-aligned and so taller than the picture.
+                cs.uvScaleX = cropScaleX; cs.uvScaleY = cropScaleY;
+                cs.uvMaxX = cropMaxX; cs.uvMaxY = cropMaxY;
                 m_pipeline.drawVideoQuad(m_cmdList.Get(), transform, effects, cs,
                     tex->srvGpu, tex->srvGpuUV);
             } else {

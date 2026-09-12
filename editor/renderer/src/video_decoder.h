@@ -42,11 +42,6 @@ struct ColorSpaceParams {
     float cScale = 255.0f / 224.0f;
     float kr = 0.2126f;   // BT.709
     float kb = 0.0722f;
-    // Visible size over allocated size, for decoders whose output surface is
-    // larger than the picture (see the D3D12 path, which decodes into a
-    // macroblock-aligned NV12 texture).
-    float uvScaleX = 1.0f;
-    float uvScaleY = 1.0f;
 };
 
 // A frame in the decoder's pool.
@@ -65,6 +60,12 @@ struct VideoFrame {
 
     uint32_t width = 0;
     uint32_t height = 0;
+    // Allocated size of d3d12Texture when it is larger than the picture. H.264
+    // codes whole macroblocks, so a 1080-line picture is decoded into a
+    // 1088-line surface and the renderer has to know where to stop. Zero means
+    // the texture is an exact fit.
+    uint32_t codedWidth = 0;
+    uint32_t codedHeight = 0;
     double timestamp = -1.0;
     bool nv12 = false;  // true if d3d12Texture is NV12 format
 
@@ -102,6 +103,8 @@ private:
         pixels = std::move(o.pixels);
         width = o.width;
         height = o.height;
+        codedWidth = o.codedWidth;
+        codedHeight = o.codedHeight;
         timestamp = o.timestamp;
         nv12 = o.nv12;
         copyFenceValue = o.copyFenceValue;
@@ -109,6 +112,7 @@ private:
         decodeFence = o.decodeFence;
         decodeFenceValue = o.decodeFenceValue;
         o.width = o.height = 0;
+        o.codedWidth = o.codedHeight = 0;
         o.timestamp = -1.0;
         o.nv12 = false;
         o.copyFenceValue = o.releaseFenceValue = 0;
@@ -192,6 +196,7 @@ private:
     bool readD3D12Frame(VideoFrame& dest);
     void releaseD3D12Picture(VideoFrame& frame);
     void readColorSpace(IMFMediaType* type);
+    void applySpsColorSpace(const H264SPS& sps);
     bool readOneFrame(VideoFrame& dest);
     void decodeThread();
     bool createSharedTexture(VideoFrame& frame);
@@ -240,7 +245,11 @@ private:
     std::atomic<UINT64> m_pendingCopyFence{0};
 
     // Frame dealer
+    // Enough for a decoder that hands frames back in presentation order. The
+    // D3D12 path returns them in decode order and raises this to cover the
+    // stream's reorder window; see tryOpenD3D12.
     static constexpr int POOL_SIZE = 4;
+    int m_poolSize = POOL_SIZE;
     std::deque<VideoFrame> m_writeable;
     std::deque<VideoFrame> m_readable;
     mutable std::mutex m_dealerMu;

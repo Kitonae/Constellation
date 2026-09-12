@@ -140,3 +140,98 @@ func TestSSEHub_ClientDisconnectRemovesClient(t *testing.T) {
 		t.Errorf("expected 0 clients after disconnect, got %d", countAfter)
 	}
 }
+
+func TestSSEHub_ScreenOpenGoesOnlyToItsOwnRenderer(t *testing.T) {
+	hub := NewSSEHub()
+
+	a := &SSEClient{screenID: "screen-a", ch: make(chan []byte, 8), timeCh: make(chan []byte, 1)}
+	b := &SSEClient{screenID: "screen-b", ch: make(chan []byte, 8), timeCh: make(chan []byte, 1)}
+	hub.mu.Lock()
+	hub.clients[a] = struct{}{}
+	hub.clients[b] = struct{}{}
+	hub.mu.Unlock()
+
+	hub.SendScreenOpen("screen-b", 1920, 1080)
+
+	select {
+	case msg := <-b.ch:
+		if !strings.Contains(string(msg), "screen-b") {
+			t.Errorf("expected screen-b open, got %q", msg)
+		}
+	default:
+		t.Error("the renderer that owns the screen received nothing")
+	}
+
+	select {
+	case msg := <-a.ch:
+		t.Errorf("a renderer opened another screen's window: %q", msg)
+	default:
+	}
+}
+
+func TestSSEHub_LateRendererGetsScreenAndTransport(t *testing.T) {
+	hub := NewSSEHub()
+
+	// Everything below happens before the renderer has connected, which is the
+	// normal order: the process is launched and told to open its window in the
+	// same call, and the show may already be running.
+	hub.BroadcastSnapshot([]byte(`{"project":{}}`))
+	hub.SendScreenOpen("screen-1", 1280, 720)
+	hub.BroadcastControl("play")
+	hub.BroadcastTime(12.5)
+
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/sse/renderer?screen=screen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 8192)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	for _, want := range []string{"event: snapshot", "event: screen-open", "screen-1",
+		"event: control", "play", "event: time", "12.5"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("replay on connect is missing %q; got %q", want, body)
+		}
+	}
+}
+
+func TestSSEHub_LateRendererIgnoresOtherScreens(t *testing.T) {
+	hub := NewSSEHub()
+	hub.BroadcastSnapshot([]byte(`{"project":{}}`))
+	hub.SendScreenOpen("screen-other", 1280, 720)
+
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/sse/renderer?screen=screen-mine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 8192)
+	n, _ := resp.Body.Read(buf)
+	if body := string(buf[:n]); strings.Contains(body, "screen-other") {
+		t.Errorf("replayed another screen's window command: %q", body)
+	}
+}
+
+func TestSSEHub_ScreenCloseStopsReplay(t *testing.T) {
+	hub := NewSSEHub()
+	hub.SendScreenOpen("screen-1", 1280, 720)
+	hub.SendScreenClose("screen-1")
+
+	hub.mu.Lock()
+	_, still := hub.openScreens["screen-1"]
+	hub.mu.Unlock()
+
+	if still {
+		t.Error("a closed screen would be reopened by the next renderer to connect")
+	}
+}

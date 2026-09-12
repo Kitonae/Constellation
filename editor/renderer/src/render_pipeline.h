@@ -24,10 +24,16 @@ struct ColorSpaceCB {
     float kb = 0.0722f;
     // Visible size over allocated size. The D3D12 decode path writes into a
     // macroblock-aligned surface, so the shader has to stop short of the
-    // padding rows; every other path hands back an exact fit and leaves this
+    // padding rows; every other path hands back an exact fit and leaves these
     // at one.
     float uvScaleX = 1.0f;
     float uvScaleY = 1.0f;
+    // Last texel centre inside the picture. Scaling alone puts the far edge
+    // exactly on the boundary with the padding, which a linear sampler then
+    // blends into the visible edge whenever the clip is upscaled.
+    float uvMaxX = 1.0f;
+    float uvMaxY = 1.0f;
+    float _pad[2] = {};
 };
 
 struct EffectsCB {

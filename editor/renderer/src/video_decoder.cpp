@@ -160,7 +160,11 @@ bool VideoDecoder::open(const std::string& filePath,
     // never leaves the D3D12 device, so nothing has to be unwrapped, copied
     // or synchronised across APIs. It is also the narrowest -- H.264 frame
     // coding on tier 2 hardware -- so everything below it stays in place.
-    if (d3d12Device && d3d12Queue) {
+    // nv12Mode is App saying it can actually draw an NV12 texture -- it clears
+    // the flag when the NV12 pipeline state failed to build. This path emits
+    // nothing else, so without it the frames would be dropped at draw time and
+    // the clip would render as nothing at all.
+    if (d3d12Device && d3d12Queue && nv12Mode) {
         opened = tryOpen(wpath, Mode::D3D12);
         if (!opened) printf("[VideoDecoder] D3D12 video decode unavailable, trying NV12\n");
     }
@@ -207,8 +211,7 @@ bool VideoDecoder::tryOpen(const std::wstring& wpath, Mode mode) {
     m_dxvaActive = false;
     m_d3d12Decoder.reset();
     m_seqHeader.clear();
-    m_colorSpace.uvScaleX = 1.0f;
-    m_colorSpace.uvScaleY = 1.0f;
+    m_poolSize = POOL_SIZE;
 
     if (mode == Mode::D3D12) return tryOpenD3D12(wpath);
 
@@ -344,13 +347,20 @@ bool VideoDecoder::tryOpenD3D12(const std::wstring& wpath) {
         return false;
     }
 
-    for (int i = 0; i < POOL_SIZE; i++) {
+    // Pictures arrive in decode order, so the pool has to hold a whole reorder
+    // window at once. A pool of POOL_SIZE empties before the picture the
+    // renderer is waiting for has been decoded, and the frames that did arrive
+    // get recycled as too old -- which loses two frames per mini-GOP on any
+    // stream with B-pyramids, quietly, because the gaps are too small for the
+    // drop counter to notice.
+    m_poolSize = m_d3d12Decoder->framePoolSize();
+    for (int i = 0; i < m_poolSize; i++) {
         VideoFrame f;
         f.width = m_width;
         f.height = m_height;
         m_writeable.push_back(std::move(f));
     }
-    printf("[VideoDecoder] D3D12 video decode frame pool created (%d pool)\n", POOL_SIZE);
+    printf("[VideoDecoder] D3D12 video decode frame pool created (%d pool)\n", m_poolSize);
 
     m_mode = Mode::D3D12;
     return true;
@@ -431,6 +441,13 @@ bool VideoDecoder::probeD3D12() {
     const uint32_t w = m_d3d12Decoder->width();
     const uint32_t h = m_d3d12Decoder->height();
     if (w > 0 && h > 0) { m_width = w; m_height = h; }
+
+    // The other decode paths read range and matrix off the MF decoder's output
+    // type, which derives them from the VUI. Compressed output has no such
+    // type, and the container carries them only if it has a colour box -- so
+    // take them from the VUI directly, which is where they came from anyway.
+    applySpsColorSpace(m_d3d12Decoder->activeSPS());
+
     m_d3d12Decoder->flush();
 
     PROPVARIANT p; PropVariantInit(&p);
@@ -459,6 +476,8 @@ bool VideoDecoder::readD3D12Frame(VideoFrame& dest) {
     if (!m_d3d12Decoder || !m_reader) return false;
     releaseD3D12Picture(dest);
 
+    int failures = 0;
+
     for (int attempt = 0; attempt < 64; attempt++) {
         DWORD streamIndex = 0, flags = 0;
         LONGLONG timestamp = 0;
@@ -479,24 +498,35 @@ bool VideoDecoder::readD3D12Frame(VideoFrame& dest) {
         buffer->Unlock();
 
         if (!pic.valid) {
-            if (m_d3d12Decoder->failed()) return false;
-            continue;   // nothing to decode in that sample; read the next one
+            // A sample that decodes to nothing is ordinary: parameter sets on
+            // their own, or the pictures before the first recovery point after
+            // a seek. A sample that fails is a damaged or unsupported access
+            // unit -- skip it and keep reading, because reporting it as the end
+            // of the stream freezes the clip until the next seek. Only a run of
+            // failures means the stream is not decodable at all.
+            if (!m_d3d12Decoder->failed()) { failures = 0; continue; }
+            if (++failures >= 16) {
+                printf("[VideoDecoder] giving up after %d consecutive decode failures\n",
+                    failures);
+                return false;
+            }
+            continue;
         }
+        failures = 0;
 
         dest.d3d12Texture = pic.texture;
         dest.width = pic.width;
         dest.height = pic.height;
+        // Carried on the frame rather than on the decoder: the picture being
+        // drawn is not always the one most recently decoded, and the render
+        // thread would otherwise be reading a value the decode thread is
+        // writing.
+        dest.codedWidth = pic.codedWidth;
+        dest.codedHeight = pic.codedHeight;
         dest.timestamp = pic.pts;
         dest.nv12 = true;
         dest.decodeFence = m_d3d12Decoder->fence();
         dest.decodeFenceValue = pic.fenceValue;
-
-        // The picture sits in a macroblock-aligned surface; tell the shader
-        // how much of it is the picture.
-        if (pic.codedWidth > 0 && pic.codedHeight > 0) {
-            m_colorSpace.uvScaleX = (float)pic.width / (float)pic.codedWidth;
-            m_colorSpace.uvScaleY = (float)pic.height / (float)pic.codedHeight;
-        }
 
         m_decodedFrames.fetch_add(1);
         return true;
@@ -743,6 +773,48 @@ void VideoDecoder::readColorSpace(IMFMediaType* type) {
     }
 }
 
+// Colour signal from the SPS VUI.
+//
+// Every other path gets this from the Media Foundation decoder's output type,
+// which MF fills in from this same VUI. The D3D12 path has no decoder in the
+// pipeline and so no output type, and the container's own colour box is
+// optional and usually absent, so the VUI is read directly. Anything the
+// stream leaves unspecified keeps whatever readColorSpace already worked out.
+void VideoDecoder::applySpsColorSpace(const H264SPS& sps) {
+    if (!sps.valid || !sps.vui_present) return;
+
+    if (sps.video_full_range) {
+        m_colorSpace.yOffset = 0.0f;
+        m_colorSpace.yScale = 1.0f;
+        m_colorSpace.cOffset = 128.0f / 255.0f;
+        m_colorSpace.cScale = 1.0f;
+    } else {
+        m_colorSpace.yOffset = 16.0f / 255.0f;
+        m_colorSpace.yScale = 255.0f / 219.0f;
+        m_colorSpace.cOffset = 128.0f / 255.0f;
+        m_colorSpace.cScale = 255.0f / 224.0f;
+    }
+
+    if (!sps.colour_description_present) return;
+    switch (sps.matrix_coefficients) {
+    case 1:                                        // BT.709
+        m_colorSpace.kr = 0.2126f; m_colorSpace.kb = 0.0722f; break;
+    case 5:                                        // BT.470BG
+    case 6:                                        // SMPTE 170M -- both BT.601
+        m_colorSpace.kr = 0.299f;  m_colorSpace.kb = 0.114f;  break;
+    case 7:                                        // SMPTE 240M
+        m_colorSpace.kr = 0.212f;  m_colorSpace.kb = 0.087f;  break;
+    case 9:                                        // BT.2020 non-constant
+    case 10:                                       // BT.2020 constant
+        m_colorSpace.kr = 0.2627f; m_colorSpace.kb = 0.0593f; break;
+    default:
+        // 0 and 2 mean "unspecified", and 8 (YCgCo) is not a Y'CbCr matrix at
+        // all. Leave the resolution-based guess in place rather than picking
+        // a wrong one.
+        break;
+    }
+}
+
 int VideoDecoder::readableCount() const {
     std::lock_guard<std::mutex> lk(m_dealerMu);
     return (int)m_readable.size();
@@ -760,7 +832,10 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds, UINT64 curren
 
     if (timeChanged && m_display.timestamp >= 0) {
         double delta = timeSeconds - m_display.timestamp;
-        if (delta < -m_frameDuration || delta > 5.0) {
+        // Half a frame back, not a whole one: a single-frame step lands
+        // exactly on -frameDuration, and the frame it asks for has already
+        // been recycled, so a strict comparison leaves the picture unchanged.
+        if (delta < -m_frameDuration * 0.5 || delta > 5.0) {
             std::lock_guard<std::mutex> lk(m_seekMu);
             if (!m_seekRequested) {
                 if (m_verbose) printf("[VD:get] SEEK t=%.3f disp=%.3f\n", timeSeconds, m_display.timestamp);

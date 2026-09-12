@@ -33,10 +33,11 @@
 
 using Microsoft::WRL::ComPtr;
 
-// H.264 allows 16 reference frames; the rest of the pool covers the pictures
-// the renderer is holding (the decoder's frame pool plus the one on screen)
-// so a displayed frame is never overwritten while it is still visible.
-inline constexpr int D3D12_DEC_PIC_POOL = 24;
+// Ceiling on the picture pool: 16 reference frames, the pictures the renderer
+// is holding, and the one being decoded. The pool is actually sized per stream
+// from the SPS (see picCount()), because committing the ceiling for every clip
+// costs ~140 MB at 1080p and ~440 MB at 4K whatever the stream needs.
+inline constexpr int D3D12_DEC_PIC_POOL_MAX = 32;
 
 // Decode submissions in flight before the CPU has to wait for the oldest.
 inline constexpr int D3D12_DEC_RING = 4;
@@ -88,6 +89,15 @@ public:
     /** Give a picture back once the renderer has finished sampling it. */
     void releasePicture(ID3D12Resource* texture);
 
+    /**
+     * How many frames the caller should keep in its own pool.
+     *
+     * Pictures come out in decode order, so the caller has to be able to hold
+     * a whole reorder window at once; a pool shallower than that blocks the
+     * decode thread before the picture it is waiting for has been decoded.
+     */
+    int framePoolSize() const { return m_framePool; }
+
     /** Drop all decoded state. Called on seek, before the first new IDR. */
     void flush();
 
@@ -99,6 +109,15 @@ public:
     // Sizes from the active SPS; zero until the first parameter set arrives.
     uint32_t width() const { return m_dispWidth; }
     uint32_t height() const { return m_dispHeight; }
+
+    /**
+     * The parameter set the decoder is configured for.
+     *
+     * Its VUI is the only description of the colour signal on this path: with
+     * the Media Foundation decoder bypassed there is no output media type to
+     * read a nominal range or matrix off.
+     */
+    const H264SPS& activeSPS() const { return m_activeSps; }
 
     void setVerbose(bool v) { m_verbose = v; }
     void shutdown();
@@ -118,6 +137,7 @@ private:
         bool isReference() const { return shortTerm || longTerm; }
     };
 
+    static bool spsSupported(const H264SPS& sps, const char** why);
     bool createPictures(uint32_t codedWidth, uint32_t codedHeight);
     bool createDecoder(uint32_t codedWidth, uint32_t codedHeight);
     void ingestParameterSets(const std::vector<H264NalUnit>& nals);
@@ -168,9 +188,12 @@ private:
     size_t m_bitstreamStride = 0;            // bytes per ring region
     std::vector<uint8_t> m_staging;          // bitstream assembled here first
 
-    std::array<Picture, D3D12_DEC_PIC_POOL> m_pics;
-    std::array<ID3D12Resource*, D3D12_DEC_PIC_POOL> m_picTextures = {};
-    std::array<UINT, D3D12_DEC_PIC_POOL> m_picSubresources = {};
+    std::array<Picture, D3D12_DEC_PIC_POOL_MAX> m_pics;
+    std::array<ID3D12Resource*, D3D12_DEC_PIC_POOL_MAX> m_picTextures = {};
+    std::array<UINT, D3D12_DEC_PIC_POOL_MAX> m_picSubresources = {};
+    int m_picCount = 0;        // pictures actually allocated, from the SPS
+    int m_framePool = 4;       // frames the caller should pool
+    int m_reorderDepth = 0;
 
     // Parameter sets, by id. H.264 allows 32 SPS and 256 PPS.
     std::array<H264SPS, 32> m_sps;
@@ -189,7 +212,18 @@ private:
     uint32_t m_codedHeight = 0;
     uint32_t m_dispWidth = 0;
     uint32_t m_dispHeight = 0;
+    H264SPS  m_activeSps;
     UINT     m_statusReport = 0;
+
+    // Set when a parameter set describes something this decoder cannot do, so
+    // the refusal survives to the next decode call instead of being recomputed
+    // and forgotten. init() reports it and the caller falls back.
+    bool m_spsRefused = false;
+
+    // After a flush the decoded picture buffer is empty, so a picture that
+    // predicts from it would reference nothing. Pictures are dropped until a
+    // recovery point -- an IDR, or an intra picture for an open-GOP stream.
+    bool m_awaitingRecovery = true;
 
     bool m_initialized = false;
     bool m_lastFailed = false;

@@ -94,6 +94,31 @@ struct H264SPS {
     bool     frame_cropping = false;
     uint32_t crop_left = 0, crop_right = 0, crop_top = 0, crop_bottom = 0;
 
+    // VUI. Only the fields the renderer acts on are kept; the rest is parsed
+    // to be skipped. Without these the colour conversion falls back to a
+    // guess, and the reorder depth to the reference count.
+    bool     vui_present = false;
+    bool     video_full_range = false;
+    bool     colour_description_present = false;
+    uint8_t  colour_primaries = 2;          // 2 = unspecified
+    uint8_t  transfer_characteristics = 2;
+    uint8_t  matrix_coefficients = 2;
+    bool     bitstream_restriction = false;
+    uint8_t  max_num_reorder_frames = 0;
+    uint8_t  max_dec_frame_buffering = 0;
+
+    /**
+      * How many pictures the stream can hold back before one is displayable.
+      *
+      * The VUI says so outright when it carries a bitstream restriction.
+      * Failing that the reference count is the usable upper bound: a picture
+      * cannot be reordered past frames that are no longer references.
+      */
+    uint32_t reorderDepth() const {
+        if (bitstream_restriction) return max_num_reorder_frames;
+        return max_num_ref_frames;
+    }
+
     uint32_t maxFrameNum() const { return 1u << log2_max_frame_num; }
     uint32_t maxPocLsb() const { return 1u << log2_max_pic_order_cnt_lsb; }
 

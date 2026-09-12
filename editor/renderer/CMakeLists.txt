@@ -86,7 +86,7 @@ if(BUILD_TESTING)
     target_link_libraries(renderer-regression-tests PRIVATE
         d3d12 dxgi d3d11 dxguid mf mfplat mfreadwrite mfuuid windowscodecs ole32 propsys
     )
-    foreach(case buffers pool loader)
+    foreach(case buffers pool loader bitstream nal sps)
         add_test(NAME renderer-${case} COMMAND renderer-regression-tests ${case})
         set_tests_properties(renderer-${case} PROPERTIES TIMEOUT 15)
     endforeach()

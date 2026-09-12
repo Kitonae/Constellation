@@ -6,8 +6,8 @@ type Broadcaster interface {
 	BroadcastSnapshot(data []byte)
 	BroadcastTime(t float64)
 	BroadcastControl(command string)
-	BroadcastScreenOpen(screenID string, width, height int)
-	BroadcastScreenClose(screenID string)
+	SendScreenOpen(screenID string, width, height int)
+	SendScreenClose(screenID string)
 }
 
 // ProcessManager defines the renderer process lifecycle contract.

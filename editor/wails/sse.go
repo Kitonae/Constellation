@@ -13,8 +13,12 @@ import (
 
 // SSEClient represents one connected renderer process.
 type SSEClient struct {
-	ch      chan []byte // buffered; messages dropped if full
-	timeCh  chan []byte // single-slot channel for time events (latest wins)
+	// Which screen this renderer was launched for. Window commands are
+	// addressed to it: one process is launched per screen, so broadcasting
+	// a screen-open makes every other renderer open that screen's window too.
+	screenID string
+	ch       chan []byte // buffered; messages dropped if full
+	timeCh   chan []byte // single-slot channel for time events (latest wins)
 }
 
 // SSEHub fans out SSE events to all connected renderer clients.
@@ -22,6 +26,18 @@ type SSEHub struct {
 	mu           sync.Mutex
 	clients      map[*SSEClient]struct{}
 	lastSnapshot []byte // cached so new connections get it immediately
+
+	// A renderer launched mid-show has missed everything that came before it,
+	// and the transport is not re-sent until it next changes. Without these a
+	// renderer opened while paused sits at zero, and one opened while playing
+	// receives time ticks but never the play it needed to start its audio.
+	lastControl []byte
+	lastTime    []byte
+
+	// Window commands per screen, replayed on connect: the renderer is
+	// launched and told to open its screen before it has connected, so the
+	// live send always misses.
+	openScreens map[string][]byte
 
 	// Stats (atomic, lock-free)
 	statTimePushed  atomic.Int64
@@ -33,7 +49,10 @@ type SSEHub struct {
 
 // NewSSEHub creates a new SSE hub.
 func NewSSEHub() *SSEHub {
-	hub := &SSEHub{clients: make(map[*SSEClient]struct{})}
+	hub := &SSEHub{
+		clients:     make(map[*SSEClient]struct{}),
+		openScreens: make(map[string][]byte),
+	}
 	go hub.logStats()
 	return hub
 }
@@ -86,24 +105,41 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	screenID := r.URL.Query().Get("screen")
 	client := &SSEClient{
-		ch:     make(chan []byte, 64),
-		timeCh: make(chan []byte, 1),
+		screenID: screenID,
+		ch:       make(chan []byte, 64),
+		timeCh:   make(chan []byte, 1),
 	}
 
 	h.mu.Lock()
 	h.clients[client] = struct{}{}
 	snapshot := h.lastSnapshot
+	screenOpen := h.openScreens[screenID]
+	control := h.lastControl
+	lastTime := h.lastTime
 	h.mu.Unlock()
 
-	// Send cached snapshot on connect
+	// Catch the new renderer up, in the order it would have received things
+	// had it been connected: what to draw, which window to draw it in, whether
+	// the transport is running, and where the playhead is.
 	if snapshot != nil {
-		log.Printf("[SSE] Client connected, sending cached snapshot (%d bytes)", len(snapshot))
+		log.Printf("[SSE] Client for %q connected, sending cached snapshot (%d bytes)",
+			screenID, len(snapshot))
 		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", snapshot)
-		flusher.Flush()
 	} else {
-		log.Printf("[SSE] Client connected, no cached snapshot available")
+		log.Printf("[SSE] Client for %q connected, no cached snapshot available", screenID)
 	}
+	if screenOpen != nil {
+		w.Write(screenOpen)
+	}
+	if control != nil {
+		w.Write(control)
+	}
+	if lastTime != nil {
+		w.Write(lastTime)
+	}
+	flusher.Flush()
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -160,6 +196,7 @@ func (h *SSEHub) BroadcastTime(t float64) {
 	h.statTimePushed.Add(1)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.lastTime = msg
 	for client := range h.clients {
 		// Replace: drain old value, push new
 		select {
@@ -176,19 +213,50 @@ func (h *SSEHub) BroadcastTime(t float64) {
 // BroadcastControl sends a transport command (play/pause/stop) to all renderers.
 func (h *SSEHub) BroadcastControl(command string) {
 	msg := fmt.Appendf(nil, "event: control\ndata: %s\n\n", command)
+	h.mu.Lock()
+	h.lastControl = msg
+	h.mu.Unlock()
 	h.broadcast(msg)
 }
 
-// BroadcastScreenOpen tells renderers to open a window for a screen.
-func (h *SSEHub) BroadcastScreenOpen(screenID string, width, height int) {
+// SendScreenOpen tells one screen's renderer to open its window.
+//
+// Addressed rather than broadcast: a renderer that receives a screen-open
+// creates that window whether or not the screen is its own, so broadcasting
+// gave every running renderer a duplicate of every other screen. The message
+// is also kept for replay, because the renderer is launched and told to open
+// in the same breath and cannot yet be connected.
+func (h *SSEHub) SendScreenOpen(screenID string, width, height int) {
 	msg := fmt.Appendf(nil, "event: screen-open\ndata: {\"screenId\":%q,\"width\":%d,\"height\":%d}\n\n", screenID, width, height)
-	h.broadcast(msg)
+	h.mu.Lock()
+	h.openScreens[screenID] = msg
+	h.mu.Unlock()
+	h.sendToScreen(screenID, msg)
 }
 
-// BroadcastScreenClose tells renderers to close a screen window.
-func (h *SSEHub) BroadcastScreenClose(screenID string) {
+// SendScreenClose tells one screen's renderer to close its window.
+func (h *SSEHub) SendScreenClose(screenID string) {
 	msg := fmt.Appendf(nil, "event: screen-close\ndata: {\"screenId\":%q}\n\n", screenID)
-	h.broadcast(msg)
+	h.mu.Lock()
+	delete(h.openScreens, screenID)
+	h.mu.Unlock()
+	h.sendToScreen(screenID, msg)
+}
+
+func (h *SSEHub) sendToScreen(screenID string, msg []byte) {
+	h.statEventPushed.Add(1)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for client := range h.clients {
+		if client.screenID != screenID {
+			continue
+		}
+		select {
+		case client.ch <- msg:
+		default:
+			h.statDropped.Add(1)
+		}
+	}
 }
 
 func (h *SSEHub) broadcast(msg []byte) {
