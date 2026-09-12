@@ -64,7 +64,7 @@ export default function MediaRow({
       onDragEnd={clearDragClipId}
       title={asset.uri}
     >
-      <MediaThumb uri={asset.uri} alt={label} size={44} kind={kind} missing={missing} />
+      <MediaThumb uri={asset.uri} alt={label} format={asset.format} size={44} kind={kind} missing={missing} />
 
       <div className="media-row__body">
         {editing ? (

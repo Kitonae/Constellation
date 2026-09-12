@@ -5,10 +5,7 @@
 // returns a data URL. Results are cached by URI.
 
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
-import { resolveUriSync } from '../media/uri.js'
-import { extFromUri } from '../media/asset.js'
+import { loadModel, modelFormat } from './modelLoader.js'
 
 const THUMB_SIZE = 256
 const _cache = new Map() // uri → dataUrl
@@ -45,31 +42,6 @@ function getRenderer() {
   return { renderer: _renderer, scene: _scene, camera: _camera }
 }
 
-// One resolver for model URLs. The hand-rolled version here decoded the path
-// and never re-encoded it, so any model in a folder with a space failed to
-// load; media/uri.js already gets this right.
-const resolveUrl = (uri) => resolveUriSync(uri) || null
-
-async function loadModel(uri) {
-  const url = resolveUrl(uri)
-  if (!url) throw new Error('Cannot resolve model URL')
-
-  const ext = extFromUri(uri)
-
-  if (ext === 'obj') {
-    const loader = new OBJLoader()
-    return new Promise((resolve, reject) => {
-      loader.load(url, resolve, undefined, reject)
-    })
-  }
-
-  // Default: GLTF/GLB
-  const loader = new GLTFLoader()
-  return new Promise((resolve, reject) => {
-    loader.load(url, (gltf) => resolve(gltf.scene), undefined, reject)
-  })
-}
-
 function frameModel(object, camera) {
   // Compute bounding box and position camera to frame it
   const box = new THREE.Box3().setFromObject(object)
@@ -99,18 +71,20 @@ function frameModel(object, camera) {
  * @param {string} uri - model URI (file://, http://, etc.)
  * @returns {Promise<string|null>} data URL or null on failure
  */
-export async function generateModelThumbnail(uri) {
+export async function generateModelThumbnail(uri, formatHint = '') {
   if (!uri) return null
 
+  const key = `${uri}\n${modelFormat(uri, formatHint)}`
+
   // Check cache
-  if (_cache.has(uri)) return _cache.get(uri)
+  if (_cache.has(key)) return _cache.get(key)
 
   // Deduplicate concurrent requests
-  if (_pending.has(uri)) return _pending.get(uri)
+  if (_pending.has(key)) return _pending.get(key)
 
   const promise = (async () => {
     try {
-      const model = await loadModel(uri)
+      const model = await loadModel(uri, formatHint)
       const { renderer, scene, camera } = getRenderer()
 
       // Clear previous model from scene (keep lights)
@@ -144,18 +118,17 @@ export async function generateModelThumbnail(uri) {
         }
       })
 
-      _cache.set(uri, dataUrl)
+      _cache.set(key, dataUrl)
       return dataUrl
     } catch (err) {
       console.warn('[ModelThumb] Failed to generate thumbnail:', err)
-      _cache.set(uri, null)
       return null
     } finally {
-      _pending.delete(uri)
+      _pending.delete(key)
     }
   })()
 
-  _pending.set(uri, promise)
+  _pending.set(key, promise)
   return promise
 }
 
@@ -164,7 +137,9 @@ export async function generateModelThumbnail(uri) {
  */
 export function clearModelThumbnailCache(uri) {
   if (uri) {
-    _cache.delete(uri)
+    for (const key of _cache.keys()) {
+      if (key.startsWith(`${uri}\n`)) _cache.delete(key)
+    }
   } else {
     _cache.clear()
   }

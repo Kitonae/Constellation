@@ -28,7 +28,6 @@ export default React.memo(function MediaBin() {
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const setSelectedMedia = useEditorStore((s) => s.setSelectedMedia)
   const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
-  const addModelNode = useEditorStore((s) => s.addModelNode)
 
   const [view, setView] = usePersistentState('mediabin.view', DEFAULT_VIEW)
   const [menu, setMenu] = useState(null)
@@ -64,9 +63,9 @@ export default React.memo(function MediaBin() {
   const onImportFiles = useCallback(async () => { await importEntries(await openMediaFiles()) }, [])
   const onImportFolder = useCallback(async () => { await importEntries(await openMediaFolder()) }, [])
 
-  const insertAtPlayhead = useCallback((clipId) => {
+  const insertAsset = useCallback((asset) => {
     const st = useEditorStore.getState()
-    const id = st.addClipToTimeline({ clipId, startAt: st.time })
+    const id = st.addClipToTimeline({ clipId: asset.id, startAt: st.time })
     if (id) st.setSelectedClips([id])
   }, [])
 
@@ -96,21 +95,21 @@ export default React.memo(function MediaBin() {
     }
     const uses = clipInstancesOf(st.project, asset.id).length
     return [
-      { label: 'Insert at Playhead', icon: 'add', onClick: () => insertAtPlayhead(asset.id) },
+      { label: 'Insert at Playhead', icon: 'add', onClick: () => insertAsset(asset) },
       ...(uses ? [{ label: `Select ${uses} Clip${uses === 1 ? '' : 's'}`, icon: 'select_all', onClick: () => setSelectedClips(clipInstancesOf(st.project, asset.id).map((m) => m.id)) }] : []),
       { separator: true },
       { label: 'Rename', icon: 'edit', onClick: () => setRenamingId(asset.id) },
       { label: 'Relink…', icon: 'link', onClick: () => relinkAsset(asset.id) },
       ...(canReveal ? [{ label: 'Reveal in Explorer', icon: 'folder_open', onClick: () => revealAsset(asset) }] : []),
       { label: 'Duplicate', icon: 'content_copy', onClick: () => st.duplicateMedia(asset.id) },
-      ...(asset._kind === 'model' ? [{ label: 'Add to Scene', icon: 'view_in_ar', onClick: () => addModelNode({ name: asset.name, uri: asset.uri }) }] : []),
+      ...(asset._kind === 'model' ? [{ label: 'Add as Stage Geometry', icon: 'view_in_ar', onClick: () => st.addModelNode({ name: asset.name, uri: asset.uri, format: asset.format }) }] : []),
       { separator: true },
       { label: 'Add Files…', icon: 'upload_file', onClick: onImportFiles },
       { label: 'Add Folder…', icon: 'folder_open', onClick: onImportFolder },
       { separator: true },
       { label: 'Remove', icon: 'delete', danger: true, onClick: () => removeAsset(asset) },
     ]
-  }, [onImportFiles, onImportFolder, insertAtPlayhead, removeAsset, addModelNode, setSelectedClips])
+  }, [onImportFiles, onImportFolder, insertAsset, removeAsset, setSelectedClips])
 
   const total = media?.length || 0
 
@@ -181,7 +180,7 @@ export default React.memo(function MediaBin() {
               uses={useCounts.get(m.id) || 0}
               renaming={renamingId === m.id}
               onSelect={() => setSelectedMedia(m.id)}
-              onInsert={() => insertAtPlayhead(m.id)}
+              onInsert={() => insertAsset(m)}
               onRenameStart={() => setRenamingId(m.id)}
               onRenameEnd={(name) => {
                 setRenamingId(null)

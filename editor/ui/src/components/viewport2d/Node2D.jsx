@@ -147,13 +147,14 @@ export default function Node2D({
 function ModelNode2D({ node, x, y, ratio, isSelected, onSelect, children }) {
   const [thumb, setThumb] = useState(null)
   const uri = node.kind?.uri
+  const format = node.kind?.format || node.name
 
   useEffect(() => {
     if (!uri) return
     let cancelled = false
-    generateModelThumbnail(uri).then((url) => { if (!cancelled) setThumb(url) })
+    generateModelThumbnail(uri, format).then((url) => { if (!cancelled) setThumb(url) })
     return () => { cancelled = true }
-  }, [uri])
+  }, [uri, format])
 
   const sz = Math.max(40, 80 * ratio)
   const borderColor = isSelected ? 'var(--accent-yellow)' : 'var(--model)'

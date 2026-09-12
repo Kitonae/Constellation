@@ -571,6 +571,8 @@ static void testEventQueue() {
     check(!queue.tryPop().has_value(), "tryPop returned more than was pushed");
 }
 
+void testModel();
+
 int main(int argc, char** argv) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
@@ -587,6 +589,7 @@ int main(int argc, char** argv) {
         else if (name == "snappy") testSnappy();
         else if (name == "hap") testHap();
         else if (name == "events") testEventQueue();
+        else if (name == "model") testModel();
         else check(false, "unknown test");
         printf("PASS: %s\n", argv[1]);
     } catch (const std::exception& e) {

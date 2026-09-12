@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -196,6 +198,16 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // BroadcastSnapshot sends a full project snapshot to all connected renderers.
 func (h *SSEHub) BroadcastSnapshot(data []byte) {
+	// Documents are indented for saving. SSE only carries lines prefixed with
+	// "data:", so sending those bytes verbatim delivered just "{" to native
+	// renderers. Compact once for both live delivery and replay on connection;
+	// the document kept by the editor remains formatted and unchanged.
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, data); err != nil {
+		log.Printf("[SSE] Ignoring invalid document snapshot: %v", err)
+		return
+	}
+	data = compact.Bytes()
 	msg := fmt.Appendf(nil, "event: snapshot\ndata: %s\n\n", data)
 	h.mu.Lock()
 	h.lastSnapshot = data

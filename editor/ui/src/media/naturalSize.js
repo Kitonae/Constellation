@@ -11,6 +11,7 @@
 import { resolveUriSync } from './uri.js'
 import { getVideoMetadata } from '../utils/videoUtils.js'
 import { assetKind, hasNaturalSize } from './kind.js'
+import { MODEL_CONTENT_SIZE } from './modelContent.js'
 
 /** uri -> { w, h } | null (resolved), or a Promise while in flight. */
 const cache = new Map()
@@ -66,6 +67,11 @@ export function getNaturalSize(uri, kindHint) {
     return hit instanceof Promise ? hit : Promise.resolve(hit)
   }
   const kind = kindHint || assetKind(key)
+  if (kind === 'model') {
+    const size = { w: MODEL_CONTENT_SIZE, h: MODEL_CONTENT_SIZE }
+    cache.set(key, size)
+    return Promise.resolve(size)
+  }
   if (!hasNaturalSize(kind)) {
     cache.set(key, null)
     return Promise.resolve(null)

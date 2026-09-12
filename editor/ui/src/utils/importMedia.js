@@ -9,7 +9,7 @@
 import { useEditorStore } from '../store.js'
 import { getVideoMetadata } from './videoUtils.js'
 import { toFileUri } from '../media/uri.js'
-import { isImportableFile, isVideoName, isModelName, baseName } from '../media/asset.js'
+import { isImportableFile, isVideoName, isModelName, baseName, extFromUri } from '../media/asset.js'
 
 const DEFAULT_CLIP_SECONDS = 10
 
@@ -61,7 +61,7 @@ export async function importEntries(entries) {
       }
       if (!uri) { skipped.push({ name, reason: 'could not resolve a path' }); continue }
 
-      let duration = isModelName(name) ? 0 : DEFAULT_CLIP_SECONDS
+      let duration = DEFAULT_CLIP_SECONDS
       if (isVideoName(name)) {
         try {
           const meta = await getVideoMetadata(file || uri)
@@ -73,7 +73,9 @@ export async function importEntries(entries) {
       }
 
       const id = `clip-${Math.random().toString(36).slice(2, 8)}`
-      useEditorStore.getState().addMediaClip({ id, name, uri, duration_seconds: duration })
+      useEditorStore.getState().addMediaClip({ id, name, uri, duration_seconds: duration,
+        ...(isModelName(name) ? { format: extFromUri(name) } : {}),
+      })
       added.push(id)
     }
   } catch (e) {

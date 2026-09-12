@@ -13,7 +13,7 @@ export default function useMediaBinView(media, view) {
     const q = (view.query || '').trim().toLowerCase()
     const kinds = view.kinds || []
 
-    let out = media.map((m) => ({ ...m, _kind: assetKind(m.uri || m.name || '') }))
+    let out = media.map((m) => ({ ...m, _kind: assetKind(m) }))
 
     if (q) out = out.filter((m) => (baseName(m.name) || m.name || m.id).toLowerCase().includes(q))
     if (kinds.length) out = out.filter((m) => kinds.includes(m._kind))

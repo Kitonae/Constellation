@@ -13,6 +13,7 @@ import { getActiveClips, getClipSourceTime, getClipOpacity } from './timeline.js
 import { extFromUri, isVideo as isVideoAsset } from './asset.js'
 import { resolveUriSync } from './uri.js'
 import { effectsToTransforms, chainToCSS } from './transform.js'
+import { assetKind } from './kind.js'
 
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mpg', 'mpeg', 'hevc', 'h265', '265', 'ts', 'mts'])
 
@@ -138,7 +139,7 @@ export function buildFromTimeline(timeline, assets, time, opts = {}) {
 
     const ext = extFromUri(uri) || extFromUri(asset.name || '')
     const isVideo = VIDEO_EXTS.has(ext) || isVideoAsset(asset)
-    const mediaType = isVideo ? 'video' : (asset.type || 'image')
+    const mediaType = assetKind(asset) === 'model' ? 'model' : (isVideo ? 'video' : (asset.type || 'image'))
 
     const sourceTime = isVideo ? getClipSourceTime(clip, time) : 0
 

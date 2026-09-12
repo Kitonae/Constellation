@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "thumbnail.h"
 #include "video_decoder.h"
+#include "model_source.h"
 
 #include <mfapi.h>
 #include <wincodec.h>
@@ -209,6 +210,18 @@ int runProbe(const std::string& inPath) {
 int runThumbnail(const std::string& inPath, const std::string& outPng,
                  double timeSeconds, uint32_t maxDim) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (isModelFile(inPath)) {
+        std::vector<uint8_t> pixels;
+        std::string error;
+        bool ok = renderModelFile(inPath, maxDim, pixels, error);
+        if (ok) {
+            for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i+2]);
+            ok = writePng(outPng, pixels, maxDim, maxDim);
+        }
+        if (!ok) fprintf(stderr, "model render: %s\n", error.empty() ? "cannot write PNG" : error.c_str());
+        CoUninitialize();
+        return ok ? 0 : 1;
+    }
     MFStartup(MF_VERSION);
 
     int rc = 1;

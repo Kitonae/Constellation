@@ -18,7 +18,7 @@ export default function ClipSection({ tm, asset }) {
   const setSelectedMedia = useEditorStore((s) => s.setSelectedMedia)
   const [keepAR, setKeepAR] = useState(true)
 
-  const kind = assetKind(asset?.uri || asset?.name || '')
+  const kind = assetKind(asset)
   // Probing now understands video, so Size no longer reads 0 for one.
   const natural = useMediaNaturalSize(asset?.uri, kind)
 

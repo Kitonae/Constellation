@@ -3,6 +3,8 @@ import { resolveUriSync } from '../media/uri.js'
 import { resolveFileUrl } from '../utils/videoUtils.js'
 import { getNaturalSize } from '../media/naturalSize.js'
 import { assetKind } from '../media/kind.js'
+import { getModelContent, MODEL_CONTENT_SIZE } from '../media/modelContent.js'
+import { useEditorStore } from '../store.js'
 
 /**
  * Preloads natural sizes and render sources for the 2D viewport's clips.
@@ -26,7 +28,19 @@ export default function useImageMetaLoader(placements, imageMeta, setImageMeta) 
         // keeps the id and changes the URI, and an entry that was skipped on
         // id alone kept showing the old file at the old size.
         if (imageMeta[tm.clip_id]?.uri === clip.uri) continue
-        const kind = assetKind(clip.uri) === 'unknown' ? assetKind(clip.name || '') : assetKind(clip.uri)
+        const kind = assetKind(clip)
+        if (kind === 'model') {
+          try {
+            const content = await getModelContent(clip.uri, clip.format || clip.name)
+            if (!cancelled) setImageMeta((m) => ({ ...m, [tm.clip_id]: { uri: clip.uri, ...content } }))
+          } catch (error) {
+            if (!cancelled) {
+              setImageMeta((m) => ({ ...m, [tm.clip_id]: { uri: clip.uri, w: MODEL_CONTENT_SIZE, h: MODEL_CONTENT_SIZE, src: null } }))
+              useEditorStore.getState().addLog({ level: 'error', message: `Cannot render ${clip.name}: ${error.message || error}` })
+            }
+          }
+          continue
+        }
         const size = await getNaturalSize(clip.uri, kind)
         if (cancelled) return
         const src = kind === 'video' ? resolveFileUrl(clip.uri) : resolveUriSync(clip.uri)

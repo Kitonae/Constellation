@@ -16,7 +16,7 @@ import { buildFromTimeline, walkTopology } from './topology.js'
  * @property {string} clipId        - TimelineClip.id
  * @property {string} assetId       - MediaAsset.id
  * @property {string} src           - resolved playable URL
- * @property {'image'|'video'|'audio'|'unknown'} mediaType
+ * @property {'image'|'video'|'audio'|'model'|'unknown'} mediaType
  * @property {number} x             - position X (pixels from center)
  * @property {number} y             - position Y (pixels from center)
  * @property {number} width         - display width (0 = natural)

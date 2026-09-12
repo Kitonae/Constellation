@@ -43,7 +43,7 @@ export async function resolveImageSrc(uri, mimeHint = 'image/*') {
  * rendered as the same grey word, so there was no way to tell a broken link
  * from an unsupported codec.
  */
-export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill = false, kind: kindProp, mimeHint, missing = false }) {
+export default React.memo(function MediaThumb({ uri, size = 48, alt = '', format, fill = false, kind: kindProp, mimeHint, missing = false }) {
   const [src, setSrc] = useState(null)
   const [error, setError] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -74,9 +74,10 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
     async function load() {
       if (kind === 'model') {
         try {
-          const thumb = await generateModelThumbnail(uri)
+          const thumb = await generateModelThumbnail(uri, format || alt)
           if (cancelled) return
           setSrc(thumb)
+          setError(!thumb)
         } catch (e) {
           if (cancelled) return
           console.warn('Failed to generate model thumbnail', e)
@@ -108,7 +109,7 @@ export default React.memo(function MediaThumb({ uri, size = 48, alt = '', fill =
     }
     load()
     return () => { cancelled = true }
-  }, [uri, mime, kind, alt])
+  }, [uri, mime, kind, alt, format])
 
   const box = {
     width: fill ? '100%' : size,

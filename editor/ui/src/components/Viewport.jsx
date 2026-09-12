@@ -4,7 +4,7 @@ import { OrbitControls, TransformControls, Edges, useGLTF } from '@react-three/d
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { useEditorStore } from '../store.js'
 import { resolveUriSync } from '../media/uri.js'
-import { extFromUri } from '../media/asset.js'
+import { configureModelLoader, modelFormat } from '../utils/modelLoader.js'
 
 // media/uri.js is the single resolver; the local copy here decoded the path
 // without re-encoding it, so model paths containing spaces never loaded.
@@ -16,20 +16,20 @@ const resolveModelUrl = (uri) => resolveUriSync(uri) || null
 const PX_PER_UNIT = 1000
 
 function GltfModel({ url }) {
-  const { scene } = useGLTF(url)
+  const { scene } = useGLTF(url, true, true, configureModelLoader)
   const cloned = useMemo(() => scene.clone(true), [scene])
   return <primitive object={cloned} />
 }
 
 function ObjModel({ url }) {
-  const obj = useLoader(OBJLoader, url)
+  const obj = useLoader(OBJLoader, url, configureModelLoader)
   const cloned = useMemo(() => obj.clone(true), [obj])
   return <primitive object={cloned} />
 }
 
-function ModelMesh({ uri }) {
+function ModelMesh({ uri, format }) {
   const url = resolveModelUrl(uri)
-  const ext = useMemo(() => extFromUri(uri), [uri])
+  const ext = modelFormat(uri, format)
 
   if (!url) return <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>
 
@@ -111,7 +111,7 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
     const content = (
       <group ref={group} position={[position.x, position.y, position.z]} quaternion={[rotation.x, rotation.y, rotation.z, rotation.w]} scale={[scale.x, scale.y, scale.z]}>
         <Suspense fallback={<mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>}>
-          <ModelMesh uri={node.kind.uri} />
+          <ModelMesh uri={node.kind.uri} format={node.kind.format || node.name} />
         </Suspense>
         {isSelected && (
           <mesh onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}>
@@ -147,7 +147,7 @@ function StageNode({ node, selectedId, gizmoMode, onSelect, onTransform }) {
         onPointerDown={(e) => { e.stopPropagation(); onSelect(node.id) }}
       >
         <Suspense fallback={<mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial color="#a78bfa" wireframe /></mesh>}>
-          <ModelMesh uri={node.kind.uri} />
+          <ModelMesh uri={node.kind.uri} format={node.kind.format || node.name} />
         </Suspense>
         {children}
       </group>

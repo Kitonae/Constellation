@@ -29,6 +29,8 @@ add_executable(constellation-renderer
     src/thumbnail.cpp
     src/video_buffer.cpp
     src/media_loader.cpp
+    src/model_source.cpp
+    src/model_render.cpp
     src/audio_player.cpp
     src/ndi_sender.cpp
     src/debug_text.cpp
@@ -79,6 +81,7 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(renderer-regression-tests
         tests/regression.cpp
+        tests/model.cpp
         src/video_buffer.cpp
         src/video_decoder.cpp
         src/h264_parser.cpp
@@ -86,13 +89,15 @@ if(BUILD_TESTING)
         src/snappy_decode.cpp
         src/hap_decoder.cpp
         src/media_loader.cpp
+        src/model_source.cpp
+        src/model_render.cpp
     )
     target_include_directories(renderer-regression-tests PRIVATE src)
     target_link_libraries(renderer-regression-tests PRIVATE
-        d3d12 dxgi d3d11 dxguid mf mfplat mfreadwrite mfuuid windowscodecs ole32 propsys
+        d3d12 dxgi d3d11 d3dcompiler dxguid mf mfplat mfreadwrite mfuuid windowscodecs ole32 propsys
         nlohmann_json::nlohmann_json
     )
-    foreach(case buffers pool loader bitstream nal sps snappy hap events)
+    foreach(case buffers pool loader bitstream nal sps snappy hap events model)
         add_test(NAME renderer-${case} COMMAND renderer-regression-tests ${case})
         set_tests_properties(renderer-${case} PROPERTIES TIMEOUT 15)
     endforeach()

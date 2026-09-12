@@ -17,7 +17,7 @@ export default function MediaAssetSection({ asset }) {
   const project = useEditorStore((s) => s.project)
   const renameMedia = useEditorStore((s) => s.renameMedia)
   const setSelectedClips = useEditorStore((s) => s.setSelectedClips)
-  const kind = assetKind(asset.uri || asset.name || '')
+  const kind = assetKind(asset)
   const natural = useMediaNaturalSize(asset.uri, kind)
   const exists = useFileExists(asset.uri)
   const uses = clipInstancesOf(project, asset.id)

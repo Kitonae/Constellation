@@ -1,12 +1,95 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Decode the SSE data fields as the renderer does. Searching the response
+// body for JSON text misses broken framing: unprefixed lines are discarded.
+func readSnapshotEvent(t *testing.T, reader *bufio.Reader) []byte {
+	t.Helper()
+	var event string
+	var data []string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		if line == "" {
+			if event == "snapshot" {
+				return []byte(strings.Join(data, "\n"))
+			}
+			event, data = "", nil
+		} else if strings.HasPrefix(line, "event:") {
+			event = strings.TrimPrefix(strings.TrimPrefix(line, "event:"), " ")
+		} else if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+	}
+}
+
+func TestSSEHub_DocumentSnapshotsReachRenderers(t *testing.T) {
+	// Use the canonical, indented serialization sent by App.UpdateShow.
+	doc, err := ParseDocument([]byte(`{"project":{
+		"name":"Statue\nshow", "scene":{"roots":[]},
+		"media":[{"id":"model","name":"statue.glb","uri":"file:///C:/models/statue.glb"}],
+		"timeline":{"tracks":[{"media":[{"id":"placement","clip_id":"model","start":0,"duration":10}]}]}
+	}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "\n") {
+		t.Fatal("fixture must use formatted document JSON")
+	}
+	var want any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, replay := range []bool{false, true} {
+		name := "live update"
+		if replay {
+			name = "cached replay"
+		}
+		t.Run(name, func(t *testing.T) {
+			hub := NewSSEHub()
+			if replay {
+				hub.BroadcastSnapshot(raw)
+			}
+			srv := httptest.NewServer(hub)
+			defer srv.Close()
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Get(srv.URL + "/sse/renderer?screen=model-screen")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if !replay {
+				hub.BroadcastSnapshot(raw)
+			}
+			payload := readSnapshotEvent(t, bufio.NewReader(resp.Body))
+			var got any
+			if err := json.Unmarshal(payload, &got); err != nil {
+				t.Fatalf("renderer received invalid JSON: %v; payload=%q", err, payload)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("renderer lost document content: %s", payload)
+			}
+		})
+	}
+}
 
 func TestSSEHub_BroadcastSnapshot_CachesLast(t *testing.T) {
 	hub := NewSSEHub()
@@ -18,6 +101,20 @@ func TestSSEHub_BroadcastSnapshot_CachesLast(t *testing.T) {
 
 	if got != `{"test":"data"}` {
 		t.Errorf("expected cached snapshot, got %q", got)
+	}
+}
+
+func TestSSEHub_InvalidSnapshotPreservesLastDocument(t *testing.T) {
+	hub := NewSSEHub()
+	hub.BroadcastSnapshot([]byte(`{"project":{"name":"Working show"}}`))
+	client := &SSEClient{ch: make(chan []byte, 1)}
+	hub.clients[client] = struct{}{}
+	hub.BroadcastSnapshot([]byte("{"))
+	if len(client.ch) != 0 {
+		t.Fatal("invalid snapshot was sent to the renderer")
+	}
+	if string(hub.lastSnapshot) != `{"project":{"name":"Working show"}}` {
+		t.Fatalf("invalid snapshot replaced the cached document: %q", hub.lastSnapshot)
 	}
 }
 

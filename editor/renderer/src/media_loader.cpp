@@ -1,5 +1,6 @@
 #include "media_loader.h"
 #include "uri_util.h"
+#include "model_source.h"
 
 #include <objbase.h>
 #include <wincodec.h>
@@ -122,6 +123,16 @@ void MediaLoader::threadMain() {
 }
 
 bool MediaLoader::decodeImageFile(const std::string& uri, Ready& out) {
+    if (isModelFile(uri)) {
+        std::string error;
+        if (!renderModelFile(uriToPath(uri), MODEL_CONTENT_SIZE, out.rgba, error)) {
+            fprintf(stderr, "[Model] %s: %s\n", uri.c_str(), error.c_str());
+            return false;
+        }
+        out.width = out.height = MODEL_CONTENT_SIZE;
+        printf("[Model] Rendered %s (%ux%u)\n", uri.c_str(), out.width, out.height);
+        return true;
+    }
     ComPtr<IWICImagingFactory> factory;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(&factory)))) return false;

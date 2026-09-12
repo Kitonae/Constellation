@@ -267,13 +267,14 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     get().markClean()
   },
   // Add a generic media clip to the project's media bin
-  addMediaClip: ({ id, name, uri, duration_seconds }) => set((s) => {
+  addMediaClip: ({ id, name, uri, duration_seconds, format }) => set((s) => {
     const clip = {
       id: id || `clip-${Math.random().toString(36).slice(2, 8)}`,
       name: name || 'Clip',
       uri,
       duration_seconds: duration_seconds ?? 10,
       added_at: Date.now(),
+      ...(format ? { format } : {}),
     }
     const baseProj = s.project ?? defaultProject(s.scene)
     const nextProj = { ...baseProj, media: [...(baseProj.media ?? []), clip] }
@@ -297,7 +298,10 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     if (!s.project) return null
     const clip = (s.project.media || []).find((m) => m.id === clipId)
     if (!clip) return null
-    const dur = numOr(duration, numOr(clip.duration_seconds, 10))
+    // Older imports stored models with zero duration. A newly placed source
+    // still needs a visible interval, just like an image.
+    const sourceDuration = numOr(clip.duration_seconds, 10)
+    const dur = numOr(duration, sourceDuration > 0 ? sourceDuration : 10)
     const startTime = numOr(startAt, currentTime(s))
     // No per-screen association; leave target empty
     const tm = {
@@ -937,7 +941,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     },
     _undoLabel: enabled ? 'Enable Screen' : 'Disable Screen',
   })),
-  addModelNode: ({ name, uri, position, scale }) => set((s) => {
+  addModelNode: ({ name, uri, format, position, scale }) => set((s) => {
     const scene = s.scene || { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
     const id = `model-${Math.random().toString(36).slice(2, 8)}`
     const node = {
@@ -949,7 +953,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
         scale: scale || { x: 1, y: 1, z: 1 },
       },
       children: [],
-      kind: { type: 'model', uri },
+      kind: { type: 'model', uri, ...(format ? { format } : {}) },
     }
     const nextScene = { ...scene, roots: [...(scene.roots || []), node] }
     const proj = s.project || defaultProject(nextScene)

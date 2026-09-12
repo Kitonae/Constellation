@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { resolveImageSrc } from './MediaThumb.jsx'
 import { resolveFileUrl } from '../utils/videoUtils.js'
 import { computeRenderList, computeItemLayout, screenOffset } from '../media/renderer.js'
+import { getModelContent, MODEL_CONTENT_SIZE } from '../media/modelContent.js'
 
 export default function DisplayWindow() {
   const params = new URLSearchParams(window.location.search)
@@ -146,6 +147,16 @@ export default function DisplayWindow() {
         // Keyed by asset id, but only current while the URI matches:
         // relinking keeps the id and changes the URI.
         if (imageMeta[item.assetId]?.uri === uriStr) continue
+        if (item.mediaType === 'model') {
+          try {
+            const content = await getModelContent(uriStr, item.asset?.format || item.asset?.name)
+            if (!cancelled) setImageMeta((m) => ({ ...m, [item.assetId]: { uri: uriStr, ...content } }))
+          } catch (error) {
+            console.error('Cannot render model', error)
+            if (!cancelled) setImageMeta((m) => ({ ...m, [item.assetId]: { uri: uriStr, w: MODEL_CONTENT_SIZE, h: MODEL_CONTENT_SIZE, src: null } }))
+          }
+          continue
+        }
         if (item.mediaType === 'video') {
           if (!uriStr.startsWith('blob:')) {
             try {
