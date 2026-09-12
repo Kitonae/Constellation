@@ -316,3 +316,14 @@ func TestSSEHub_ScreenOpenCarriesPlacementOnlyWhenPositioned(t *testing.T) {
 		}
 	}
 }
+
+// A pretty-printed document has newlines in it. One data: line cannot carry
+// them; every line has to be its own data: field or the renderer reads only
+// the first line.
+func TestSSEEvent_MultilinePayloadUsesOneDataFieldPerLine(t *testing.T) {
+	got := string(sseEvent("snapshot", []byte("{\n  \"a\": 1\n}")))
+	want := "event: snapshot\ndata: {\ndata:   \"a\": 1\ndata: }\n\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

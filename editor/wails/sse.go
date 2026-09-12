@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net/http"
@@ -140,7 +141,7 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if snapshot != nil {
 		log.Printf("[SSE] Client for %q connected, sending cached snapshot (%d bytes)",
 			screenID, len(snapshot))
-		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", snapshot)
+		w.Write(sseEvent("snapshot", snapshot))
 	} else {
 		log.Printf("[SSE] Client for %q connected, no cached snapshot available", screenID)
 	}
@@ -194,9 +195,24 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sseEvent formats one event. The document arrives pretty-printed, and a
+// newline inside a single data: line ends that line's payload as far as the
+// event-stream format is concerned: the renderers were parsing "{" and
+// drawing nothing. Every line of the payload is its own data: field, which
+// the receiver joins back with newlines.
+func sseEvent(name string, data []byte) []byte {
+	msg := fmt.Appendf(nil, "event: %s\n", name)
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		msg = append(msg, "data: "...)
+		msg = append(msg, bytes.TrimSuffix(line, []byte("\r"))...)
+		msg = append(msg, '\n')
+	}
+	return append(msg, '\n')
+}
+
 // BroadcastSnapshot sends a full project snapshot to all connected renderers.
 func (h *SSEHub) BroadcastSnapshot(data []byte) {
-	msg := fmt.Appendf(nil, "event: snapshot\ndata: %s\n\n", data)
+	msg := sseEvent("snapshot", data)
 	h.mu.Lock()
 	h.lastSnapshot = data
 	h.mu.Unlock()
