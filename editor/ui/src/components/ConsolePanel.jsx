@@ -66,7 +66,7 @@ export default function ConsolePanel() {
           <button onClick={clearLogs}>Clear</button>
         </div>
       </div>
-      <div ref={listRef} style={{ overflow:'auto', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12, color:'var(--text-secondary)' }}>
+      <div ref={listRef} className="selectable" style={{ overflow:'auto', fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize:12, color:'var(--text-secondary)' }}>
         {items.length === 0 && <div style={{ opacity:0.7, padding:8 }}>No logs yet.</div>}
         {items.map((l) => (
           <div key={l.id} style={{ display:'flex', gap:8, padding:'2px 8px' }}>

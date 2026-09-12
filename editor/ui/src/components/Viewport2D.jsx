@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react'
 import { useEditorStore } from '../store.js'
-import { computeOverlaps, computeFadeOpacity, buildFilterString } from '../utils/mediaUtils.js'
+import { computeOverlaps, computeFadeOpacity, buildFilterString, describeClipEffects } from '../utils/mediaUtils.js'
 import { extFromUri, mediaTypeFromExt , baseName} from '../media/asset.js'
 import useClipVisibilitySync from '../hooks/useClipVisibilitySync.js'
 import useImageMetaLoader from '../hooks/useImageMetaLoader.js'
@@ -121,7 +121,22 @@ function Viewport2D() {
     dragClipRef.current = null
     setDragClip(null)
     setSnapGuides(null)
-    if (!d?.isDragging) return
+    if (!d) return
+    if (!d.isDragging) {
+      // A click, not a drag: select, with Ctrl toggling. This has to happen
+      // here and not in the element's own pointerup, because the window
+      // failsafe below captures pointerup and so runs first, and it had
+      // already cleared the drag record by the time the element looked for
+      // it. Clicking a clip therefore never selected anything.
+      const st = useEditorStore.getState()
+      if (d.modifiers?.ctrl) {
+        const cur = st.selectedClipIds
+        st.setSelectedClips(cur.includes(d.primaryId) ? cur.filter((x) => x !== d.primaryId) : [...cur, d.primaryId])
+      } else {
+        st.setSelectedClips([d.primaryId])
+      }
+      return
+    }
     const patches = Object.entries(d.targets)
       .filter(([, v]) => v.currentX !== undefined)
       .map(([id, v]) => ({ timelineId: id, position: { x: v.currentX, y: v.currentY } }))
@@ -546,11 +561,6 @@ function Viewport2D() {
         <div
           ref={stageRef}
           style={{ position: 'relative', width: STAGE_W, height: STAGE_H, ...gridBg(gridStyle, center, zoom, themeId) }}
-          onClick={(e) => {
-            if (draggedRef.current || e.ctrlKey || e.shiftKey) return
-            setSelected(null)
-            setSelectedClips([])
-          }}
           onPointerDown={(e) => {
             if (e.button !== 0) return
             if (tool === 'hand' || (e.ctrlKey && e.altKey)) return
@@ -590,7 +600,19 @@ function Viewport2D() {
               height: Math.abs(marquee.y2 - marquee.y1),
             }
             setMarquee(null)
-            if (!draggedRef.current) return
+            if (!draggedRef.current) {
+              // A plain click on empty stage clears the selection. This used
+              // to live in an onClick on the stage, but `click` bubbles from
+              // clips and screens even though their pointerdown does not, so
+              // selecting anything by clicking was undone a moment later.
+              // Here the pointerdown already proved the target was the stage
+              // itself. Shift, Alt and Ctrl clicks leave the selection alone.
+              if (marquee.mode === 'replace' && !e.ctrlKey && !e.metaKey) {
+                setSelected(null)
+                setSelectedClips([])
+              }
+              return
+            }
             const tNow = useEditorStore.getState().time
             const picked = []
             for (const p of placements) {
@@ -716,23 +738,10 @@ function Viewport2D() {
                   setSnapGuides(guides)
                 }}
                 onPointerUp={(e) => {
-                  const d = dragClipRef.current
                   try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { }
-                  if (!d) return
-                  if (!d.isDragging) {
-                    // A click: select, with Ctrl toggling.
-                    const st = useEditorStore.getState()
-                    if (d.modifiers.ctrl) {
-                      const cur = st.selectedClipIds
-                      st.setSelectedClips(cur.includes(tm.id) ? cur.filter((x) => x !== tm.id) : [...cur, tm.id])
-                    } else {
-                      st.setSelectedClips([tm.id])
-                    }
-                    dragClipRef.current = null
-                    setDragClip(null)
-                    return
-                  }
-                  commitClipDrag()
+                  // Normally the window failsafe has already committed; this
+                  // only matters if that listener is somehow not installed.
+                  if (dragClipRef.current) commitClipDrag()
                 }}
                 onDragStart={(e) => e.preventDefault()}
                 title={`${baseName(clip?.name) || tm.clip_id} (${clipStart(tm).toFixed(2)}s · ${clipDuration(tm).toFixed(2)}s)`}
@@ -747,24 +756,40 @@ function Viewport2D() {
                   borderRadius: 'var(--radius-sm)',
                   overflow: 'hidden',
                   display: isClipActive(tm, tNow) ? 'flex' : 'none',
-                  alignItems: 'center',
-                  justifyContent: 'center',
                   color: 'var(--text)',
                   fontSize: 11,
                   pointerEvents: shiftHeld ? 'none' : 'auto',
                   zIndex: 5,
                   userSelect: 'none',
                   touchAction: 'none',
-                  opacity: shiftHeld ? 0.4 : computeFadeOpacity(tm, tNow),
-                  filter: shiftHeld ? 'grayscale(1)' : buildFilterString(tm),
+                  // Initial value; useClipVisibilitySync keeps `--fade`
+                  // current from the clock while the clip fades. Read by
+                  // the media wrapper below, so the border stays solid.
+                  '--fade': computeFadeOpacity(tm, tNow),
                 }}
               >
-                {isVideo
-                  ? <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
-                  : imageMeta[tm.clip_id]?.src
-                    ? <img src={imageMeta[tm.clip_id].src} alt={baseName(clip?.name) || tm.clip_id} draggable={false}
-                      style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none' }} />
-                    : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{baseName(clip?.name) || tm.clip_id}</span>}
+                <div
+                  className="v2d-clip__media"
+                  style={{
+                    opacity: shiftHeld ? 0.4 : 'var(--fade, 1)',
+                    filter: shiftHeld ? 'grayscale(1)' : buildFilterString(tm),
+                  }}
+                >
+                  {isVideo
+                    ? <VideoFrame clip={clip} style={{ width: '100%', height: '100%' }} />
+                    : imageMeta[tm.clip_id]?.src
+                      ? <img src={imageMeta[tm.clip_id].src} alt={baseName(clip?.name) || tm.clip_id} draggable={false}
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none', userSelect: 'none' }} />
+                      : <span style={{ padding: '0 4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{baseName(clip?.name) || tm.clip_id}</span>}
+                </div>
+                {!shiftHeld && (() => {
+                  const fx = describeClipEffects(tm)
+                  return fx.length ? (
+                    <div className="v2d-clip__fx" aria-hidden="true">
+                      {fx.map((label) => <span key={label} className="v2d-clip__fx-chip">{label}</span>)}
+                    </div>
+                  ) : null
+                })()}
               </div>
             )
           })}

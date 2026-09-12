@@ -19,6 +19,10 @@ type SSEClient struct {
 	screenID string
 	ch       chan []byte // buffered; messages dropped if full
 	timeCh   chan []byte // single-slot channel for time events (latest wins)
+	// Transport corrections are latest-wins for the same reason time events
+	// are: each one is a complete statement of run state and position, so a
+	// superseded message has nothing left to say.
+	transportCh chan []byte
 }
 
 // SSEHub fans out SSE events to all connected renderer clients.
@@ -34,17 +38,23 @@ type SSEHub struct {
 	lastControl []byte
 	lastTime    []byte
 
+	// The authoritative transport, replayed so a renderer that connects
+	// mid-show knows both where the playhead is and that it is moving.
+	lastTransport []byte
+
 	// Window commands per screen, replayed on connect: the renderer is
 	// launched and told to open its screen before it has connected, so the
 	// live send always misses.
 	openScreens map[string][]byte
 
 	// Stats (atomic, lock-free)
-	statTimePushed  atomic.Int64
-	statTimeSent    atomic.Int64
-	statEventPushed atomic.Int64
-	statEventSent   atomic.Int64
-	statDropped     atomic.Int64
+	statTimePushed      atomic.Int64
+	statTimeSent        atomic.Int64
+	statTransportPushed atomic.Int64
+	statTransportSent   atomic.Int64
+	statEventPushed     atomic.Int64
+	statEventSent       atomic.Int64
+	statDropped         atomic.Int64
 }
 
 // NewSSEHub creates a new SSE hub.
@@ -74,6 +84,8 @@ func (h *SSEHub) logStats() {
 	for range ticker.C {
 		tp := h.statTimePushed.Swap(0)
 		ts := h.statTimeSent.Swap(0)
+		xp := h.statTransportPushed.Swap(0)
+		xs := h.statTransportSent.Swap(0)
 		ep := h.statEventPushed.Swap(0)
 		es := h.statEventSent.Swap(0)
 		dr := h.statDropped.Swap(0)
@@ -82,11 +94,11 @@ func (h *SSEHub) logStats() {
 		nc := len(h.clients)
 		h.mu.Unlock()
 
-		line := fmt.Sprintf("[SSE stats] clients=%d  time: pushed=%d sent=%d  events: pushed=%d sent=%d  dropped=%d\n",
-			nc, tp, ts, ep, es, dr)
+		line := fmt.Sprintf("[SSE stats] clients=%d  time: pushed=%d sent=%d  transport: pushed=%d sent=%d  events: pushed=%d sent=%d  dropped=%d\n",
+			nc, tp, ts, xp, xs, ep, es, dr)
 		f.WriteString(time.Now().Format("15:04:05 ") + line)
 		f.Sync()
-		if tp > 0 || ep > 0 {
+		if tp > 0 || xp > 0 || ep > 0 {
 			log.Print(line)
 		}
 	}
@@ -107,9 +119,10 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	screenID := r.URL.Query().Get("screen")
 	client := &SSEClient{
-		screenID: screenID,
-		ch:       make(chan []byte, 64),
-		timeCh:   make(chan []byte, 1),
+		screenID:    screenID,
+		ch:          make(chan []byte, 64),
+		timeCh:      make(chan []byte, 1),
+		transportCh: make(chan []byte, 1),
 	}
 
 	h.mu.Lock()
@@ -118,6 +131,7 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	screenOpen := h.openScreens[screenID]
 	control := h.lastControl
 	lastTime := h.lastTime
+	transport := h.lastTransport
 	h.mu.Unlock()
 
 	// Catch the new renderer up, in the order it would have received things
@@ -139,6 +153,11 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if lastTime != nil {
 		w.Write(lastTime)
 	}
+	// Last, because a renderer that understands transport ignores the time
+	// event above once it has one of these.
+	if transport != nil {
+		w.Write(transport)
+	}
 	flusher.Flush()
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -159,20 +178,15 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			h.statEventSent.Add(1)
 		case msg := <-client.timeCh:
-			// Drain to latest — if multiple time events queued, only send the newest
-			latest := msg
-			for {
-				select {
-				case newer := <-client.timeCh:
-					latest = newer
-				default:
-					goto sendTime
-				}
-			}
-		sendTime:
-			w.Write(latest)
+			// Only the newest position is worth sending; an older one has
+			// already been superseded by the time it reaches the wire.
+			w.Write(drainLatest(client.timeCh, msg))
 			flusher.Flush()
 			h.statTimeSent.Add(1)
+		case msg := <-client.transportCh:
+			w.Write(drainLatest(client.transportCh, msg))
+			flusher.Flush()
+			h.statTransportSent.Add(1)
 		case <-ticker.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
@@ -210,6 +224,42 @@ func (h *SSEHub) BroadcastTime(t float64) {
 	}
 }
 
+// drainLatest returns the newest message queued on a latest-wins channel,
+// starting from one already received.
+func drainLatest(ch chan []byte, first []byte) []byte {
+	latest := first
+	for {
+		select {
+		case newer := <-ch:
+			latest = newer
+		default:
+			return latest
+		}
+	}
+}
+
+// BroadcastTransport sends the authoritative run state and position.
+//
+// Latest-wins like time, because each message states the whole transport:
+// a superseded correction carries nothing the newer one does not.
+func (h *SSEHub) BroadcastTransport(payload []byte) {
+	msg := fmt.Appendf(nil, "event: transport\ndata: %s\n\n", payload)
+	h.statTransportPushed.Add(1)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastTransport = msg
+	for client := range h.clients {
+		select {
+		case <-client.transportCh:
+		default:
+		}
+		select {
+		case client.transportCh <- msg:
+		default:
+		}
+	}
+}
+
 // BroadcastControl sends a transport command (play/pause/stop) to all renderers.
 func (h *SSEHub) BroadcastControl(command string) {
 	msg := fmt.Appendf(nil, "event: control\ndata: %s\n\n", command)
@@ -227,7 +277,20 @@ func (h *SSEHub) BroadcastControl(command string) {
 // is also kept for replay, because the renderer is launched and told to open
 // in the same breath and cannot yet be connected.
 func (h *SSEHub) SendScreenOpen(screenID string, width, height int) {
-	msg := fmt.Appendf(nil, "event: screen-open\ndata: {\"screenId\":%q,\"width\":%d,\"height\":%d}\n\n", screenID, width, height)
+	h.SendScreenOpenAt(screenID, ScreenPlacement{Width: width, Height: height})
+}
+
+// SendScreenOpenAt is SendScreenOpen with a desktop position. The x, y and
+// borderless fields are only present when the placement is positioned, so a
+// renderer reading an unplaced screen-open sees exactly what it always did.
+func (h *SSEHub) SendScreenOpenAt(screenID string, p ScreenPlacement) {
+	var msg []byte
+	if p.Positioned {
+		msg = fmt.Appendf(nil, "event: screen-open\ndata: {\"screenId\":%q,\"width\":%d,\"height\":%d,\"x\":%d,\"y\":%d,\"borderless\":%t}\n\n",
+			screenID, p.Width, p.Height, p.X, p.Y, p.Borderless)
+	} else {
+		msg = fmt.Appendf(nil, "event: screen-open\ndata: {\"screenId\":%q,\"width\":%d,\"height\":%d}\n\n", screenID, p.Width, p.Height)
+	}
 	h.mu.Lock()
 	h.openScreens[screenID] = msg
 	h.mu.Unlock()
@@ -241,6 +304,20 @@ func (h *SSEHub) SendScreenClose(screenID string) {
 	delete(h.openScreens, screenID)
 	h.mu.Unlock()
 	h.sendToScreen(screenID, msg)
+}
+
+// CloseAllScreens tells every renderer with an open window to close it and
+// forgets them all, so no later connection replays a screen-open.
+func (h *SSEHub) CloseAllScreens() {
+	h.mu.Lock()
+	ids := make([]string, 0, len(h.openScreens))
+	for id := range h.openScreens {
+		ids = append(ids, id)
+	}
+	h.mu.Unlock()
+	for _, id := range ids {
+		h.SendScreenClose(id)
+	}
 }
 
 func (h *SSEHub) sendToScreen(screenID string, msg []byte) {

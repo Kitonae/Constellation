@@ -34,7 +34,10 @@ test.describe('Editor Interactions', () => {
 
         await expect(page.getByRole('menuitem', { name: /New Show/ })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: /Open Show/ })).toBeVisible();
-        await expect(page.getByRole('menuitem', { name: /Save Show/ })).toBeVisible();
+        // Exact names: Save and Save As are two separate items, so a loose
+        // match would resolve to both and fail strict mode.
+        await expect(page.getByRole('menuitem', { name: 'Save Show', exact: true })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Save Show As…' })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: 'Quit' })).toBeVisible();
     });
 

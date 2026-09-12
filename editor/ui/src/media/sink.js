@@ -1,22 +1,21 @@
 // Media Sink — analogous to MF's IMFMediaSink + IMFClockStateSink.
 //
-// A sink consumes rendered output and presents it to a display target.
-// Each sink registers with the PresentationClock via the session and
-// receives clock state notifications (start, pause, stop, tick).
+// A sink consumes rendered output and presents it to a display target. Each
+// sink registers with the PresentationClock via the session and receives
+// clock state notifications (start, pause, stop, tick).
 //
-// Two sink types:
-//   DisplaySink  — web child windows via postMessage
-//   NativeSink   — DX12 renderer via Wails Go bridge (PushTime/PushSnapshot)
-
-import { PushTime, PushSnapshot, PushControl } from '@bindings/app.js'
-import { isWails } from '../wails/env.js'
+// One sink type remains: DisplaySink, for web output windows reached by
+// postMessage. Native renderers are not driven from here any more. They
+// receive the document and the transport from the Go shell over the event
+// stream, which is both fewer hops and one fewer place where the editor's
+// paint rate could become the show's timebase.
 
 // --- Sink interface ---
 
 /**
  * @typedef {object} MediaSink
  * @property {string} id           - unique sink identifier
- * @property {string} type         - 'display' | 'native'
+ * @property {string} type         - 'display'
  * @property {function(number): void} onClockTick    - called each frame with time
  * @property {function(number): void} onClockStart   - playback started at time
  * @property {function(): void}       onClockPause   - playback paused
@@ -37,19 +36,22 @@ function sinkId(prefix) {
 /**
  * Create a display sink for a web child window.
  *
- * Communicates via postMessage to a window opened with window.open().
- * Throttles time updates to ~20fps to avoid saturating the message channel.
+ * The sink posts an *anchor* -- a position, whether it is moving, and the
+ * moment that was true -- rather than a position per frame. The output window
+ * advances its own playhead from that anchor, so it keeps running at its own
+ * refresh rate even while the editor is occluded and painting nothing. The
+ * periodic correction exists only to pull a drifting window back.
  *
  * @param {Window} targetWindow - child window reference
  * @param {object} [opts]
- * @param {string} [opts.id]          - custom sink ID
- * @param {number} [opts.throttleMs]  - min ms between time updates (default 50 = ~20fps)
+ * @param {string} [opts.id]            - custom sink ID
+ * @param {number} [opts.correctionMs]  - ms between corrections while playing
  * @param {function} [opts.getSnapshot] - () => snapshot payload for full updates
  * @returns {MediaSink}
  */
 export function createDisplaySink(targetWindow, opts = {}) {
   const id = opts.id || sinkId('display')
-  const throttleMs = opts.throttleMs ?? 50
+  const correctionMs = opts.correctionMs ?? 500
   const targetOrigin = opts.targetOrigin || '*'
   let _lastSendTime = 0
   let _disposed = false
@@ -58,6 +60,7 @@ export function createDisplaySink(targetWindow, opts = {}) {
   // DisplayWindow needs it to play video instead of scrubbing it.
   let _playing = false
   let _lastTime = 0
+  let _seq = 0
 
   function _post(event, payload) {
     if (_disposed || !targetWindow || targetWindow.closed) return
@@ -68,37 +71,41 @@ export function createDisplaySink(targetWindow, opts = {}) {
 
   function onClockTick(time) {
     _lastTime = time
+    // While playing, the window is advancing on its own; a correction every
+    // half second is enough to keep it honest. Before this the sink posted
+    // twenty messages a second and the window did nothing between them.
     const now = performance.now()
-    if (now - _lastSendTime < throttleMs) return
-    _postTime(time)
+    if (now - _lastSendTime < correctionMs) return
+    _postTransport(time)
   }
 
   // Transport changes move the playhead; they do not change the document.
   // Only `notifySnapshot` sends a snapshot, so a paused scrub costs one small
   // message per move instead of a full project serialization.
-  function _postTime(time) {
+  function _postTransport(time) {
     if (Number.isFinite(time)) _lastTime = time
     _lastSendTime = performance.now()
-    _post('display:time', { time: _lastTime, playing: _playing })
+    _seq += 1
+    _post('display:transport', { time: _lastTime, playing: _playing, rate: 1, seq: _seq })
   }
 
   function onClockStart(time) {
     _playing = true
-    _postTime(time)
+    _postTransport(time)
   }
 
   function onClockPause() {
     _playing = false
-    _postTime(_lastTime)
+    _postTransport(_lastTime)
   }
 
   function onClockStop() {
     _playing = false
-    _postTime(0)
+    _postTransport(0)
   }
 
   function onClockSeek(time) {
-    _postTime(time)
+    _postTransport(time)
   }
 
   function onSnapshot(snapshot) {
@@ -117,105 +124,6 @@ export function createDisplaySink(targetWindow, opts = {}) {
     type: 'display',
     screenId: opts.screenId || '',
     targetWindow,
-    onClockTick,
-    onClockStart,
-    onClockPause,
-    onClockStop,
-    onClockSeek,
-    onSnapshot,
-    dispose,
-  }
-}
-
-// --- Native Renderer Sink (DX12 via Wails Go bridge) ---
-
-/**
- * Create a native renderer sink for the DX12 renderer.
- *
- * Communicates via Wails Go bridge functions:
- *   - PushTime(time)      — called each frame (~60fps)
- *   - PushSnapshot(json)  — called on state changes
- *
- * @param {object} [opts]
- * @param {string} [opts.id]            - custom sink ID
- * @param {string} [opts.screenId]      - renderer screen identifier
- * @param {function} [opts.pushTime]    - (time) => void (default: the PushTime binding)
- * @param {function} [opts.pushSnapshot] - (json) => void
- * @param {function} [opts.getSnapshot]  - () => snapshot object
- * @returns {MediaSink}
- */
-export function createNativeSink(opts = {}) {
-  const id = opts.id || sinkId('native')
-  let _disposed = false
-
-  const _pushTime = opts.pushTime || ((t) => {
-    try { if (isWails()) PushTime(t) } catch {}
-  })
-
-  const _pushSnapshot = opts.pushSnapshot || ((json) => {
-    try { if (isWails()) PushSnapshot(json) } catch {}
-  })
-
-  // Go exposes PushControl but nothing used to call it, so the renderer's
-  // `m_playing` never left false and it scrubbed audio instead of playing it.
-  const _pushControl = opts.pushControl || ((cmd) => {
-    try { if (isWails()) PushControl(cmd) } catch {}
-  })
-
-  // The native renderer reads the on-disk project wrapper schema, which is not
-  // the same object the display sinks post. `serialize` lets the two differ.
-  const _serialize = opts.serialize || ((snap) => JSON.stringify(snap))
-
-  function onClockTick(time) {
-    if (_disposed) return
-    _pushTime(time)
-  }
-
-  function onClockStart(time) {
-    if (_disposed) return
-    _pushTime(time)
-    _pushControl('play')
-  }
-
-  function onClockPause() {
-    if (_disposed) return
-    _pushControl('pause')
-  }
-
-  function onClockStop() {
-    if (_disposed) return
-    _pushControl('stop')
-    _pushTime(0)
-  }
-
-  function onClockSeek(time) {
-    if (_disposed) return
-    _pushTime(time)
-  }
-
-  function onSnapshot(snapshot) {
-    if (_disposed || !snapshot) return
-    try {
-      const json = _serialize(snapshot)
-      if (json) _pushSnapshot(json)
-    } catch {}
-    // The serialised document deliberately carries no transport state, and a
-    // sink attached mid-show has missed every clock event before it. Hand it
-    // the position and the playing state along with the document, or a
-    // renderer launched while paused sits at zero and one launched while
-    // playing never hears the play that starts its audio.
-    _pushTime(Number(snapshot.time) || 0)
-    _pushControl(snapshot.playing ? 'play' : 'pause')
-  }
-
-  function dispose() {
-    _disposed = true
-  }
-
-  return {
-    id,
-    type: 'native',
-    screenId: opts.screenId || '',
     onClockTick,
     onClockStart,
     onClockPause,

@@ -201,6 +201,67 @@ func TestSSEHub_LateRendererGetsScreenAndTransport(t *testing.T) {
 	}
 }
 
+func TestSSEHub_LateRendererLearnsTheShowIsRunning(t *testing.T) {
+	// A renderer launched into a running show has missed every transport
+	// message sent before it existed. Without the replay it would sit at the
+	// position it was told and never start, because nothing re-states a
+	// transport that has not changed.
+	hub := NewSSEHub()
+	transport := NewTransport(hub, nil)
+	defer transport.Close()
+
+	hub.BroadcastSnapshot([]byte(`{"project":{}}`))
+	hub.SendScreenOpen("screen-1", 1280, 720)
+	transport.Seek(30)
+	transport.Play()
+
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/sse/renderer?screen=screen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 8192)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	if !strings.Contains(body, "event: transport") {
+		t.Fatalf("replay on connect carried no transport; got %q", body)
+	}
+	if !strings.Contains(body, `"playing":true`) {
+		t.Errorf("the replayed transport does not say the show is running; got %q", body)
+	}
+}
+
+func TestSSEHub_TransportIsLatestWins(t *testing.T) {
+	// Corrections arrive ten times a second. Queueing them behind a slow
+	// consumer would deliver a backlog of positions that are already wrong;
+	// each message states the whole transport, so only the newest matters.
+	hub := NewSSEHub()
+	client := &SSEClient{
+		screenID:    "s",
+		ch:          make(chan []byte, 4),
+		transportCh: make(chan []byte, 1),
+		timeCh:      make(chan []byte, 1),
+	}
+	hub.clients[client] = struct{}{}
+
+	hub.BroadcastTransport([]byte(`{"seq":1}`))
+	hub.BroadcastTransport([]byte(`{"seq":2}`))
+	hub.BroadcastTransport([]byte(`{"seq":3}`))
+
+	if got := len(client.transportCh); got != 1 {
+		t.Fatalf("transport channel holds %d messages, want 1", got)
+	}
+	msg := drainLatest(client.transportCh, <-client.transportCh)
+	if !strings.Contains(string(msg), `"seq":3`) {
+		t.Errorf("kept %q, want the newest transport", msg)
+	}
+}
+
 func TestSSEHub_LateRendererIgnoresOtherScreens(t *testing.T) {
 	hub := NewSSEHub()
 	hub.BroadcastSnapshot([]byte(`{"project":{}}`))
@@ -233,5 +294,25 @@ func TestSSEHub_ScreenCloseStopsReplay(t *testing.T) {
 
 	if still {
 		t.Error("a closed screen would be reopened by the next renderer to connect")
+	}
+}
+
+func TestSSEHub_ScreenOpenCarriesPlacementOnlyWhenPositioned(t *testing.T) {
+	hub := NewSSEHub()
+	hub.SendScreenOpen("plain", 1920, 1080)
+	hub.SendScreenOpenAt("placed", ScreenPlacement{Width: 3840, Height: 2160, Positioned: true, X: 2560, Y: -100, Borderless: true})
+
+	hub.mu.Lock()
+	plain := string(hub.openScreens["plain"])
+	placed := string(hub.openScreens["placed"])
+	hub.mu.Unlock()
+
+	if strings.Contains(plain, `"x"`) {
+		t.Errorf("an unplaced screen-open grew a position: %q", plain)
+	}
+	for _, want := range []string{`"x":2560`, `"y":-100`, `"borderless":true`, `"width":3840`} {
+		if !strings.Contains(placed, want) {
+			t.Errorf("placed screen-open is missing %s: %q", want, placed)
+		}
 	}
 }

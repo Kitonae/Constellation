@@ -187,6 +187,12 @@ func (s *ThumbnailService) produce(ctx context.Context, out string, args ...stri
 		job.err = fmt.Errorf("%w: %v: %s", errRendererFailed, err, strings.TrimSpace(string(output)))
 		return job.err
 	}
+	// A clean exit that left nothing behind is still a failure; serving the
+	// missing file would turn it into a misleading 404.
+	if _, err := os.Stat(out); err != nil {
+		job.err = fmt.Errorf("%w: no output written: %s", errRendererFailed, strings.TrimSpace(string(output)))
+		return job.err
+	}
 	return nil
 }
 

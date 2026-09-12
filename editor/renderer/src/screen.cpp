@@ -14,7 +14,7 @@ static std::wstring utf8ToWide(const std::string& s) {
     return out;
 }
 
-Screen::Screen(const std::string& screenId, int width, int height,
+Screen::Screen(const std::string& screenId, int width, int height, const ScreenPlacement& placement,
                ID3D12Device* device, ID3D12CommandQueue* cmdQueue, IDXGIFactory4* factory)
     : m_screenId(screenId), m_width(width), m_height(height)
 {
@@ -33,11 +33,16 @@ Screen::Screen(const std::string& screenId, int width, int height,
 
     // Create window
     std::wstring title = L"Renderer: " + utf8ToWide(screenId);
+    const DWORD style = placement.borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rect = {0, 0, width, height};
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+    AdjustWindowRect(&rect, style, FALSE);
+    // The placement names where the client area's top-left goes; the frame,
+    // if there is one, hangs outside that.
+    const int x = placement.positioned ? placement.x + rect.left : CW_USEDEFAULT;
+    const int y = placement.positioned ? placement.y + rect.top : CW_USEDEFAULT;
 
     m_hwnd = CreateWindowExW(0, WINDOW_CLASS_NAME, title.c_str(),
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+        style, x, y,
         rect.right - rect.left, rect.bottom - rect.top,
         nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
 

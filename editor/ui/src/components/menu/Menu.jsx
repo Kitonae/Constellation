@@ -12,11 +12,12 @@ import React, { useCallback, useEffect, useRef } from 'react'
 
 const ITEM_SELECTOR = '[role^="menuitem"]:not([aria-disabled="true"])'
 
-export function MenuItem({ label, accel, icon, checked, disabled, danger, onSelect, role = 'menuitem' }) {
+export function MenuItem({ label, accel, icon, checked, disabled, danger, onSelect, title, role = 'menuitem' }) {
   return (
     <button
       type="button"
       role={role}
+      title={title}
       aria-disabled={disabled || undefined}
       aria-checked={role === 'menuitem' ? undefined : !!checked}
       className={`menu__item${danger ? ' menu__item--danger' : ''}`}

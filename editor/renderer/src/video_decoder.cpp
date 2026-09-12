@@ -1004,6 +1004,19 @@ const VideoFrame* VideoDecoder::getFrameAtTime(double timeSeconds, UINT64 curren
             }
         }
 
+        // A time before the stream's first frame matched nothing. Files
+        // whose first PTS is not zero (OBS recordings among them) therefore
+        // never produced a thumbnail at t=0 and played black until that PTS.
+        // When the earliest frame we hold is the closest thing to what was
+        // asked for, show it.
+        if (bestIdx < 0 && !m_readable.empty()) {
+            double firstTs = m_readable.front().timestamp;
+            if (firstTs > timeSeconds && firstTs - timeSeconds <= 1.0 &&
+                (m_display.width == 0 || m_display.timestamp > firstTs)) {
+                bestIdx = 0;
+            }
+        }
+
         if (bestIdx >= 0 && m_display.width > 0) {
             double bestTs = m_readable[bestIdx].timestamp;
             double dispTs = m_display.timestamp;

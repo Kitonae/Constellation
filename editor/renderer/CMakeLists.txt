@@ -90,8 +90,9 @@ if(BUILD_TESTING)
     target_include_directories(renderer-regression-tests PRIVATE src)
     target_link_libraries(renderer-regression-tests PRIVATE
         d3d12 dxgi d3d11 dxguid mf mfplat mfreadwrite mfuuid windowscodecs ole32 propsys
+        nlohmann_json::nlohmann_json
     )
-    foreach(case buffers pool loader bitstream nal sps snappy hap)
+    foreach(case buffers pool loader bitstream nal sps snappy hap events)
         add_test(NAME renderer-${case} COMMAND renderer-regression-tests ${case})
         set_tests_properties(renderer-${case} PROPERTIES TIMEOUT 15)
     endforeach()

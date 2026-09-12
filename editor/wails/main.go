@@ -61,6 +61,13 @@ func main() {
 	app := application.New(application.Options{
 		Name:        "Constellation Editor",
 		Description: "Video display control editor",
+		Windows: application.WindowsOptions{
+			// CONSTELLATION_DEVTOOLS_PORT=9222 exposes the webview over the
+			// Chrome DevTools protocol, so the running editor can be driven
+			// and its console read from outside. Development aid; unset in
+			// normal use.
+			AdditionalBrowserArgs: devtoolsBrowserArgs(),
+		},
 		Services: []application.Service{
 			application.NewService(appService),
 		},
@@ -78,6 +85,11 @@ func main() {
 		Width:            1440,
 		Height:           900,
 		BackgroundColour: application.NewRGB(27, 38, 54),
+		// No native title bar: the app bar is the drag region (its CSS sets
+		// --wails-draggable) and carries its own minimise, maximise and
+		// close buttons. Wails still provides the resize borders and the
+		// Windows 11 shadow and rounded corners.
+		Frameless: true,
 		// The WebView2 File object has no .path, so an HTML drop yields a
 		// blob: URI the native renderer cannot open. The Wails drag-and-drop
 		// runtime hands us absolute paths instead. Files must be dropped on an
@@ -127,6 +139,8 @@ type App struct {
 	hub             Broadcaster
 	renderers       ProcessManager
 	files           FileReader
+	docs            *DocumentService
+	transport       *Transport
 
 	// Set by QuitConfirmed so the next WindowClosing is allowed through.
 	quitConfirmed atomic.Bool
@@ -153,6 +167,8 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	rendererManager := NewRendererManager(sseHub)
 	a.renderers = rendererManager
 	a.files = &FileService{}
+	a.docs = NewDocumentService(a.emit)
+	a.transport = NewTransport(sseHub, a.emit)
 
 	// One token per session. The editor learns it through GetFileServerToken,
 	// each renderer receives it on its command line, and nothing else can
@@ -181,10 +197,25 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	return nil
 }
 
+// emit sends an application event to the frontend.
+//
+// Guarded because the services that use it are constructed during startup and
+// in tests, where no Wails application exists to deliver anything.
+func (a *App) emit(name string, data any) {
+	if a.app == nil {
+		return
+	}
+	a.app.Event.Emit(name, data)
+}
+
 // ServiceShutdown is called at application termination.
 func (a *App) ServiceShutdown() error {
+	if a.transport != nil {
+		a.transport.Close()
+	}
 	if a.renderers != nil {
 		a.renderers.ShutdownAll()
+		a.renderers.KillOrphans()
 	}
 	if a.fileServer != nil {
 		a.fileServer.Close()
@@ -285,6 +316,22 @@ func (a *App) OpenRendererScreen(screenID string, width, height int) error {
 	return nil
 }
 
+// OpenRendererScreenAt is OpenRendererScreen with a desktop position: the
+// window's client area goes at (x, y) in physical virtual-screen pixels, and
+// borderless drops the frame so it can cover a display exactly.
+func (a *App) OpenRendererScreenAt(screenID string, width, height, x, y int, borderless bool) error {
+	if err := validateScreenID(screenID); err != nil {
+		return err
+	}
+	p := ScreenPlacement{Width: width, Height: height, Positioned: true, X: x, Y: y, Borderless: borderless}
+	if err := a.renderers.LaunchRendererAt(screenID, a.fileServerPort, p); err != nil {
+		log.Printf("Renderer launch error for %s: %v", screenID, err)
+		return err
+	}
+	a.hub.SendScreenOpenAt(screenID, p)
+	return nil
+}
+
 // CloseRendererScreen sends a screen-close event and stops the renderer.
 func (a *App) CloseRendererScreen(screenID string) {
 	if err := validateScreenID(screenID); err != nil {
@@ -295,19 +342,13 @@ func (a *App) CloseRendererScreen(screenID string) {
 	a.renderers.StopRenderer(screenID)
 }
 
-// PushSnapshot sends the full project state to all connected renderers.
-func (a *App) PushSnapshot(projectJSON string) {
-	a.hub.BroadcastSnapshot([]byte(projectJSON))
-}
-
-// PushTime sends the current playback time to all connected renderers.
-func (a *App) PushTime(t float64) {
-	a.hub.BroadcastTime(t)
-}
-
-// PushControl sends a transport command to all connected renderers.
-func (a *App) PushControl(command string) {
-	a.hub.BroadcastControl(command)
+// CloseAllRendererScreens closes every renderer window, stops every renderer
+// this editor launched, and kills renderer processes left behind by earlier
+// editor instances. It returns how many orphans it killed, so the UI can say.
+func (a *App) CloseAllRendererScreens() int {
+	a.hub.CloseAllScreens()
+	a.renderers.ShutdownAll()
+	return a.renderers.KillOrphans()
 }
 
 // PickMediaFiles opens a native file dialog and returns absolute paths.
@@ -344,4 +385,14 @@ func (a *App) PickMediaFolder() ([]string, error) {
 		paths = append(paths, filepath.Join(dir, e.Name()))
 	}
 	return paths, nil
+}
+
+// devtoolsBrowserArgs turns CONSTELLATION_DEVTOOLS_PORT into the WebView2
+// flag that opens a remote debugging port; nil when the variable is unset.
+func devtoolsBrowserArgs() []string {
+	port := os.Getenv("CONSTELLATION_DEVTOOLS_PORT")
+	if port == "" {
+		return nil
+	}
+	return []string{"--remote-debugging-port=" + port}
 }

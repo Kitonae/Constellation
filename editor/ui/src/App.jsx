@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useEditorStore, getMediaSession, serializeForNative } from './store.js'
+import { useEditorStore, getMediaSession, getDocumentSync } from './store.js'
 import Viewport3D from './components/Viewport.jsx'
-import DisplaysPanel from './components/DisplaysPanel.jsx'
+import OutputPanel from './components/OutputPanel.jsx'
 import Viewport2D from './components/Viewport2D.jsx'
 import Timeline from './components/Timeline.jsx'
 import MediaBin from './components/MediaBin.jsx'
@@ -13,12 +13,10 @@ import Splitter from './components/Splitter.jsx'
 import ShortcutsOverlay from './components/ShortcutsOverlay.jsx'
 import ConfirmHost from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
-import { openDisplayWindow, closeDisplayWindow } from './display/displayManager.js'
-import { createDisplaySink, createNativeSink } from './media/sink.js'
+import { openDisplayWindow, closeDisplayWindow, closeAllDisplayWindows } from './display/displayManager.js'
+import { createDisplaySink } from './media/sink.js'
 import LoadingOverlay from './components/LoadingOverlay.jsx'
-import SaveShowDialog from './components/SaveShowDialog.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
-import { buildProjectWrapper } from './utils/projectSerialize.js'
 import { useShortcuts } from './hooks/useShortcuts.js'
 import useRendererStatusPoll from './hooks/useRendererStatusPoll.js'
 import useWindowTitle from './hooks/useWindowTitle.js'
@@ -29,7 +27,8 @@ import { selectSelectionSummary, selectDirty, clipInstancesOf, findAsset } from 
 import { timelineExtent } from './utils/clipTime.js'
 import { loadLayout, clampLayout, startLayoutPersistence, layoutBounds } from './layout/persistLayout.js'
 import { Application, Events } from '@wailsio/runtime'
-import { CloseRendererScreen, OpenRendererScreen, QuitConfirmed } from '@bindings/app.js'
+import { CloseAllRendererScreens, CloseRendererScreen, OpenRendererScreen, OpenRendererScreenAt, QuitConfirmed } from '@bindings/app.js'
+import { outputKeyPart } from './output/placement.js'
 import { isWails } from './wails/env.js'
 
 // Must match FilesDroppedEvent and CloseRequestedEvent in editor/wails/main.go.
@@ -38,13 +37,6 @@ const CLOSE_REQUESTED_EVENT = 'app:closeRequested'
 
 /** Sink id for a web display window, so open/close can address it. */
 const sinkIdFor = (screenId) => `screen-${screenId}`
-
-/**
- * The Go bridge fans PushTime/PushSnapshot out to every connected renderer
- * itself, so all renderer screens share one sink. Registering one per screen
- * would push the same time and the same project JSON N times per tick.
- */
-const NATIVE_SINK_ID = 'native-renderers'
 
 /** Playhead step for the `,` / `.` keys, and the Shift-modified version. */
 const STEP_SMALL = 0.1
@@ -57,11 +49,10 @@ const STEP_LARGE = 1.0
  */
 function screenKey(n) {
   const k = n.kind || {}
-  return `${k.screenType || 'web'}|${k.enabled ?? true}|${k.pixels?.[0] | 0}|${k.pixels?.[1] | 0}`
+  return `${k.screenType || 'web'}|${k.enabled ?? true}|${k.pixels?.[0] | 0}|${k.pixels?.[1] | 0}|${outputKeyPart(k)}`
 }
 
 export default function App() {
-  const fileRef = useRef(null)
   // Narrow selectors only. Subscribing to the whole store re-rendered the
   // entire tree on every clock tick and every log line.
   const project = useEditorStore((s) => s.project)
@@ -72,7 +63,6 @@ export default function App() {
   const toggleLayoutPanel = useEditorStore((s) => s.toggleLayoutPanel)
   const outputsEnabled = useEditorStore((s) => s.outputsEnabled)
   const screenReopenRequest = useEditorStore((s) => s.screenReopenRequest)
-  const [showSaveDialog, setShowSaveDialog] = useState(false)
   // Bumped by "Reopen Displays" to force the screen effect to rebuild every
   // output even though the scene itself has not changed.
   const [reopenNonce, setReopenNonce] = useState(0)
@@ -80,11 +70,44 @@ export default function App() {
   useWindowTitle()
   useRendererStatusPoll()
 
-  // Initialize default project on startup
+  // Adopt whatever the shell already holds: the open document, the transport
+  // and the recent-files list. A reloaded editor rejoins a show that is
+  // already running instead of presenting an empty project at zero.
   useEffect(() => {
-    if (!useEditorStore.getState().project) {
-      useEditorStore.getState().newProject()
+    const sync = getDocumentSync()
+    if (!sync.native) {
+      if (!useEditorStore.getState().project) useEditorStore.getState().newProject()
+      return
     }
+    let cancelled = false
+    Promise.all([sync.contents(), sync.state(), sync.recent()])
+      .then(([contents, state, recent]) => {
+        if (cancelled) return
+        const st = useEditorStore.getState()
+        let loaded = false
+        if (contents) {
+          try {
+            st.loadProject(JSON.parse(contents))
+            loaded = true
+          } catch (err) {
+            st.addLog({ level: 'error', message: `Could not read the open show: ${err}` })
+          }
+        }
+        // Never leave the editor with no document: every panel reads one, and
+        // a blank shell gives the operator nothing to act on.
+        if (!loaded) useEditorStore.getState().newProject()
+        // Adopting what the shell already had is not an edit, so the next
+        // scheduled update must not re-send it as one.
+        sync.invalidate()
+        useEditorStore.getState().setDocumentState(state)
+        useEditorStore.getState().setRecentShows(recent)
+        getMediaSession().sync()
+      })
+      .catch((err) => {
+        useEditorStore.getState().addLog({ level: 'error', message: `Could not reach the shell: ${err}` })
+        if (!useEditorStore.getState().project) useEditorStore.getState().newProject()
+      })
+    return () => { cancelled = true }
   }, [])
 
   // --- Panel layout -------------------------------------------------------
@@ -149,33 +172,66 @@ export default function App() {
 
   // --- Document actions ---------------------------------------------------
 
-  const requestNewShow = useCallback(async () => {
+  /**
+   * Ask before discarding unsaved work, if there is any.
+   *
+   * The pending document is flushed to the shell first. The editor sends its
+   * edits on a debounce, so a Quit pressed straight after a change would
+   * otherwise be answered from a state recorded before that change.
+   */
+  const confirmDiscard = useCallback(async (title, message, confirmLabel) => {
+    const state = await getDocumentSync().flush()
     const st = useEditorStore.getState()
-    if (selectDirty(st)) {
-      const ok = await st.askConfirm({
-        title: 'New Show',
-        message: 'Discard unsaved changes and start a new show?',
-        confirmLabel: 'Discard',
-        danger: true,
-      })
-      if (!ok) return
-    }
-    useEditorStore.getState().newProject()
-    useEditorStore.getState().setDocumentName('')
-    useEditorStore.getState().setStatus('New show created')
+    const dirty = state ? !!state.dirty : selectDirty(st)
+    if (!dirty) return true
+    return st.askConfirm({ title, message, confirmLabel, danger: true })
   }, [])
 
-  const requestQuit = useCallback(async () => {
+  const refreshRecent = useCallback(() => {
+    const sync = getDocumentSync()
+    if (!sync.native) return
+    sync.recent()
+      .then((list) => useEditorStore.getState().setRecentShows(list))
+      .catch(() => { })
+  }, [])
+
+  /** Install a document the shell just created or opened. */
+  const adoptOpened = useCallback((res, message) => {
+    if (!res || res.cancelled) return false
     const st = useEditorStore.getState()
-    if (selectDirty(st)) {
-      const ok = await st.askConfirm({
-        title: 'Quit',
-        message: 'You have unsaved changes. Quit anyway?',
-        confirmLabel: 'Quit',
-        danger: true,
-      })
-      if (!ok) return
+    try {
+      st.loadProject(JSON.parse(res.contents))
+    } catch (err) {
+      st.addLog({ level: 'error', message: `Could not read that show: ${err}` })
+      return false
     }
+    // The shell already holds exactly this document, so the update the load
+    // is about to schedule is not an edit.
+    getDocumentSync().invalidate()
+    useEditorStore.getState().setDocumentState(res.state)
+    useEditorStore.getState().setStatus(message)
+    refreshRecent()
+    return true
+  }, [refreshRecent])
+
+  const requestNewShow = useCallback(async () => {
+    if (!await confirmDiscard('New Show', 'Discard unsaved changes and start a new show?', 'Discard')) return
+    const sync = getDocumentSync()
+    if (!sync.native) {
+      useEditorStore.getState().newProject()
+      useEditorStore.getState().setDocumentName('')
+      useEditorStore.getState().setStatus('New show created')
+      return
+    }
+    try {
+      adoptOpened(await sync.newShow(), 'New show created')
+    } catch (err) {
+      useEditorStore.getState().addLog({ level: 'error', message: `Could not start a new show: ${err}` })
+    }
+  }, [confirmDiscard, adoptOpened])
+
+  const requestQuit = useCallback(async () => {
+    if (!await confirmDiscard('Quit', 'You have unsaved changes. Quit anyway?', 'Quit')) return
     // Go cancels every native close until this has been called, so the
     // window's own close button gets the same dirty check as the menu.
     try { if (isWails()) { await QuitConfirmed(); return } } catch { }
@@ -242,6 +298,57 @@ export default function App() {
     return () => window.removeEventListener('editor:delete-selection', onDelete)
   }, [deleteSelection])
 
+  // Open goes through the same guard as New and Quit. It used to replace the
+  // document and clear its history straight from the file picker, so an
+  // unsaved show was gone with no confirmation and nothing to undo into.
+  const requestOpenShow = useCallback(async (path) => {
+    if (!await confirmDiscard('Open Show', 'Discard unsaved changes and open another show?', 'Discard')) return
+    const sync = getDocumentSync()
+    if (!sync.native) {
+      useEditorStore.getState().addLog({ level: 'warn', message: 'Opening a show needs the desktop shell.' })
+      return
+    }
+    try {
+      const res = await (path ? sync.openPath(path) : sync.open())
+      if (res?.cancelled) return
+      adoptOpened(res, `Opened ${res?.state?.fileName || 'show'}`)
+    } catch (err) {
+      useEditorStore.getState().addLog({ level: 'error', message: `Could not open that show: ${err}` })
+      useEditorStore.getState().setStatus('Open failed', 'error')
+      // A file that has gone missing should stop being offered.
+      refreshRecent()
+    }
+  }, [confirmDiscard, adoptOpened, refreshRecent])
+
+  /**
+   * Write the show back to its own file, asking for one the first time.
+   *
+   * Save used to be a browser blob download, so it could never overwrite:
+   * every save produced another "show (3).json" in the downloads folder and
+   * the application never learned where the show actually lived.
+   */
+  const requestSaveShow = useCallback(async (forceDialog = false) => {
+    const sync = getDocumentSync()
+    if (!sync.native) {
+      useEditorStore.getState().addLog({ level: 'warn', message: 'Saving a show needs the desktop shell.' })
+      return
+    }
+    // The debounced document has to reach the shell before it writes it, or
+    // Ctrl+S straight after an edit would save the version before it.
+    await sync.flush()
+    try {
+      const res = forceDialog ? await sync.saveAs() : await sync.save()
+      if (!res || res.cancelled) return
+      useEditorStore.getState().setDocumentState(res.state)
+      useEditorStore.getState().setStatus(`Saved ${res.state.fileName}`)
+      useEditorStore.getState().addLog({ level: 'info', message: `Show saved to ${res.state.path}` })
+      refreshRecent()
+    } catch (err) {
+      useEditorStore.getState().addLog({ level: 'error', message: `Save failed: ${err}` })
+      useEditorStore.getState().setStatus('Save failed', 'error')
+    }
+  }, [refreshRecent])
+
   // --- Keyboard -----------------------------------------------------------
 
   // One shortcut layer for the whole app, built from the shared table in
@@ -250,8 +357,9 @@ export default function App() {
   // text field has focus.
   const shortcuts = useMemo(() => buildBindings({
     newShow: requestNewShow,
-    openShow: () => fileRef.current?.click(),
-    saveShow: () => setShowSaveDialog(true),
+    openShow: () => requestOpenShow(),
+    saveShow: () => requestSaveShow(false),
+    saveShowAs: () => requestSaveShow(true),
 
     undo: () => useEditorStore.getState().undo(),
     redo: () => useEditorStore.getState().redo(),
@@ -295,7 +403,7 @@ export default function App() {
 
     toggleConsole: () => useEditorStore.getState().toggleConsole(),
     shortcutsHelp: () => useEditorStore.getState().toggleShortcutsHelp(),
-  }), [requestNewShow, deleteSelection])
+  }), [requestNewShow, requestOpenShow, requestSaveShow, deleteSelection])
   useShortcuts(shortcuts)
 
   // --- Output screens and sinks ------------------------------------------
@@ -319,7 +427,6 @@ export default function App() {
       const type = String(key || '').split('|')[0]
       if (type === 'renderer') {
         rendererScreens.current.delete(id)
-        if (rendererScreens.current.size === 0) session.removeSink(NATIVE_SINK_ID)
         if (isWails()) CloseRendererScreen(id)?.catch((e) => console.warn('CloseRendererScreen:', e))
       } else {
         session.removeSink(sinkIdFor(id))
@@ -341,22 +448,24 @@ export default function App() {
       })
       if (isRenderer) {
         try {
-          if (isWails()) await OpenRendererScreen(n.id, px, py)
+          if (isWails()) {
+            const o = k.output
+            if (o) await OpenRendererScreenAt(n.id, px, py, o.x | 0, o.y | 0, !!o.borderless)
+            else await OpenRendererScreen(n.id, px, py)
+          }
         } catch (e) {
           console.error('Failed to open renderer screen:', e)
           useEditorStore.getState().setOutputStatus(n.id, { state: 'error', error: String(e) })
           useEditorStore.getState().addLog({ level: 'error', message: `Renderer launch failed for "${n.name || n.id}": ${e}` })
           return
         }
+        // No sink: the shell sends each renderer the document and the
+        // transport over the event stream, and replays both to one that
+        // connects mid-show. Pushing them from here as well would be a
+        // second, slower source of the same truth.
         rendererScreens.current.add(n.id)
-        if (!session.getSinks().some((sk) => sk.id === NATIVE_SINK_ID)) {
-          session.addSink(createNativeSink({
-            id: NATIVE_SINK_ID,
-            serialize: serializeForNative,
-          }))
-        }
       } else {
-        const win = await openDisplayWindow(n.id, px, py)
+        const win = await openDisplayWindow(n.id, px, py, k.output ? { x: k.output.x | 0, y: k.output.y | 0 } : null)
         if (!win) {
           // A blocked popup used to be a silent `return`: the output simply
           // never appeared and nothing anywhere said why.
@@ -387,6 +496,25 @@ export default function App() {
     prevScreensRef.current = next
   }, [scene, reopenNonce, outputsEnabled])
 
+  // "Close All Displays". Turning outputs off makes the effect above close
+  // what it knows about; the sweep after it is for what it does not: display
+  // windows and renderer processes left behind by a reload, a crash or a
+  // previous editor instance, which the effect's bookkeeping never saw.
+  const closeAllDisplays = useCallback(async () => {
+    const st = useEditorStore.getState()
+    st.setOutputsEnabled(false)
+    st.addLog({ level: 'info', message: 'Closing display outputs' })
+    const webOrphans = closeAllDisplayWindows()
+    if (webOrphans > 0) useEditorStore.getState().addLog({ level: 'info', message: `Closed ${webOrphans} display window(s)` })
+    if (!isWails()) return
+    try {
+      const killed = await CloseAllRendererScreens()
+      if (killed > 0) useEditorStore.getState().addLog({ level: 'warn', message: `Killed ${killed} orphaned renderer process(es)` })
+    } catch (e) {
+      useEditorStore.getState().addLog({ level: 'error', message: `Closing renderer screens failed: ${e}` })
+    }
+  }, [])
+
   // The Inspector's Relaunch button asks for one screen to be rebuilt. The Go
   // backend owns the process lifecycle; forgetting the screen here makes the
   // effect above run its normal close-then-open path for it.
@@ -407,57 +535,33 @@ export default function App() {
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
-  // The single snapshot trigger: the document changed. Debounced so a burst of
-  // Inspector keystrokes coalesces into one serialization instead of one per
-  // character.
+  // The single trigger for "the document changed": send it to the shell,
+  // which records it, decides whether the show now differs from its file, and
+  // forwards it to every native renderer; and hand it to the web output
+  // windows, which are reached by postMessage rather than through the shell.
+  //
+  // Both are debounced, so a burst of Inspector keystrokes costs one
+  // serialization rather than one per character.
   useEffect(() => {
     if (!project || !scene) return
+    getDocumentSync().schedule()
     const id = setTimeout(() => { getMediaSession().notifySnapshot() }, 50)
     return () => clearTimeout(id)
   }, [project, scene])
 
-  const onFile = async (e) => {
-    const f = e.target.files?.[0]
-    if (!f) return
-    const text = await f.text()
-    try {
-      useEditorStore.getState().loadProject(JSON.parse(text))
-      useEditorStore.getState().setDocumentName(f.name)
-      useEditorStore.getState().setStatus(`Opened ${f.name}`)
-    } catch (err) {
-      useEditorStore.getState().addLog({ level: 'error', message: `Invalid project JSON: ${err}` })
-    }
-    // Let the same file be picked again after a failed parse.
-    e.target.value = ''
-  }
-
-  // Open goes through the same guard as New and Quit. It used to replace the
-  // document and clear its history straight from the file picker, so an
-  // unsaved show was gone with no confirmation and nothing to undo into.
-  const requestOpenShow = useCallback(async () => {
-    const st = useEditorStore.getState()
-    if (selectDirty(st)) {
-      const ok = await st.askConfirm({
-        title: 'Open Show',
-        message: 'Discard unsaved changes and open another show?',
-        confirmLabel: 'Discard',
-        danger: true,
-      })
-      if (!ok) return
-    }
-    fileRef.current?.click()
-  }, [])
-
-  const viewport = viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)
+  const viewport = viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <OutputPanel />)
 
   return (
     <div className="layout" data-file-drop-target>
       <header>
         <MenuBar
           onNewShow={requestNewShow}
-          onOpenProject={requestOpenShow}
-          onSaveShow={() => setShowSaveDialog(true)}
+          onOpenProject={() => requestOpenShow()}
+          onOpenRecent={(path) => requestOpenShow(path)}
+          onSaveShow={() => requestSaveShow(false)}
+          onSaveShowAs={() => requestSaveShow(true)}
           onQuit={requestQuit}
+          onCloseDisplays={closeAllDisplays}
           onReopenDisplays={() => {
             // Forget what we think is open; the screen effect then treats
             // every screen as new and re-opens it with a fresh sink.
@@ -465,7 +569,6 @@ export default function App() {
             setReopenNonce((n) => n + 1)
           }}
         />
-        <input type="file" accept="application/json" onChange={onFile} ref={fileRef} style={{ display: 'none' }} />
       </header>
 
       <main>
@@ -555,32 +658,6 @@ export default function App() {
       <ShortcutsOverlay />
       <SettingsDialog />
       <ConfirmHost />
-      <SaveShowDialog
-        open={showSaveDialog}
-        onClose={() => setShowSaveDialog(false)}
-        defaultName={project?.name || 'show'}
-        onSave={(name) => {
-          const st = useEditorStore.getState()
-          try {
-            const wrapper = buildProjectWrapper(st.project, st.scene)
-            if (wrapper.project) wrapper.project.name = name
-
-            const blob = new Blob([JSON.stringify(wrapper, null, 2)], { type: 'application/json' })
-            const url = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = url
-            a.download = name + '.json'
-            a.click()
-            URL.revokeObjectURL(url)
-            st.setDocumentName(name + '.json')
-            st.markClean()
-            st.setStatus(`Saved ${name}.json`)
-            st.addLog({ level: 'info', message: 'Show saved as ' + name })
-          } catch (e) {
-            st.addLog({ level: 'error', message: 'Save failed: ' + e })
-          }
-        }}
-      />
     </div>
   )
 }

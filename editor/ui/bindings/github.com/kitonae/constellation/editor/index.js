@@ -8,5 +8,9 @@ export {
 };
 
 export {
-    RendererStatus
+    DocumentState,
+    OpenedDocument,
+    RendererStatus,
+    SavedDocument,
+    TransportState
 } from "./models.js";

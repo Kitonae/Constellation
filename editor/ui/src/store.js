@@ -3,6 +3,7 @@ import { parseProject } from './utils/parseProject.js'
 import { setFileServerBaseUrl } from './utils/videoUtils.js'
 import { setFileServerBase, toFileUri } from './media/uri.js'
 import { createMediaSession } from './media/session.js'
+import { createDocumentSync } from './document/documentSync.js'
 import { buildProjectWrapper } from './utils/projectSerialize.js'
 import { createUndoStore, withUndo } from './undo.js'
 import {
@@ -69,7 +70,26 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   documentName: '',
   setDocumentName: (name) => set({ documentName: String(name || '') }),
 
-  // The reference the document is compared against to decide "dirty".
+  // What the shell says about the open document: its file, its name and
+  // whether it differs from what is on disk. The editor mirrors this rather
+  // than deciding it, because only the shell knows what was written.
+  documentState: null, // { path, fileName, name, dirty, version }
+  setDocumentState: (next) => set(() => {
+    if (!next) return {}
+    return {
+      documentState: next,
+      // The title bar and the status bar name the file when there is one and
+      // fall back to the show's own name for a show never saved.
+      documentName: next.fileName || next.name || '',
+    }
+  }),
+  // Recent shows, offered by the File menu. The shell keeps the list; it
+  // survives restarts and drops files that have since moved.
+  recentShows: [],
+  setRecentShows: (list) => set({ recentShows: Array.isArray(list) ? list : [] }),
+
+  // The reference the document is compared against to decide "dirty" when
+  // there is no shell to ask -- plain-browser development and the UI tests.
   // A boolean flag would go stale because undo/redo bypass the middleware.
   _cleanRef: { project: null, scene: null },
   markClean: () => set((s) => ({ _cleanRef: { project: s.project, scene: s.scene } })),
@@ -867,6 +887,32 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
     },
     _undoLabel: `Resize Screen to ${pixels[0]}x${pixels[1]}`,
   })),
+  /**
+   * Place an output window on the desktop, or unplace it with null.
+   *
+   * `patch` is `{ x, y, borderless }`, or `{ output, pixels }` when the
+   * resolution changes with it (filling a display). Coordinates are physical
+   * pixels of Windows' virtual screen; see output/placement.js.
+   */
+  updateScreenOutput: (id, patch) => set((s) => {
+    const next = patch === null ? null : (patch.output || patch)
+    const output = next ? { x: Math.round(next.x) | 0, y: Math.round(next.y) | 0, borderless: !!next.borderless } : null
+    const pixels = patch?.pixels ? [patch.pixels[0] | 0, patch.pixels[1] | 0] : null
+    return {
+      scene: {
+        ...s.scene,
+        roots: s.scene.roots.map((n) => updateNode(n, id, (node) => {
+          if (node.kind?.type !== 'screen') return node
+          const kind = { ...node.kind }
+          if (output) kind.output = output
+          else delete kind.output
+          if (pixels) kind.pixels = pixels
+          return { ...node, kind }
+        })),
+      },
+      _undoLabel: output ? (pixels ? 'Fill Display' : 'Place Output') : 'Unplace Output',
+    }
+  }),
   updateScreenType: (id, screenType) => set((s) => ({
     scene: {
       ...s.scene,
@@ -1106,10 +1152,32 @@ export function getMediaSession() {
 }
 
 /**
- * Serialize the current document the way the native renderer expects it.
- * Used as the NativeSink's `serialize` hook.
+ * Serialize the open document the way it is stored and sent: the on-disk
+ * project wrapper. One function, so the shell, the renderers and the
+ * round-trip test all see the same bytes.
  */
-export function serializeForNative(snapshot) {
-  if (!snapshot?.project || !snapshot?.scene) return null
-  return JSON.stringify(buildProjectWrapper(snapshot.project, snapshot.scene))
+export function serializeDocument(state = useEditorStore.getState()) {
+  if (!state?.project || !state?.scene) return null
+  return JSON.stringify(buildProjectWrapper(state.project, state.scene))
+}
+
+// --- Document sync singleton ---
+
+let _documentSync = null
+
+/**
+ * Get (or create) the bridge to the shell's document ownership.
+ *
+ * Created lazily for the same reason the session is: it needs the store to
+ * exist, and it must not reach for Wails bindings in a plain browser.
+ */
+export function getDocumentSync() {
+  if (!_documentSync) {
+    _documentSync = createDocumentSync({
+      serialize: () => serializeDocument(),
+      onState: (st) => useEditorStore.getState().setDocumentState(st),
+      onError: (message) => queueLog('error', message),
+    })
+  }
+  return _documentSync
 }

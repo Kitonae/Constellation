@@ -95,7 +95,6 @@ export {
 
 export {
   createDisplaySink,
-  createNativeSink,
   createSinkClockAdapter,
 } from './sink.js'
 
@@ -103,3 +102,4 @@ export {
 
 export { createPresentationClock } from './clock.js'
 export { createMediaSession } from './session.js'
+export { createTransportBridge, TRANSPORT_STATE_EVENT } from './transportBridge.js'

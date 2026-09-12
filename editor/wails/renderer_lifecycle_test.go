@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,4 +104,23 @@ func TestLaunchRenderer_OneAudioOwner(t *testing.T) {
 	}
 	// Give the stub processes a moment to exit before ShutdownAll.
 	time.Sleep(50 * time.Millisecond)
+}
+
+func TestLaunchRendererAt_PassesPlacementOnTheCommandLine(t *testing.T) {
+	rm := &RendererManager{procs: map[string]*rendererProc{}, hub: &mockBroadcaster{}, exePath: stubRendererExe(t)}
+	defer rm.ShutdownAll()
+
+	p := ScreenPlacement{Width: 1920, Height: 1080, Positioned: true, X: 2560, Y: 0, Borderless: true}
+	if err := rm.LaunchRendererAt("s1", 1, p); err != nil {
+		t.Fatal(err)
+	}
+	rm.mu.Lock()
+	args := rm.procs["s1"].cmd.Args
+	rm.mu.Unlock()
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--x 2560", "--y 0", "--borderless"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("command line is missing %q: %s", want, joined)
+		}
+	}
 }

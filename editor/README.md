@@ -57,6 +57,8 @@ handler and the accelerators shown in the menus. The essentials:
 | Ctrl+A | Select all clips |
 | F / Shift+F | Frame all / frame selected |
 | Ctrl+0 | Zoom the stage to 100% |
+| Ctrl+S | Save the show to its own file |
+| Ctrl+Shift+S | Save As |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | ` | Toggle the console |
 | ? or F1 | Keyboard shortcuts |
@@ -96,6 +98,34 @@ pixels to screen pixels.
 
 Right-click the stage to add a web or renderer screen.
 
+## Shows
+
+The shell owns the open document: which file it came from, whether it differs
+from what is on disk, and the bytes to write back. The editor performs the
+edits and sends the document over after each change; it does not decide any
+of the rest. Save writes back to the file the show was opened from, Save As
+asks for a new one, and the File menu lists recent shows, which survive a
+restart and drop files that have since moved.
+
+A show is validated and migrated once, on load, by `wails/document.go`. Every
+legacy shape lives there, so the store, the web render list and the C++
+parser each see one shape. Anything the shell does not interpret is carried
+through untouched, so saving a show never drops the parts this build has no
+opinion about.
+
+## Transport
+
+Playback position comes from the shell, derived from a monotonic clock. It
+broadcasts an anchor -- a position, whether it is moving, and the moment that
+was true -- on every change and ten times a second while running. The editor,
+each web output window and each native renderer advance their own playhead
+from that anchor and are corrected by the next one.
+
+Nothing downstream waits to be told each new position, which is what stops an
+occluded or busy editor window from slowing the picture on stage. It also
+means a renderer launched into a running show is caught up on connect: the
+event stream replays the document, the window command and the transport.
+
 ## Outputs
 
 Each enabled screen opens an output: a browser window for a web screen, a
@@ -114,6 +144,9 @@ hex literals reappearing in components. Three.js materials, canvas painting
 and the display window are exempt.
 
 Next
+- Web output windows still receive the document and the anchor by postMessage
+  from the editor. Reading both from the sidecar event stream, as the native
+  renderers do, would remove the editor from that path too.
 - Map cameras from the scene to bookmarks; add a camera dropdown.
 - A real Displays panel (the Output view is still a placeholder).
 - A scene outliner, so screens can be found without clicking them on the stage.

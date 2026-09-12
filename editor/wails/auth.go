@@ -66,12 +66,19 @@ func requireToken(token string, next http.Handler) http.Handler {
 // webview scheme, the Vite dev server, and the sidecar itself.
 var loopbackOrigin = regexp.MustCompile(`^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$`)
 
+// In development the webview's origin carries the Vite port
+// (http://wails.localhost:5173), so the host is matched with an optional
+// port like the loopback ones. Without that, every cross-origin fetch to the
+// sidecar from a dev build was answered without a CORS header and the
+// browser reported "Failed to fetch" for a request the sidecar had served.
+var wailsOrigin = regexp.MustCompile(`^https?://wails\.localhost(:\d+)?$`)
+
 func originAllowed(origin string) bool {
 	switch origin {
-	case "http://wails.localhost", "https://wails.localhost", "wails://wails", "wails://localhost":
+	case "wails://wails", "wails://localhost":
 		return true
 	}
-	return loopbackOrigin.MatchString(origin)
+	return wailsOrigin.MatchString(origin) || loopbackOrigin.MatchString(origin)
 }
 
 // setCORS echoes an allowed origin back, and says nothing to any other.

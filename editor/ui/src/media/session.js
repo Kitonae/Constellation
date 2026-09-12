@@ -1,28 +1,32 @@
-// MediaSession — analogous to Microsoft Media Foundation's IMFMediaSession.
+// MediaSession — the editor's transport surface.
 //
-// The top-level orchestrator that ties together:
-//   - PresentationClock (timing)
-//   - Transport state machine (idle → playing ⇄ paused → stopped)
-//   - Sink fan-out (display windows, native renderer)
+// It ties together:
+//   - PresentationClock (where the show is)
+//   - the transport bridge (who decides where the show is)
+//   - Sink fan-out (web display windows)
 //   - Store synchronization
-//   - Preroll management (future)
 //
 // Replaces the scattered transport logic in store.js, GlobalTicker.jsx,
 // App.jsx effects, and Timeline.jsx seek handlers.
+//
+// The session no longer *decides* the transport. Commands go to the bridge,
+// which under the desktop shell forwards them to Go; the authoritative answer
+// comes back through the clock, and the session's own state follows it. That
+// ordering is what keeps the editor, the web outputs and the native renderers
+// describing the same instant even when one of them is slow.
 
 import { createPresentationClock } from './clock.js'
 import { createSinkClockAdapter } from './sink.js'
+import { createTransportBridge } from './transportBridge.js'
 
 /**
- * Transport states — analogous to MF's session states:
- *   idle       → Ready (no presentation loaded)
- *   loading    → OpenPending (preparing media)
- *   playing    → Started
- *   paused     → Paused
- *   stopped    → Stopped
- *   error      → (MF handles via events)
+ * Transport states:
+ *   idle       → nothing has happened yet
+ *   playing    → running
+ *   paused     → held at a position
+ *   stopped    → held at zero
  *
- * @typedef {'idle'|'loading'|'playing'|'paused'|'stopped'|'error'} TransportState
+ * @typedef {'idle'|'playing'|'paused'|'stopped'} TransportState
  */
 
 /**
@@ -32,22 +36,13 @@ import { createSinkClockAdapter } from './sink.js'
  * @property {function(string): void} [onError]       - error message
  */
 
-// Valid state transitions (from → Set<to>)
-const VALID_TRANSITIONS = {
-  idle:    new Set(['loading', 'playing', 'paused', 'stopped']),
-  loading: new Set(['playing', 'paused', 'stopped', 'error', 'idle']),
-  playing: new Set(['paused', 'stopped', 'error']),
-  paused:  new Set(['playing', 'stopped', 'error']),
-  stopped: new Set(['playing', 'loading', 'idle']),
-  error:   new Set(['idle', 'stopped']),
-}
-
 /**
  * Create a MediaSession instance.
  *
  * @param {object} [opts]
  * @param {function} [opts.getSnapshot] - () => ({ project, scene, time, playing }) for sinks
  * @param {number}   [opts.uiUpdateInterval=100] - ms between UI time updates
+ * @param {object}   [opts.transport] - a transport bridge, for tests
  * @returns {object} MediaSession
  */
 export function createMediaSession(opts = {}) {
@@ -57,6 +52,7 @@ export function createMediaSession(opts = {}) {
   const _subscribers = new Set()
   const _sinks = new Map()  // sinkId → MediaSink
   const _uiInterval = opts.uiUpdateInterval ?? 100
+  const _transport = opts.transport ?? createTransportBridge(clock)
 
   // Wire sinks to clock events
   const _sinkAdapter = createSinkClockAdapter(_sinks)
@@ -74,19 +70,23 @@ export function createMediaSession(opts = {}) {
     },
   })
 
-  // --- State Machine ---
+  // --- State ---
+  //
+  // Followed from the clock rather than set before commanding it. A state
+  // machine that moved first could disagree with the shell: it would refuse a
+  // transition the shell had already made, and the editor would show a paused
+  // show that was in fact running on stage.
+  clock.subscribe({
+    onStart() { _setState('playing') },
+    onPause() { _setState('paused') },
+    onStop() { _setState('stopped') },
+  })
 
-  function _transition(newState) {
-    if (newState === _state) return false
-    const allowed = VALID_TRANSITIONS[_state]
-    if (!allowed || !allowed.has(newState)) {
-      console.warn(`[MediaSession] Invalid transition: ${_state} → ${newState}`)
-      return false
-    }
+  function _setState(newState) {
+    if (newState === _state) return
     const old = _state
     _state = newState
     _notifyStateChange(newState, old)
-    return true
   }
 
   // --- Public API ---
@@ -111,10 +111,7 @@ export function createMediaSession(opts = {}) {
    */
   function play() {
     if (_state === 'playing') return
-
-    if (_transition('playing')) {
-      clock.play()
-    }
+    _transport.play()
   }
 
   /**
@@ -122,10 +119,7 @@ export function createMediaSession(opts = {}) {
    */
   function pause() {
     if (_state !== 'playing') return
-
-    if (_transition('paused')) {
-      clock.pause()
-    }
+    _transport.pause()
   }
 
   /**
@@ -133,10 +127,7 @@ export function createMediaSession(opts = {}) {
    */
   function stop() {
     if (_state === 'idle' || _state === 'stopped') return
-
-    if (_transition('stopped')) {
-      clock.stop()
-    }
+    _transport.stop()
   }
 
   /**
@@ -144,8 +135,8 @@ export function createMediaSession(opts = {}) {
    * @param {number} time
    */
   function seek(time) {
-    clock.seek(time)
-    _notifyTimeUpdate(time)
+    _transport.seek(time)
+    _notifyTimeUpdate(clock.getTime())
     // The clock's onSeek reaches every sink through the adapter, so paused
     // scrubbing needs nothing extra here.
   }
@@ -155,7 +146,15 @@ export function createMediaSession(opts = {}) {
    * @param {number} rate
    */
   function setRate(rate) {
-    clock.setRate(rate)
+    _transport.setRate(rate)
+  }
+
+  /**
+   * Adopt the shell's transport, for a reloaded editor joining a show that is
+   * already running rather than presenting a playhead at zero.
+   */
+  function sync() {
+    return _transport.sync()
   }
 
   // --- Sink management (analogous to MF's AddClockStateSink) ---
@@ -203,6 +202,7 @@ export function createMediaSession(opts = {}) {
       try { sink.dispose?.() } catch {}
     }
     _sinks.clear()
+    _transport.dispose()
     clock.dispose()
     _subscribers.clear()
     _state = 'idle'
@@ -256,6 +256,7 @@ export function createMediaSession(opts = {}) {
     stop,
     seek,
     setRate,
+    sync,
 
     // Sinks
     addSink,

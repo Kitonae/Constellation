@@ -57,6 +57,36 @@ export function computeFadeOpacity(tm, currentTime) {
 }
 
 /**
+ * Short labels for everything that alters how a clip looks: opacity when it
+ * is not full, fades, and each enabled effect with its value. Empty when the
+ * clip is shown as-is. The stage prints these on the clip so a half-visible
+ * or blurred thumbnail reads as a setting, not a broken file.
+ */
+export function describeClipEffects(tm) {
+  const out = []
+  const opacity = tm.opacity ?? 1
+  if (opacity !== 1) out.push(`Opacity ${Math.round(opacity * 100)}%`)
+  if (tm.fade_in > 0) out.push(`Fade in ${trimNum(tm.fade_in)}s`)
+  if (tm.fade_out > 0) out.push(`Fade out ${trimNum(tm.fade_out)}s`)
+  if (tm.blur) out.push(`Blur ${trimNum(tm.blur)}px`)
+  const effects = tm.effects || {}
+  const names = {
+    blur: ['Blur', 'px'], brightness: ['Brightness', ''], contrast: ['Contrast', ''], saturate: ['Saturate', ''],
+    grayscale: ['Grayscale', ''], sepia: ['Sepia', ''], 'hue-rotate': ['Hue', '\u00b0'], invert: ['Invert', ''],
+  }
+  for (const [key, [label, unit]] of Object.entries(names)) {
+    const e = effects[key]
+    if (e?.enabled) out.push(`${label} ${trimNum(e.value)}${unit}`)
+  }
+  return out
+}
+
+function trimNum(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : String(v)
+}
+
+/**
  * Builds a CSS filter string from a timeline clip's effects.
  */
 export function buildFilterString(tm) {

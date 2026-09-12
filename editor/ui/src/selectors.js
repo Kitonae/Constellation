@@ -130,13 +130,19 @@ function computeSelectionSummary(s) {
 /**
  * Has the document changed since it was last saved or opened?
  *
- * Derived by comparing references against the snapshot taken at the last
- * clean point rather than a flag, because undo and redo bypass the undo
- * middleware — a flag set there would go stale. Snapshots are shallow refs,
- * so undoing back to the saved state correctly reads clean again.
+ * The shell compares the document's content against what it last wrote to
+ * disk, so its answer is the one that matches the file. It also survives the
+ * cases a local flag could not: undoing back to the saved state reads clean
+ * again, and a Save As to a new file clears the dot.
+ *
+ * Without a shell — plain-browser development and the UI tests — this falls
+ * back to comparing references against the snapshot taken at the last clean
+ * point. A flag would go stale there, because undo and redo bypass the undo
+ * middleware; shallow refs do not.
  */
 export function selectDirty(s) {
   if (!s?.project) return false
+  if (s.documentState) return !!s.documentState.dirty
   const ref = s._cleanRef || {}
   return s.project !== ref.project || s.scene !== ref.scene
 }

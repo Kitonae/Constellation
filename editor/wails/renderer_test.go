@@ -1,21 +1,67 @@
 package main
 
 import (
+	"sync"
 	"testing"
 )
 
-// mockBroadcaster implements Broadcaster for testing.
+// mockBroadcaster records what was sent. The transport publishes from its own
+// correction goroutine, so every field is guarded: without the lock the race
+// detector fails these tests for the recorder rather than the code.
 type mockBroadcaster struct {
-	snapshots [][]byte
-	times     []float64
-	controls  []string
+	mu         sync.Mutex
+	snapshots  [][]byte
+	times      []float64
+	controls   []string
+	transports [][]byte
 }
 
-func (m *mockBroadcaster) BroadcastSnapshot(data []byte)            { m.snapshots = append(m.snapshots, data) }
-func (m *mockBroadcaster) BroadcastTime(t float64)                  { m.times = append(m.times, t) }
-func (m *mockBroadcaster) BroadcastControl(command string)          { m.controls = append(m.controls, command) }
-func (m *mockBroadcaster) SendScreenOpen(screenID string, w, h int) {}
-func (m *mockBroadcaster) SendScreenClose(screenID string)          {}
+func (m *mockBroadcaster) BroadcastSnapshot(data []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshots = append(m.snapshots, data)
+}
+
+func (m *mockBroadcaster) BroadcastTime(t float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.times = append(m.times, t)
+}
+
+func (m *mockBroadcaster) BroadcastTransport(payload []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transports = append(m.transports, payload)
+}
+
+func (m *mockBroadcaster) BroadcastControl(command string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.controls = append(m.controls, command)
+}
+
+func (m *mockBroadcaster) SendScreenOpen(screenID string, w, h int)            {}
+func (m *mockBroadcaster) SendScreenOpenAt(screenID string, p ScreenPlacement) {}
+func (m *mockBroadcaster) SendScreenClose(screenID string)                     {}
+func (m *mockBroadcaster) CloseAllScreens()                                    {}
+
+// controlLog returns a copy of the transport commands seen so far.
+func (m *mockBroadcaster) controlLog() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.controls))
+	copy(out, m.controls)
+	return out
+}
+
+// snapshotLog returns a copy of the snapshots seen so far.
+func (m *mockBroadcaster) snapshotLog() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]byte, len(m.snapshots))
+	copy(out, m.snapshots)
+	return out
+}
 
 func TestRendererManager_GetStatus_UnknownScreen(t *testing.T) {
 	hub := &mockBroadcaster{}

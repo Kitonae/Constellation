@@ -136,3 +136,34 @@ func TestThumbnail_ServesCachedPNG(t *testing.T) {
 		t.Errorf("expected 200 from cache, got %d", w.Code)
 	}
 }
+
+// The editor reads the failure text out of the body; without the CORS
+// headers on the error path the browser hides the response entirely and
+// the UI can only say "Failed to fetch".
+func TestThumbnail_ErrorResponsesCarryCORS(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("uses cmd.exe as a failing renderer")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "clip.mov")
+	if err := os.WriteFile(clip, []byte("movie"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A renderer that exits non-zero: the "looked and could not" path, a 415.
+	fail := filepath.Join(dir, "fail.cmd")
+	if err := os.WriteFile(fail, []byte("@exit /b 1\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewThumbnailService(fail)
+	svc.cacheDir = dir
+	req := httptest.NewRequest("GET", "/api/thumbnail?uri="+clip, nil)
+	req.Header.Set("Origin", "http://wails.localhost")
+	w := httptest.NewRecorder()
+	svc.ServeHTTP(w, req)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415 from a failing renderer, got %d", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://wails.localhost" {
+		t.Errorf("error response lost its CORS header: %q", got)
+	}
+}

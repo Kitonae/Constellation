@@ -1,9 +1,16 @@
 import { useEffect, useMemo } from 'react'
 import { getMediaSession } from '../store.js'
+import { computeFadeOpacity } from '../utils/mediaUtils.js'
 
 /**
- * Drives clip visibility straight from the PresentationClock, writing to the
- * DOM without re-rendering React.
+ * Drives clip visibility and fade straight from the PresentationClock,
+ * writing to the DOM without re-rendering React.
+ *
+ * Fade is written as the `--fade` custom property, which the clip's opacity
+ * reads. The stage used to compute fade in render from the store's time,
+ * which nothing updates as the clock runs, so a clip with a two-second fade
+ * simply popped in at full opacity; the Opacity property worked because
+ * editing it re-rendered the stage.
  *
  * It used to also drive a throttled timecode state setter for the 2D
  * viewport, but that value was never rendered anywhere - pure re-render
@@ -25,7 +32,8 @@ export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineIt
       if (!m?.id) continue
       const start = Number(m.start ?? m.start_at_seconds) || 0
       const dur = Math.max(0, Number(m.duration ?? ((m.out_seconds - m.in_seconds) || 0)) || 0)
-      map.set(m.id, { start, end: start + dur })
+      const fades = (m.fade_in > 0) || (m.fade_out > 0)
+      map.set(m.id, { start, end: start + dur, item: m, fades })
     }
     return map
   }, [allTimelineItems])
@@ -37,7 +45,11 @@ export default function useClipVisibilitySync(clipRefs, videoRefs, allTimelineIt
         if (!el) return
         const span = spans.get(id)
         if (!span) return
-        el.style.display = (t >= span.start && t <= span.end) ? 'flex' : 'none'
+        const active = t >= span.start && t <= span.end
+        el.style.display = active ? 'flex' : 'none'
+        // Only clips that actually fade are written every tick; the rest
+        // keep the value React rendered, which already includes opacity.
+        if (active && span.fades) el.style.setProperty('--fade', String(computeFadeOpacity(span.item, t)))
       })
       // Video playback in the viewport is the native renderer's job;
       // videoRefs is kept for API compatibility but not synced here.

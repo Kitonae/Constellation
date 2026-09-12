@@ -1,8 +1,10 @@
 import React, { useRef, useState } from 'react'
 import { useEditorStore } from '../store.js'
+import { baseName } from '../media/asset.js'
 import { selectSelectionSummary, selectDirty } from '../selectors.js'
 import { accelFor } from '../shortcuts.js'
 import { Menu, MenuItem, MenuSeparator, MenuSection, useMenuDismiss, useMenuBarArrows } from './menu/Menu.jsx'
+import WindowControls, { toggleMaximiseFromDragRegion } from './WindowControls.jsx'
 
 const MENU_ORDER = ['file', 'edit', 'view', 'displays', 'help']
 
@@ -17,7 +19,10 @@ const MENU_ORDER = ['file', 'edit', 'view', 'displays', 'help']
 export default function MenuBar({
   onNewShow,
   onOpenProject,
+  onOpenRecent,
   onSaveShow,
+  onSaveShowAs,
+  onCloseDisplays,
   onReopenDisplays,
   onQuit,
 }) {
@@ -38,6 +43,9 @@ export default function MenuBar({
   const outputsEnabled = useEditorStore((s) => s.outputsEnabled)
   const setOutputsEnabled = useEditorStore((s) => s.setOutputsEnabled)
   const addLog = useEditorStore((s) => s.addLog)
+  // The shell keeps this list; it survives restarts and drops files that have
+  // since been moved or deleted.
+  const recentShows = useEditorStore((s) => s.recentShows)
 
   // Undo/Redo need to grey out when there is nothing to undo, which means
   // subscribing to the stack depths (numbers, so no render churn).
@@ -76,7 +84,7 @@ export default function MenuBar({
   ]
 
   return (
-    <div className="appbar">
+    <div className="appbar" onDoubleClick={toggleMaximiseFromDragRegion}>
       <div className="appbar__brand">
         <span className="appbar__mark" aria-hidden="true" />
         <span className="appbar__wordmark">Constellation</span>
@@ -93,7 +101,22 @@ export default function MenuBar({
       <Menu id="file" title="File" open={open} setOpen={setOpen}>
         <MenuItem label="New Show" accel={accelFor('newShow')} onSelect={run(onNewShow)} />
         <MenuItem label="Open Show…" accel={accelFor('openShow')} onSelect={run(onOpenProject)} />
-        <MenuItem label="Save Show…" accel={accelFor('saveShow')} onSelect={run(onSaveShow)} />
+        <MenuItem label="Save Show" accel={accelFor('saveShow')} onSelect={run(onSaveShow)} />
+        <MenuItem label="Save Show As…" accel={accelFor('saveShowAs')} onSelect={run(onSaveShowAs)} />
+        {recentShows.length > 0 && (
+          <>
+            <MenuSeparator />
+            <MenuSection>Open Recent</MenuSection>
+            {recentShows.map((path) => (
+              <MenuItem
+                key={path}
+                label={baseName(path)}
+                title={path}
+                onSelect={run(() => onOpenRecent?.(path))}
+              />
+            ))}
+          </>
+        )}
         <MenuSeparator />
         <MenuItem label="Quit" onSelect={run(onQuit)} />
       </Menu>
@@ -157,7 +180,7 @@ export default function MenuBar({
         <MenuItem
           label="Close All Displays"
           disabled={!outputsEnabled}
-          onSelect={run(() => { setOutputsEnabled(false); addLog({ level: 'info', message: 'Closing display outputs' }) })}
+          onSelect={run(() => onCloseDisplays?.())}
         />
         <MenuSeparator />
         <MenuItem
@@ -194,6 +217,8 @@ export default function MenuBar({
         </span>
         {fps !== null && <span className="appbar__stat">{fps.toFixed(2)} fps</span>}
       </div>
+
+      <WindowControls />
     </div>
   )
 }

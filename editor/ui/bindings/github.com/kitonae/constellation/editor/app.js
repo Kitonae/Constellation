@@ -16,6 +16,16 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
+ * CloseAllRendererScreens closes every renderer window, stops every renderer
+ * this editor launched, and kills renderer processes left behind by earlier
+ * editor instances. It returns how many orphans it killed, so the UI can say.
+ * @returns {$CancellablePromise<number>}
+ */
+export function CloseAllRendererScreens() {
+    return $Call.ByID(2225275622);
+}
+
+/**
  * CloseRendererScreen sends a screen-close event and stops the renderer.
  * @param {string} screenID
  * @returns {$CancellablePromise<void>}
@@ -36,6 +46,26 @@ export function CloseRendererScreen(screenID) {
  */
 export function FileExists(path) {
     return $Call.ByID(2577714203, path);
+}
+
+/**
+ * GetDocumentContents returns the canonical JSON of the open show, already
+ * validated and migrated.
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetDocumentContents() {
+    return $Call.ByID(1048337760);
+}
+
+/**
+ * GetDocumentState reports the open show. The editor calls this once at
+ * startup and then follows the document:state event.
+ * @returns {$CancellablePromise<$models.DocumentState>}
+ */
+export function GetDocumentState() {
+    return $Call.ByID(2039234095).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
 }
 
 /**
@@ -64,13 +94,34 @@ export function GetInitError() {
 }
 
 /**
+ * GetRecentShows lists recently opened or saved shows, most recent first.
+ * @returns {$CancellablePromise<string[]>}
+ */
+export function GetRecentShows() {
+    return $Call.ByID(354595858).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
  * GetRendererStatus returns the current status of a renderer for a screen.
  * @param {string} screenID
  * @returns {$CancellablePromise<$models.RendererStatus>}
  */
 export function GetRendererStatus(screenID) {
     return $Call.ByID(3739970530, screenID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
+        return $$createType2($result);
+    }));
+}
+
+/**
+ * GetTransportState reports position and run state without changing them.
+ * The editor calls this once at startup and then follows transport:state.
+ * @returns {$CancellablePromise<$models.TransportState>}
+ */
+export function GetTransportState() {
+    return $Call.ByID(1678271201).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
     }));
 }
 
@@ -86,6 +137,20 @@ export function LaunchRenderer(screenID, width, height) {
 }
 
 /**
+ * NewShow replaces the open document with an empty one.
+ * 
+ * The caller is responsible for asking about unsaved work first: only the UI
+ * can put that question to the operator, and only it knows whether the answer
+ * was cancel.
+ * @returns {$CancellablePromise<$models.OpenedDocument>}
+ */
+export function NewShow() {
+    return $Call.ByID(406399808).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
+}
+
+/**
  * OpenRendererScreen launches a renderer process and sends a screen-open SSE event.
  * @param {string} screenID
  * @param {number} width
@@ -94,6 +159,44 @@ export function LaunchRenderer(screenID, width, height) {
  */
 export function OpenRendererScreen(screenID, width, height) {
     return $Call.ByID(4084424734, screenID, width, height);
+}
+
+/**
+ * OpenRendererScreenAt is OpenRendererScreen with a desktop position: the
+ * window's client area goes at (x, y) in physical virtual-screen pixels, and
+ * borderless drops the frame so it can cover a display exactly.
+ * @param {string} screenID
+ * @param {number} width
+ * @param {number} height
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} borderless
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenRendererScreenAt(screenID, width, height, x, y, borderless) {
+    return $Call.ByID(486438651, screenID, width, height, x, y, borderless);
+}
+
+/**
+ * OpenShow asks for a file and loads it.
+ * @returns {$CancellablePromise<$models.OpenedDocument>}
+ */
+export function OpenShow() {
+    return $Call.ByID(2918353848).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
+}
+
+/**
+ * OpenShowPath loads a specific file, for the recent-files menu and for a
+ * path handed to the application on its command line.
+ * @param {string} path
+ * @returns {$CancellablePromise<$models.OpenedDocument>}
+ */
+export function OpenShowPath(path) {
+    return $Call.ByID(1979109199, path).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
 }
 
 /**
@@ -118,33 +221,6 @@ export function PickMediaFolder() {
 }
 
 /**
- * PushControl sends a transport command to all connected renderers.
- * @param {string} command
- * @returns {$CancellablePromise<void>}
- */
-export function PushControl(command) {
-    return $Call.ByID(3459093070, command);
-}
-
-/**
- * PushSnapshot sends the full project state to all connected renderers.
- * @param {string} projectJSON
- * @returns {$CancellablePromise<void>}
- */
-export function PushSnapshot(projectJSON) {
-    return $Call.ByID(2495583325, projectJSON);
-}
-
-/**
- * PushTime sends the current playback time to all connected renderers.
- * @param {number} t
- * @returns {$CancellablePromise<void>}
- */
-export function PushTime(t) {
-    return $Call.ByID(983995156, t);
-}
-
-/**
  * QuitConfirmed ends the application after the frontend has confirmed that
  * unsaved work may be discarded (or found there was none).
  * @returns {$CancellablePromise<void>}
@@ -163,12 +239,44 @@ export function ReadFileBase64(path) {
 }
 
 /**
+ * RenameShow changes the show's own name, independently of its file name.
+ * @param {string} name
+ * @returns {$CancellablePromise<$models.DocumentState>}
+ */
+export function RenameShow(name) {
+    return $Call.ByID(3579588782, name).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * RevealInExplorer opens the OS file browser with the file selected.
  * @param {string} path
  * @returns {$CancellablePromise<void>}
  */
 export function RevealInExplorer(path) {
     return $Call.ByID(4223801352, path);
+}
+
+/**
+ * SaveShow writes the open show back to its own file, falling through to
+ * Save As when it has never been saved.
+ * @returns {$CancellablePromise<$models.SavedDocument>}
+ */
+export function SaveShow() {
+    return $Call.ByID(1419632521).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
+}
+
+/**
+ * SaveShowAs asks for a location and writes the open show there.
+ * @returns {$CancellablePromise<$models.SavedDocument>}
+ */
+export function SaveShowAs() {
+    return $Call.ByID(871748145).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
 }
 
 /**
@@ -180,6 +288,77 @@ export function StopRenderer(screenID) {
     return $Call.ByID(2537136262, screenID);
 }
 
+/**
+ * TransportPause holds the playhead where it is.
+ * @returns {$CancellablePromise<$models.TransportState>}
+ */
+export function TransportPause() {
+    return $Call.ByID(3349903388).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * TransportPlay starts or resumes playback.
+ * @returns {$CancellablePromise<$models.TransportState>}
+ */
+export function TransportPlay() {
+    return $Call.ByID(3819555956).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * TransportSeek moves the playhead, keeping the current run state.
+ * @param {number} seconds
+ * @returns {$CancellablePromise<$models.TransportState>}
+ */
+export function TransportSeek(seconds) {
+    return $Call.ByID(3075920242, seconds).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * TransportSetRate changes playback speed, keeping the current position.
+ * @param {number} rate
+ * @returns {$CancellablePromise<$models.TransportState>}
+ */
+export function TransportSetRate(rate) {
+    return $Call.ByID(3982477624, rate).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * TransportStop halts playback and rewinds to the beginning.
+ * @returns {$CancellablePromise<$models.TransportState>}
+ */
+export function TransportStop() {
+    return $Call.ByID(1557082450).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * UpdateShow records an edited document and forwards it to every renderer.
+ * 
+ * One call for what used to be two independent paths: a PushSnapshot that
+ * fed the outputs and a React reference comparison that decided the title bar
+ * dot. They could disagree, and after an undo they did.
+ * @param {string} contents
+ * @returns {$CancellablePromise<$models.DocumentState>}
+ */
+export function UpdateShow(contents) {
+    return $Call.ByID(1877453301, contents).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
 // Private type creation functions
-const $$createType0 = $models.RendererStatus.createFrom;
+const $$createType0 = $models.DocumentState.createFrom;
 const $$createType1 = $Create.Array($Create.Any);
+const $$createType2 = $models.RendererStatus.createFrom;
+const $$createType3 = $models.TransportState.createFrom;
+const $$createType4 = $models.OpenedDocument.createFrom;
+const $$createType5 = $models.SavedDocument.createFrom;

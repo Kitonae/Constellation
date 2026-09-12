@@ -109,6 +109,14 @@ func resolveRendererExe() string {
 // "already running" left the previous process in place and the new request
 // refused.
 func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, height int) error {
+	return rm.LaunchRendererAt(screenID, serverPort, ScreenPlacement{Width: width, Height: height})
+}
+
+// LaunchRendererAt is LaunchRenderer with a desktop position for the window.
+// The renderer opens its first window from its command line, before it has
+// connected for events, so the placement has to travel there too.
+func (rm *RendererManager) LaunchRendererAt(screenID string, serverPort int, p ScreenPlacement) error {
+	width, height := p.Width, p.Height
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
@@ -144,6 +152,12 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 		"--width", fmt.Sprintf("%d", width),
 		"--height", fmt.Sprintf("%d", height),
 		"--token", rm.token,
+	}
+	if p.Positioned {
+		args = append(args, "--x", fmt.Sprintf("%d", p.X), "--y", fmt.Sprintf("%d", p.Y))
+		if p.Borderless {
+			args = append(args, "--borderless")
+		}
 	}
 	if !audio {
 		args = append(args, "--no-audio")
@@ -222,6 +236,34 @@ func (rm *RendererManager) ShutdownAll() {
 		log.Printf("Shutdown: stopped renderer for screen %s", id)
 	}
 	rm.procs = make(map[string]*rendererProc)
+}
+
+// KillOrphans terminates renderer processes nobody owns any more: same
+// executable name as ours, parent process gone, not one of the processes
+// this manager tracks. It returns how many it killed.
+//
+// "Close All Displays" used to stop only what this editor had launched, so a
+// renderer left over from a crashed or restarted editor kept its window on
+// the output for as long as the machine stayed up.
+func (rm *RendererManager) KillOrphans() int {
+	rm.mu.Lock()
+	keep := make(map[uint32]bool, len(rm.procs))
+	for _, p := range rm.procs {
+		if p != nil && p.cmd != nil && p.cmd.Process != nil {
+			keep[uint32(p.cmd.Process.Pid)] = true
+		}
+	}
+	exe := rm.exePath
+	rm.mu.Unlock()
+
+	killed, err := killOrphanProcesses(filepath.Base(exe), keep)
+	if err != nil {
+		log.Printf("Orphan renderer sweep: %v", err)
+	}
+	if killed > 0 {
+		log.Printf("Killed %d orphaned renderer process(es)", killed)
+	}
+	return killed
 }
 
 // GetStatus returns the status of a renderer for a given screen.

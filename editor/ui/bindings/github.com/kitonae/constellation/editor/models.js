@@ -7,6 +7,126 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * DocumentState is everything the UI needs to describe the open document: the
+ * window title, the File menu's enabled items and the dirty dot in the status
+ * bar all come from these five fields.
+ */
+export class DocumentState {
+    /**
+     * Creates a new DocumentState instance.
+     * @param {Partial<DocumentState>} [$$source = {}] - The source object to create the DocumentState.
+     */
+    constructor($$source = {}) {
+        if (!("path" in $$source)) {
+            /**
+             * Path is empty for a show that has never been saved, which is what makes
+             * Save fall through to Save As.
+             * @member
+             * @type {string}
+             */
+            this["path"] = "";
+        }
+        if (!("fileName" in $$source)) {
+            /**
+             * FileName is the base name of Path, or "" for an unsaved show.
+             * @member
+             * @type {string}
+             */
+            this["fileName"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * Name is the show's own name, which survives a Save As to a new file.
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("dirty" in $$source)) {
+            /**
+             * Dirty compares content, not events: undoing back to the last saved
+             * state correctly reports clean again.
+             * @member
+             * @type {boolean}
+             */
+            this["dirty"] = false;
+        }
+        if (!("version" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["version"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DocumentState instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DocumentState}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DocumentState(/** @type {Partial<DocumentState>} */($$parsedSource));
+    }
+}
+
+/**
+ * OpenedDocument carries a freshly loaded show and its state in one call, so
+ * the editor never has to ask for the contents separately and risk rendering
+ * a title for a document it has not received.
+ */
+export class OpenedDocument {
+    /**
+     * Creates a new OpenedDocument instance.
+     * @param {Partial<OpenedDocument>} [$$source = {}] - The source object to create the OpenedDocument.
+     */
+    constructor($$source = {}) {
+        if (!("state" in $$source)) {
+            /**
+             * @member
+             * @type {DocumentState}
+             */
+            this["state"] = (new DocumentState());
+        }
+        if (!("contents" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["contents"] = "";
+        }
+        if (!("cancelled" in $$source)) {
+            /**
+             * Cancelled reports that the operator dismissed the file dialog. It is
+             * not an error, and the editor must leave the open show alone.
+             * @member
+             * @type {boolean}
+             */
+            this["cancelled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new OpenedDocument instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {OpenedDocument}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("state" in $$parsedSource) {
+            $$parsedSource["state"] = $$createField0_0($$parsedSource["state"]);
+        }
+        return new OpenedDocument(/** @type {Partial<OpenedDocument>} */($$parsedSource));
+    }
+}
+
+/**
  * RendererStatus is returned to the frontend via Wails binding.
  */
 export class RendererStatus {
@@ -65,3 +185,110 @@ export class RendererStatus {
         return new RendererStatus(/** @type {Partial<RendererStatus>} */($$parsedSource));
     }
 }
+
+/**
+ * SavedDocument is the result of a save, with the same cancellation rule as
+ * OpenedDocument: a dismissed Save As dialog is a decision, not a failure.
+ */
+export class SavedDocument {
+    /**
+     * Creates a new SavedDocument instance.
+     * @param {Partial<SavedDocument>} [$$source = {}] - The source object to create the SavedDocument.
+     */
+    constructor($$source = {}) {
+        if (!("state" in $$source)) {
+            /**
+             * @member
+             * @type {DocumentState}
+             */
+            this["state"] = (new DocumentState());
+        }
+        if (!("cancelled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["cancelled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SavedDocument instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SavedDocument}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("state" in $$parsedSource) {
+            $$parsedSource["state"] = $$createField0_0($$parsedSource["state"]);
+        }
+        return new SavedDocument(/** @type {Partial<SavedDocument>} */($$parsedSource));
+    }
+}
+
+/**
+ * TransportState is where the show is and whether it is running.
+ * 
+ * Time is the timeline position at the instant the state was issued. A
+ * consumer advances locally from there -- time + (now - receipt) * rate while
+ * playing -- rather than waiting to be told each new position, so a stalled
+ * editor, a throttled webview or a dropped message can no longer stall the
+ * picture on stage.
+ */
+export class TransportState {
+    /**
+     * Creates a new TransportState instance.
+     * @param {Partial<TransportState>} [$$source = {}] - The source object to create the TransportState.
+     */
+    constructor($$source = {}) {
+        if (!("playing" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["playing"] = false;
+        }
+        if (!("time" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["time"] = 0;
+        }
+        if (!("rate" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["rate"] = 0;
+        }
+        if (!("seq" in $$source)) {
+            /**
+             * Seq increases on every change. A consumer that receives an older Seq
+             * than the one it holds is looking at a message that overtook a newer
+             * one and must ignore it.
+             * @member
+             * @type {number}
+             */
+            this["seq"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransportState instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TransportState}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TransportState(/** @type {Partial<TransportState>} */($$parsedSource));
+    }
+}
+
+// Private type creation functions
+const $$createType0 = DocumentState.createFrom;

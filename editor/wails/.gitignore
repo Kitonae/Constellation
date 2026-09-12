@@ -35,3 +35,7 @@ frontend/*
 !frontend/dist/
 frontend/dist/*
 !frontend/dist/.keep
+
+# Audit reproduction harness: probe scripts alongside a CMake cache, a built
+# UI bundle and Playwright output. The report itself is tracked; this is not.
+.audit/

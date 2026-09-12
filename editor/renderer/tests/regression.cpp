@@ -6,6 +6,7 @@
 #include "h264_bitstream.h"
 #include "snappy_decode.h"
 #include "hap_decoder.h"
+#include "event_queue.h"
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -516,6 +517,60 @@ struct RendererTestAccess {
     }
 };
 
+// The event queue collapses the two latest-wins event types.
+//
+// Transport corrections arrive ten times a second. Queuing them would let one
+// slow frame build a backlog of positions that are already wrong by the time
+// the render thread reads them; each message states the whole transport, so
+// only the newest is worth keeping.
+static void testEventQueue() {
+    EventQueue queue;
+
+    auto transport = [](unsigned long long seq, double time, bool playing) {
+        SSEEvent e;
+        e.type = "transport";
+        e.data = nlohmann::json{{"seq", seq}, {"time", time}, {"playing", playing}, {"rate", 1.0}};
+        return e;
+    };
+    auto timeEvent = [](double t) {
+        SSEEvent e;
+        e.type = "time";
+        e.timeValue = t;
+        return e;
+    };
+
+    queue.push(transport(1, 1.0, true));
+    queue.push(transport(2, 2.0, true));
+    queue.push(transport(3, 3.0, true));
+    auto drained = queue.drainAll();
+    check(drained.size() == 1, "transport events were queued instead of collapsed");
+    check(drained[0].data.value("seq", 0ull) == 3, "an older transport survived");
+    check(queue.empty(), "the queue did not empty");
+
+    // Snapshots are not collapsed: each one is a different document.
+    SSEEvent snapshot;
+    snapshot.type = "snapshot";
+    snapshot.data = nlohmann::json::object();
+    queue.push(snapshot);
+    queue.push(snapshot);
+    queue.push(timeEvent(5.0));
+    queue.push(transport(9, 9.0, false));
+    drained = queue.drainAll();
+    check(drained.size() == 4, "snapshots were collapsed");
+    // The authoritative event is applied last, so a build that understands
+    // both does not end up holding the older correction.
+    check(drained.back().type == "transport", "transport was not applied last");
+
+    // tryPop drains the collapsed events once nothing else pends.
+    queue.push(timeEvent(1.0));
+    queue.push(transport(10, 10.0, true));
+    auto first = queue.tryPop();
+    check(first.has_value() && first->type == "transport", "tryPop did not prefer the transport");
+    auto second = queue.tryPop();
+    check(second.has_value() && second->type == "time", "tryPop lost the time event");
+    check(!queue.tryPop().has_value(), "tryPop returned more than was pushed");
+}
+
 int main(int argc, char** argv) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
@@ -531,6 +586,7 @@ int main(int argc, char** argv) {
         else if (name == "sps") testSps();
         else if (name == "snappy") testSnappy();
         else if (name == "hap") testHap();
+        else if (name == "events") testEventQueue();
         else check(false, "unknown test");
         printf("PASS: %s\n", argv[1]);
     } catch (const std::exception& e) {

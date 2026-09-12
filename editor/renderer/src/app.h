@@ -23,6 +23,7 @@
 #include <mfidl.h>
 #include <wrl/client.h>
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <memory>
 #include <unordered_map>
@@ -37,6 +38,7 @@ struct AppConfig {
     std::string token;        // sidecar session token, sent with every request
     int width = 1920;
     int height = 1080;
+    ScreenPlacement placement;  // where the initial window goes
     bool verbose = false;
     // Whether this process plays the soundtrack. The editor launches one
     // process per screen and every one of them received the whole timeline,
@@ -64,7 +66,8 @@ public:
 private:
     void processEvents();
     void render();
-    void handleScreenOpen(const std::string& screenId, int width, int height);
+    void handleScreenOpen(const std::string& screenId, int width, int height,
+                          const ScreenPlacement& placement = {});
     void handleScreenClose(const std::string& screenId);
 
     // Frame lifecycle
@@ -139,6 +142,26 @@ private:
     Scene m_scene;
     double m_currentTime = 0;
     bool m_playing = false;
+
+    // Transport.
+    //
+    // The editor used to send a position per frame and this process did
+    // nothing but store it, so the picture here advanced at the editor
+    // window's paint rate and stalled when that window was occluded. The
+    // shell now sends an anchor instead, and the position between anchors is
+    // computed here from this machine's own monotonic clock.
+    //
+    // m_transportDriven records that at least one anchor has arrived. Until
+    // one does, the older "time" and "control" events still apply, so this
+    // build keeps working against a shell that predates them.
+    bool m_transportDriven = false;
+    double m_transportAnchorTime = 0;
+    double m_transportRate = 1.0;
+    unsigned long long m_transportSeq = 0;
+    std::chrono::steady_clock::time_point m_transportAnchorAt{};
+
+    // Apply the position this instant, when a transport anchor is driving.
+    void advanceTransport();
 
     // Video decoders: keyed by timeline item id
     std::unordered_map<std::string, std::unique_ptr<VideoDecoder>> m_videoDecoders;

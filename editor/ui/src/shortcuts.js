@@ -19,7 +19,8 @@ export const SHORTCUTS = [
   // --- File ---
   { id: 'newShow', category: 'File', label: 'New Show', keys: 'Ctrl+N', match: (e) => mod(e) && e.key.toLowerCase() === 'n' && !e.shiftKey },
   { id: 'openShow', category: 'File', label: 'Open Show', keys: 'Ctrl+O', match: (e) => mod(e) && e.key.toLowerCase() === 'o' },
-  { id: 'saveShow', category: 'File', label: 'Save Show', keys: 'Ctrl+S', match: (e) => mod(e) && e.key.toLowerCase() === 's' },
+  { id: 'saveShow', category: 'File', label: 'Save Show', keys: 'Ctrl+S', match: (e) => mod(e) && e.key.toLowerCase() === 's' && !e.shiftKey },
+  { id: 'saveShowAs', category: 'File', label: 'Save Show As', keys: 'Ctrl+Shift+S', match: (e) => mod(e) && e.key.toLowerCase() === 's' && e.shiftKey },
 
   // --- Edit ---
   { id: 'undo', category: 'Edit', label: 'Undo', keys: 'Ctrl+Z', match: (e) => mod(e) && e.key.toLowerCase() === 'z' && !e.shiftKey },

@@ -35,10 +35,14 @@ export default function ContextMenu({ open, x, y, items, onClose }) {
     const onKey = (e) => {
       if (e.key === 'Escape') { e.stopPropagation(); onClose?.() }
     }
-    window.addEventListener('pointerdown', onPointerDown)
+    // Capture phase: the stage, clips and screens stop pointerdown from
+    // bubbling so their drags stay private, which also kept it from ever
+    // reaching a bubbling listener here, so clicking the stage never closed
+    // the menu. Capture runs before any of them can stop it.
+    window.addEventListener('pointerdown', onPointerDown, true)
     window.addEventListener('keydown', onKey, true)
     return () => {
-      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointerdown', onPointerDown, true)
       window.removeEventListener('keydown', onKey, true)
     }
   }, [open, onClose])

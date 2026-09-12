@@ -34,12 +34,20 @@ static void printUsage() {
     printf("Usage: constellation-renderer --port <port> --screen <screenId> --width <w> --height <h>\n");
     printf("       [--host <host>] [--ndi-screen <screenId>] [--verbose] [--console]\n");
     printf("  --ndi-screen  which screen feeds the NDI output (default: --screen)\n");
+    printf("  --x <px> --y <px>  desktop position of the window (physical pixels)\n");
+    printf("  --borderless  no frame: the client area is exactly width x height\n");
     printf("\n");
     printf("       constellation-renderer --thumbnail <video> <out.png> [--time <s>] [--max <px>]\n");
     printf("  Decode one frame headlessly and write it as a PNG (for the media bin).\n");
 }
 
 int main(int argc, char* argv[]) {
+    // Per-monitor DPI awareness, before any window exists. Without it Windows
+    // virtualises coordinates and sizes for this process on any display that
+    // is not at 100% scale: a 3840x2160 window asked for on a 150% monitor
+    // came out as 2560x1440 client pixels stretched back up, and positions
+    // from the Output panel (physical pixels) landed in the wrong place.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // Headless thumbnail mode: no window, no log file, no sidecar. The editor
     // runs this for files the browser cannot decode, so it has to stay quick
     // and quiet and report through the exit code.
@@ -69,6 +77,14 @@ int main(int argc, char* argv[]) {
             config.width = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
             config.height = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--x") == 0 && i + 1 < argc) {
+            config.placement.x = atoi(argv[++i]);
+            config.placement.positioned = true;
+        } else if (strcmp(argv[i], "--y") == 0 && i + 1 < argc) {
+            config.placement.y = atoi(argv[++i]);
+            config.placement.positioned = true;
+        } else if (strcmp(argv[i], "--borderless") == 0) {
+            config.placement.borderless = true;
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             config.host = argv[++i];
         } else if (strcmp(argv[i], "--ndi-screen") == 0 && i + 1 < argc) {

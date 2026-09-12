@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useEditorStore, getMediaSession } from '../store.js'
-import { createNativeSink } from '../media/sink.js'
 
 const st = () => useEditorStore.getState()
 
@@ -35,40 +34,5 @@ describe('document replacement resets the transport', () => {
     expect(session.getState()).not.toBe('playing')
     expect(session.getTime()).toBe(0)
     expect(st().playing).toBe(false)
-  })
-})
-
-// A native sink attached mid-show gets only the document; the serialised
-// form strips time and playing, and the clock events that would have told it
-// have already happened. It must be handed the transport state explicitly.
-describe('native sink attachment', () => {
-  it('sends the position and the playing state with the snapshot', () => {
-    const calls = []
-    const sink = createNativeSink({
-      id: 'n',
-      pushSnapshot: (json) => calls.push(['snapshot', json]),
-      pushTime: (t) => calls.push(['time', t]),
-      pushControl: (c) => calls.push(['control', c]),
-      serialize: () => '{"project":{}}',
-    })
-    sink.onSnapshot({ project: {}, scene: {}, time: 42, playing: true })
-    expect(calls).toEqual([
-      ['snapshot', '{"project":{}}'],
-      ['time', 42],
-      ['control', 'play'],
-    ])
-  })
-
-  it('tells a sink attached while paused to stay paused at the position', () => {
-    const calls = []
-    const sink = createNativeSink({
-      id: 'n2',
-      pushSnapshot: () => {},
-      pushTime: (t) => calls.push(['time', t]),
-      pushControl: (c) => calls.push(['control', c]),
-      serialize: () => '{}',
-    })
-    sink.onSnapshot({ project: {}, scene: {}, time: 3.5, playing: false })
-    expect(calls).toEqual([['time', 3.5], ['control', 'pause']])
   })
 })

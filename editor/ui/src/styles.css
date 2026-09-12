@@ -236,6 +236,19 @@ body {
   font-family: var(--font-ui);
   font-size: 12px;
   color: var(--text);
+  /* Chrome is not a document: labels, menu items and panel titles are not
+     for copying, and a drag across the stage or timeline used to paint a
+     blue highlight over half the UI. Text fields and the console opt back
+     in below. */
+  user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable],
+.selectable {
+  user-select: text;
 }
 
 /* ---------------------------------------------------------------- shell -- */
@@ -557,15 +570,64 @@ input[type='checkbox'] {
 
 /* ---------------------------------------------------------------- app bar -- */
 
-/* One 38px row: identity, what is open, the menus, the viewport mode, and
-   live output telemetry pushed to the right. */
+/* One 38px row: identity, what is open, the menus, the viewport mode, live
+   output telemetry pushed to the right, and the window buttons.
+
+   The window is frameless, so this row is also the title bar: the Wails
+   runtime starts a native window drag from any element whose computed
+   --wails-draggable is `drag`. Custom properties inherit, so everything
+   interactive in here opts out again below. */
 .appbar {
   display: flex;
   align-items: center;
   gap: 12px;
   height: 38px;
-  padding: 0 12px;
+  padding: 0 0 0 12px;
   background: var(--bg-panel);
+  --wails-draggable: drag;
+}
+
+.appbar .menubar,
+.appbar__modes,
+.appbar__win {
+  --wails-draggable: no-drag;
+}
+
+/* Minimise, maximise/restore, close: the Windows caption-button rhythm
+   (wide, flush with the top-right corner), drawn in the app's own tokens. */
+.appbar__win {
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
+
+.appbar__win-btn {
+  width: 46px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  cursor: default;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.appbar__win-btn .ms {
+  font-size: 16px;
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 20;
+}
+
+.appbar__win-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+.appbar__win-btn--close:hover {
+  background: var(--error);
+  color: var(--text-strong);
 }
 
 .appbar__brand {
@@ -1309,6 +1371,40 @@ input[type='checkbox'] {
   cursor: move;
 }
 
+/* The thumbnail fades and takes the filters; the frame around it does not,
+   so a clip at 10% opacity is still findable on the stage. */
+.v2d-clip__media {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* One chip per active effect, pinned to the clip's bottom-left, outside the
+   faded area. */
+.v2d-clip__fx {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: calc(100% - 6px);
+  pointer-events: none;
+}
+
+.v2d-clip__fx-chip {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  background: var(--bg-primary-alpha);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 .v2d-clip:hover {
   outline: 1px solid var(--accent);
 }
@@ -1623,4 +1719,230 @@ input[type='range']::-moz-range-thumb {
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 2.4s; }
   * { transition-duration: 0.01ms !important; }
+}
+
+/* ------------------------------------------------------------- output -- */
+
+/* The Output view: displays to scale on the left, one card per output on
+   the right. Output windows on the map are dragged in desktop space. */
+.output-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-deep);
+  color: var(--text);
+}
+
+.output-panel__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.output-map {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-stage);
+}
+
+.output-map__empty,
+.output-list__empty,
+.output-list__hint {
+  padding: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.output-map__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.output-monitor {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+
+.output-monitor.is-primary {
+  border-color: var(--text-tertiary);
+}
+
+.output-monitor__label {
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  pointer-events: none;
+  /* Above output windows: a window that fills the display would hide it. */
+  z-index: 2;
+}
+
+.output-monitor__name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.output-monitor__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.output-window {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border-accent);
+  background: var(--bg-selected);
+  color: var(--text);
+  font-size: 11px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.output-window--renderer {
+  border-color: var(--accent);
+}
+
+.output-window.is-selected {
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-glow);
+}
+
+.output-window.is-dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
+.output-window__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.output-window__name {
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.output-window__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.output-list {
+  flex: 0 0 300px;
+  overflow: auto;
+  border-left: 1px solid var(--border-faint);
+  background: var(--bg-panel);
+}
+
+.output-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border-faint);
+  cursor: default;
+}
+
+.output-card.is-selected {
+  background: var(--bg-row-selected);
+}
+
+.output-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.output-card__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.output-card__type {
+  font-size: 10px;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-tertiary);
+}
+
+.output-card__type--renderer {
+  border-color: var(--border-accent);
+  color: var(--accent);
+}
+
+.output-card__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.output-card__row {
+  display: flex;
+  gap: 6px;
+}
+
+.output-card__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.output-card__hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.output-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.output-card__actions .btn {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.output-card__actions select {
+  flex: 1;
+  min-width: 0;
+}
+
+.output-card__error {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--error);
+  word-break: break-word;
+  line-height: 1.4;
 }

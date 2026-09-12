@@ -21,7 +21,35 @@ export default function DisplayWindow() {
     return videoRefs.current.get(id)
   }
 
+  // The playhead this window advances on its own.
+  //
+  // The editor sends an anchor -- a position, whether it is moving, and the
+  // moment that was true -- and this window integrates from it at its own
+  // refresh rate. Before, the editor posted a position twenty times a second
+  // and the window did nothing in between, so an occluded editor, which
+  // paints no frames, froze every output it had opened.
+  const anchorRef = React.useRef({ time: 0, playing: false, rate: 1, at: 0, seq: 0 })
+
   useEffect(() => {
+    const setAnchor = (next) => {
+      if (!next) return
+      const seq = Number(next.seq)
+      // Corrections are latest-wins on this channel too, so one that lost a
+      // race would otherwise drag the playhead backwards.
+      if (Number.isFinite(seq) && seq > 0 && seq < anchorRef.current.seq) return
+      const time = Number(next.time)
+      const rate = Number(next.rate)
+      anchorRef.current = {
+        time: Number.isFinite(time) ? time : 0,
+        playing: !!next.playing,
+        rate: Number.isFinite(rate) && rate > 0 ? rate : 1,
+        at: performance.now(),
+        seq: Number.isFinite(seq) ? seq : anchorRef.current.seq,
+      }
+      setPlayTime(anchorRef.current.time)
+      setPlaying(anchorRef.current.playing)
+    }
+
     const handleMessage = (ev) => {
       // Only the editor that opened this window may drive it. Comparing the
       // source window rather than the origin is what works here: the editor
@@ -46,11 +74,11 @@ export default function DisplayWindow() {
           }
           return newSnap
         })
-        setPlayTime(Number(p.time || 0))
-        if (p.playing !== undefined) setPlaying(!!p.playing)
-      } else if (event === 'display:time') {
-        setPlayTime(Number((payload && payload.time) || 0))
-        if (payload?.playing !== undefined) setPlaying(!!payload.playing)
+        // A snapshot carries the transport as well, which is what lets a
+        // window opened mid-show start in the right place and moving.
+        setAnchor({ time: p.time, playing: p.playing ?? anchorRef.current.playing, rate: 1 })
+      } else if (event === 'display:transport') {
+        setAnchor(payload)
       } else if (event === 'display:close') {
         const sid = payload && payload.screenId
         if (!sid || sid === screenId) {
@@ -64,6 +92,21 @@ export default function DisplayWindow() {
     try { window.opener?.postMessage({ event: 'display:ready', payload: { screenId } }, '*') } catch { }
     return () => window.removeEventListener('message', handleMessage)
   }, [screenId])
+
+  // Advance the local playhead while the show runs.
+  useEffect(() => {
+    if (!playing) return
+    let raf = 0
+    const tick = () => {
+      const a = anchorRef.current
+      if (a.playing) {
+        setPlayTime(a.time + ((performance.now() - a.at) / 1000) * a.rate)
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [playing])
 
   // Compute render list via media pipeline (auto-migrates legacy data)
   const renderItems = useMemo(() => {

@@ -10,6 +10,20 @@ using Microsoft::WRL::ComPtr;
 
 static const UINT FRAME_COUNT = 2;
 
+// Where an output window goes on the desktop. Coordinates are physical
+// pixels in the virtual-screen space (the process is per-monitor DPI aware,
+// so they match what the Output panel shows and what the monitor natively
+// is). Without `positioned` the window lands wherever Windows puts it, as
+// before.
+struct ScreenPlacement {
+    bool positioned = false;
+    int x = 0;
+    int y = 0;
+    // No frame or caption: the client area is exactly width x height at
+    // (x, y), which is what covering a display edge to edge needs.
+    bool borderless = false;
+};
+
 // Represents a single render window with its own swap chain.
 //
 // A screen no longer owns command allocators or a fence: frame
@@ -17,7 +31,7 @@ static const UINT FRAME_COUNT = 2;
 // list and one fence so uploads, draws and presents share the same timeline.
 class Screen {
 public:
-    Screen(const std::string& screenId, int width, int height,
+    Screen(const std::string& screenId, int width, int height, const ScreenPlacement& placement,
            ID3D12Device* device, ID3D12CommandQueue* cmdQueue, IDXGIFactory4* factory);
     ~Screen();
 

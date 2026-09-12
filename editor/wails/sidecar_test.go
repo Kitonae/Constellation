@@ -133,3 +133,16 @@ func TestSidecar_AppBundleNeedsNoToken(t *testing.T) {
 		t.Errorf("the event stream must need a token, got %d", w.Code)
 	}
 }
+
+func TestOriginAllowed_WailsOriginWithDevPort(t *testing.T) {
+	for _, o := range []string{"http://wails.localhost", "http://wails.localhost:5173", "https://wails.localhost:34115", "wails://wails"} {
+		if !originAllowed(o) {
+			t.Errorf("%s should be allowed", o)
+		}
+	}
+	for _, o := range []string{"http://wails.localhost.evil.com", "http://notwails.localhost:5173", "http://example.com"} {
+		if originAllowed(o) {
+			t.Errorf("%s must not be allowed", o)
+		}
+	}
+}

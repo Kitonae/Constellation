@@ -171,7 +171,7 @@ bool App::init(const AppConfig& config) {
 
     // Create initial window from CLI args
     if (!m_config.screenId.empty() && m_config.width > 0 && m_config.height > 0) {
-        handleScreenOpen(m_config.screenId, m_config.width, m_config.height);
+        handleScreenOpen(m_config.screenId, m_config.width, m_config.height, m_config.placement);
     }
 
     // Initialize NDI sender
@@ -242,6 +242,7 @@ int App::run() {
         }
 
         processEvents();
+        advanceTransport();
         render();
 
         // Throttle if no screens (idle wait)
@@ -251,6 +252,20 @@ int App::run() {
     }
 
     return m_exitCode;
+}
+
+// Advance the playhead from the last anchor the shell sent.
+//
+// This is what makes the picture independent of everything upstream: between
+// corrections the show runs on this machine's own monotonic clock, so a busy
+// editor, a slow link or a dropped message costs nothing visible.
+void App::advanceTransport() {
+    if (!m_transportDriven || !m_playing) {
+        return;
+    }
+    const auto elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - m_transportAnchorAt).count();
+    m_currentTime = m_transportAnchorTime + elapsed * m_transportRate;
 }
 
 void App::processEvents() {
@@ -264,25 +279,57 @@ void App::processEvents() {
             // instead of at the first frame each clip becomes active.
             prefetchMedia();
             printf("[App] Snapshot loaded\n");
+        } else if (event.type == "transport") {
+            // The authoritative run state and position. Each message states
+            // the whole transport and they are latest-wins on the wire, so a
+            // message that lost a race would otherwise drag the show back.
+            unsigned long long seq = event.data.value("seq", 0ull);
+            if (m_transportDriven && seq != 0 && seq < m_transportSeq) {
+                continue;
+            }
+            m_transportSeq = seq;
+            m_transportAnchorTime = event.data.value("time", 0.0);
+            double rate = event.data.value("rate", 1.0);
+            m_transportRate = (rate > 0.0) ? rate : 1.0;
+            m_transportAnchorAt = std::chrono::steady_clock::now();
+            m_playing = event.data.value("playing", false);
+            m_transportDriven = true;
+            m_currentTime = m_transportAnchorTime;
         } else if (event.type == "time") {
-            m_currentTime = event.timeValue;
+            // Superseded once an anchor has arrived. Applying the corrections
+            // meant for an older shell would make the picture step at the
+            // correction rate instead of running smoothly.
+            if (!m_transportDriven) {
+                m_currentTime = event.timeValue;
+            }
         } else if (event.type == "control") {
             std::string cmd = event.data.is_string() ? event.data.get<std::string>() : "";
-            if (cmd == "play") {
-                m_playing = true;
-            } else if (cmd == "pause") {
-                m_playing = false;
-            } else if (cmd == "stop") {
-                m_playing = false;
-                m_currentTime = 0;
+            // Run state travels with the anchor when one is driving; this is
+            // kept for a shell that sends only the older events.
+            if (!m_transportDriven) {
+                if (cmd == "play") {
+                    m_playing = true;
+                } else if (cmd == "pause") {
+                    m_playing = false;
+                } else if (cmd == "stop") {
+                    m_playing = false;
+                    m_currentTime = 0;
+                }
             }
             printf("[App] Control: %s\n", cmd.c_str());
         } else if (event.type == "screen-open") {
             std::string sid = event.data.value("screenId", "");
             int w = event.data.value("width", 1920);
             int h = event.data.value("height", 1080);
+            ScreenPlacement placement;
+            if (event.data.contains("x") && event.data.contains("y")) {
+                placement.positioned = true;
+                placement.x = event.data.value("x", 0);
+                placement.y = event.data.value("y", 0);
+            }
+            placement.borderless = event.data.value("borderless", false);
             if (!sid.empty()) {
-                handleScreenOpen(sid, w, h);
+                handleScreenOpen(sid, w, h, placement);
             }
         } else if (event.type == "screen-close") {
             std::string sid = event.data.value("screenId", "");
@@ -1036,13 +1083,14 @@ std::string App::textureKeyFor(const std::string& clipId, const std::string& uri
     return TextureCache::isDataUri(uri) ? ("__img_" + clipId) : uri;
 }
 
-void App::handleScreenOpen(const std::string& screenId, int width, int height) {
+void App::handleScreenOpen(const std::string& screenId, int width, int height,
+                           const ScreenPlacement& placement) {
     if (m_screens.count(screenId)) {
         printf("[App] Screen %s already open\n", screenId.c_str());
         return;
     }
 
-    auto screen = std::make_unique<Screen>(screenId, width, height,
+    auto screen = std::make_unique<Screen>(screenId, width, height, placement,
         m_device.Get(), m_cmdQueue.Get(), m_factory.Get());
 
     if (screen->isValid()) {

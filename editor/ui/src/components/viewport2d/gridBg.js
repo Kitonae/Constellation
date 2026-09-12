@@ -25,20 +25,18 @@ function gridMetrics(zoom) {
   return { minorPx, majorMult, tilePx: minorPx * majorMult }
 }
 
+// Every dot is the same. There used to be a larger accent dot at each tile
+// corner as a "major" mark, which repeated across the whole stage and read
+// as a second grid competing with the origin axes.
 function paintDots(ctx, minorPx, majorMult, colors) {
   ctx.fillStyle = colors.stageLine
   for (let gy = 0; gy < majorMult; gy++) {
     for (let gx = 0; gx < majorMult; gx++) {
-      if (gx === 0 && gy === 0) continue // skip origin — major dot goes there
       ctx.beginPath()
       ctx.arc(gx * minorPx, gy * minorPx, 1, 0, Math.PI * 2)
       ctx.fill()
     }
   }
-  ctx.fillStyle = colors.accent
-  ctx.beginPath()
-  ctx.arc(0, 0, 2.5, 0, Math.PI * 2)
-  ctx.fill()
 }
 
 function paintLines(ctx, minorPx, majorMult, tilePx, colors) {
@@ -47,22 +45,17 @@ function paintLines(ctx, minorPx, majorMult, tilePx, colors) {
   ctx.strokeStyle = colors.stageGrid
   ctx.lineWidth = 1
   ctx.beginPath()
-  for (let i = 1; i < majorMult; i++) {
+  //
+  // Every line is the same weight. The tile edge used to be drawn a step
+  // stronger with an accent square at its corner as a "major" line; the
+  // only emphasised lines on the stage are now the origin axes, which the
+  // stage draws as its own elements on top of this tile.
+  for (let i = 0; i < majorMult; i++) {
     const at = Math.round(i * minorPx) + 0.5
     ctx.moveTo(at, 0); ctx.lineTo(at, tilePx)
     ctx.moveTo(0, at); ctx.lineTo(tilePx, at)
   }
   ctx.stroke()
-
-  // The major cell edge, and the origin, read one step stronger.
-  ctx.strokeStyle = colors.stageLine
-  ctx.beginPath()
-  ctx.moveTo(0.5, 0); ctx.lineTo(0.5, tilePx)
-  ctx.moveTo(0, 0.5); ctx.lineTo(tilePx, 0.5)
-  ctx.stroke()
-
-  ctx.fillStyle = colors.accent
-  ctx.fillRect(0, 0, 3, 3)
 }
 
 /**
