@@ -10,13 +10,18 @@ import { ReadFileBase64 } from '@bindings/app.js'
 import { isWails } from '../wails/env.js'
 
 let _fileServerBase = ''
+let _fileServerToken = ''
 
 /**
- * Set the base URL for the sidecar file server (Wails dev mode).
- * Called once at startup when the Go backend reports its port.
+ * Set the base URL of the sidecar file server, and the session token it
+ * requires on every media and API request.
+ *
+ * Called once at startup when the Go backend reports its port, and by an
+ * output window from the origin that served it.
  */
-export function setFileServerBase(url) {
+export function setFileServerBase(url, token) {
   _fileServerBase = url || ''
+  if (token !== undefined) _fileServerToken = token || ''
 }
 
 /**
@@ -24,6 +29,21 @@ export function setFileServerBase(url) {
  */
 export function getFileServerBase() {
   return _fileServerBase
+}
+
+export function getFileServerToken() {
+  return _fileServerToken
+}
+
+/**
+ * Append the session token to a sidecar URL.
+ *
+ * The sidecar refuses local-file and API requests without it; loopback is
+ * not an authorization boundary, and the token is what is.
+ */
+export function withSidecarToken(url) {
+  if (!_fileServerToken) return url
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(_fileServerToken)
 }
 
 /**
@@ -174,5 +194,5 @@ function _rewriteFileToHttp(fileUri) {
   // Re-encode for the HTTP URL
   const segments = safePath.split('/')
   const encoded = segments.map(s => encodeURIComponent(s)).join('/')
-  return `${_fileServerBase}/fs${encoded}`
+  return withSidecarToken(`${_fileServerBase}/fs${encoded}`)
 }

@@ -9,7 +9,8 @@
 // via WinHTTP and pushes parsed events to an EventQueue.
 class SSEClient {
 public:
-    SSEClient(EventQueue& queue, const std::string& host, int port, const std::string& screenId);
+    SSEClient(EventQueue& queue, const std::string& host, int port,
+              const std::string& screenId, const std::string& token = "");
     ~SSEClient();
 
     void start();
@@ -25,6 +26,7 @@ private:
     std::string m_host;
     int m_port;
     std::string m_screenId;
+    std::string m_token;   // sidecar session token, sent in the stream URL
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};

@@ -17,7 +17,7 @@ import {
   timelineEnd,
 } from './utils/clipTime.js'
 import { clipInstancesOf, findNode as findNodeIn } from './selectors.js'
-import { GetFileServerPort } from '@bindings/app.js'
+import { GetFileServerPort, GetFileServerToken } from '@bindings/app.js'
 import { isWails } from './wails/env.js'
 import { readSettings, writeSettings, isValidSetting } from './settings.js'
 import { applyTheme } from './theme.js'
@@ -25,13 +25,14 @@ import { applyTheme } from './theme.js'
 // Initialize the file server base URL if running under Wails. This is the only
 // place it happens — App.jsx used to repeat it on mount.
 if (isWails()) {
-  GetFileServerPort().then(port => {
+  Promise.all([GetFileServerPort(), GetFileServerToken()]).then(([port, token]) => {
     if (port > 0) {
-      setFileServerBaseUrl(`http://localhost:${port}`)
+      const base = `http://localhost:${port}`
+      setFileServerBaseUrl(base, token)
       // Store port for model URL resolution
       useEditorStore.setState({ _fileServerPort: port })
       // Also set the Media Foundation URI resolver's base
-      setFileServerBase(`http://localhost:${port}`)
+      setFileServerBase(base, token)
       queueLog('info', `Video sidecar active on port ${port}`)
     }
   }).catch(err => queueLog('error', `Sidecar error: ${err}`))

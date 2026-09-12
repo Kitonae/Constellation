@@ -73,6 +73,8 @@ int main(int argc, char* argv[]) {
             config.host = argv[++i];
         } else if (strcmp(argv[i], "--ndi-screen") == 0 && i + 1 < argc) {
             config.ndiScreenId = argv[++i];
+        } else if (strcmp(argv[i], "--token") == 0 && i + 1 < argc) {
+            config.token = argv[++i];
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             config.verbose = true;
         } else if (strcmp(argv[i], "--console") == 0) {

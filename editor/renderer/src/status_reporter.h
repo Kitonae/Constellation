@@ -14,7 +14,7 @@
 // took to answer.
 class StatusReporter {
 public:
-    StatusReporter(const std::string& host, int port);
+    StatusReporter(const std::string& host, int port, const std::string& token = "");
     ~StatusReporter();
 
     void reportReady(const std::string& screenId);
@@ -32,6 +32,7 @@ private:
 
     std::string m_host;
     int m_port;
+    std::string m_token;   // sidecar session token, sent as a header
 
     std::thread m_thread;
     std::mutex m_mu;

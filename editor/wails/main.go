@@ -36,12 +36,12 @@ func validateScreenID(id string) error {
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// fsMiddleware serves /fs/ media requests from the file loader and passes
-// everything else to the asset server.
-func fsMiddleware(next http.Handler) http.Handler {
+// fsMiddleware serves /fs/ media requests from the file loader, behind the
+// session token, and passes everything else to the asset server.
+func (a *App) fsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/fs/" {
-			NewFileLoader(nil).ServeHTTP(w, r)
+			requireToken(a.fileServerToken, NewFileLoader(nil)).ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -66,7 +66,7 @@ func main() {
 		},
 		Assets: application.AssetOptions{
 			Handler:    application.AssetFileServerFS(subAssets),
-			Middleware: fsMiddleware,
+			Middleware: appService.fsMiddleware,
 		},
 	})
 
@@ -119,13 +119,14 @@ const CloseRequestedEvent = "app:closeRequested"
 
 // App struct
 type App struct {
-	app            *application.App
-	fileServerPort int
-	fileServer     *http.Server
-	initError      string
-	hub            Broadcaster
-	renderers      ProcessManager
-	files          FileReader
+	app             *application.App
+	fileServerPort  int
+	fileServerToken string
+	fileServer      *http.Server
+	initError       string
+	hub             Broadcaster
+	renderers       ProcessManager
+	files           FileReader
 
 	// Set by QuitConfirmed so the next WindowClosing is allowed through.
 	quitConfirmed atomic.Bool
@@ -153,13 +154,19 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.renderers = rendererManager
 	a.files = &FileService{}
 
+	// One token per session. The editor learns it through GetFileServerToken,
+	// each renderer receives it on its command line, and nothing else can
+	// read local files or the event stream through the sidecar.
+	a.fileServerToken = newSessionToken()
+	rendererManager.SetToken(a.fileServerToken)
+
 	// Start a sidecar file server for dev mode access and renderer communication
 	listener, err := net.Listen("tcp", "localhost:0")
 	if err == nil {
 		a.fileServerPort = listener.Addr().(*net.TCPAddr).Port
 		subAssets, _ := fs.Sub(assets, "frontend/dist")
 		fileLoader := NewFileLoader(subAssets)
-		mux := NewAPIMux(fileLoader, sseHub, a.renderers, NewThumbnailService(rendererManager.ExePath()))
+		mux := NewAPIMux(fileLoader, sseHub, a.renderers, NewThumbnailService(rendererManager.ExePath()), a.fileServerToken)
 		a.fileServer = &http.Server{Handler: mux}
 		go func() {
 			if err := a.fileServer.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -198,6 +205,12 @@ func (a *App) ReadFileBase64(path string) (string, error) {
 // GetFileServerPort returns the sidecar server port for the frontend.
 func (a *App) GetFileServerPort() int {
 	return a.fileServerPort
+}
+
+// GetFileServerToken returns the session token every sidecar request for
+// local media or the event stream must carry.
+func (a *App) GetFileServerToken() string {
+	return a.fileServerToken
 }
 
 // FileExists reports whether a local media file is still on disk.

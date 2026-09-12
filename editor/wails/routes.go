@@ -9,30 +9,26 @@ import (
 
 // NewAPIMux builds the http.Handler for the sidecar server.
 // It composes the existing FileLoader with SSE and status endpoints.
-func NewAPIMux(fileLoader http.Handler, hub http.Handler, rm ProcessManager, thumbnails *ThumbnailService) http.Handler {
+//
+// Everything that reads local files or carries the show requires the session
+// token (see auth.go). The app bundle itself does not: it is what the output
+// windows load before they have any way to present a token.
+func NewAPIMux(fileLoader http.Handler, hub http.Handler, rm ProcessManager, thumbnails *ThumbnailService, token string) http.Handler {
 	mux := http.NewServeMux()
 
 	// SSE endpoint — renderer connects here
-	mux.Handle("/sse/renderer", hub)
+	mux.Handle("/sse/renderer", requireToken(token, hub))
 
 	// What the renderer can say about a video file that the browser cannot: a
 	// frame as a PNG, and its duration and size. Optional: tests build the
 	// mux without it.
 	if thumbnails != nil {
-		mux.Handle("/api/thumbnail", thumbnails)
-		mux.HandleFunc("/api/probe", thumbnails.ServeProbe)
+		mux.Handle("/api/thumbnail", requireToken(token, thumbnails))
+		mux.Handle("/api/probe", requireToken(token, http.HandlerFunc(thumbnails.ServeProbe)))
 	}
 
 	// Status POST — renderer reports back
-	mux.HandleFunc("/api/renderer/status", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	mux.Handle("/api/renderer/status", requireToken(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
@@ -53,9 +49,11 @@ func NewAPIMux(fileLoader http.Handler, hub http.Handler, rm ProcessManager, thu
 		rm.UpdateStatus(status)
 		log.Printf("Renderer status update: screen=%s state=%s fps=%.1f", status.ScreenID, status.State, status.FPS)
 		w.WriteHeader(http.StatusOK)
-	})
+	})))
 
-	// Everything else falls through to the existing FileLoader
+	// Local files need the token; the app bundle, which output windows load
+	// before they can present one, does not.
+	mux.Handle("/fs/", requireToken(token, fileLoader))
 	mux.Handle("/", fileLoader)
 
 	return mux

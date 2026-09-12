@@ -6,8 +6,9 @@
 
 #pragma comment(lib, "winhttp.lib")
 
-SSEClient::SSEClient(EventQueue& queue, const std::string& host, int port, const std::string& screenId)
-    : m_queue(queue), m_host(host), m_port(port), m_screenId(screenId),
+SSEClient::SSEClient(EventQueue& queue, const std::string& host, int port,
+                     const std::string& screenId, const std::string& token)
+    : m_queue(queue), m_host(host), m_port(port), m_screenId(screenId), m_token(token),
       m_lastStatLog(std::chrono::steady_clock::now()) {}
 
 SSEClient::~SSEClient() {
@@ -52,8 +53,9 @@ void SSEClient::run() {
             continue;
         }
 
-        // Build path
+        // Build path. The token is hex, so it needs no escaping.
         std::string path = "/sse/renderer?screen=" + m_screenId;
+        if (!m_token.empty()) path += "&token=" + m_token;
         std::wstring wpath(path.begin(), path.end());
 
         HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", wpath.c_str(),

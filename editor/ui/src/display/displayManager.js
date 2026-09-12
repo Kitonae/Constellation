@@ -1,4 +1,4 @@
-import { GetFileServerPort } from '@bindings/app.js'
+import { GetFileServerPort, GetFileServerToken } from '@bindings/app.js'
 
 // screenId → { screenId, width, height, win }
 const opened = new Map()
@@ -27,11 +27,14 @@ export async function openDisplayWindow(screenId, width, height) {
 
   let url = `/?display=1&screenId=${encodeURIComponent(screenId)}&w=${w}&h=${h}`
 
-  // Prefer the sidecar origin so the child window can load local media
+  // Prefer the sidecar origin so the child window can load local media. The
+  // window is a plain browser page with none of the editor's bindings, so
+  // the token it needs for that media travels in its URL.
   try {
-    const port = await GetFileServerPort()
+    const [port, token] = await Promise.all([GetFileServerPort(), GetFileServerToken()])
     if (port > 0) {
       url = `http://localhost:${port}/?display=1&screenId=${encodeURIComponent(screenId)}&w=${w}&h=${h}`
+        + `&token=${encodeURIComponent(token || '')}`
     }
   } catch (e) {
     console.warn('Failed to get sidecar port, using relative URL', e)

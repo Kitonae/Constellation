@@ -87,17 +87,28 @@ func TestFileLoaderServeHTTP_ValidFile(t *testing.T) {
 	}
 }
 
+// CORS grants go only to the origins the editor and its output windows are
+// served from. The loader used to answer every origin with a wildcard.
 func TestFileLoaderServeHTTP_CORS(t *testing.T) {
 	loader := NewFileLoader(nil)
 
 	req := httptest.NewRequest("OPTIONS", "/fs/C:/test.txt", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
 	w := httptest.NewRecorder()
 	loader.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 for OPTIONS, got %d", w.Code)
 	}
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("expected CORS header *, got %q", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Errorf("expected the dev origin echoed, got %q", got)
+	}
+
+	req = httptest.NewRequest("OPTIONS", "/fs/C:/test.txt", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	loader.ServeHTTP(w, req)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("a foreign origin must get no CORS grant, got %q", got)
 	}
 }

@@ -34,6 +34,7 @@ struct AppConfig {
     int port = 0;
     std::string screenId;  // initial screen (from CLI)
     std::string ndiScreenId;  // screen fed to NDI (defaults to screenId)
+    std::string token;        // sidecar session token, sent with every request
     int width = 1920;
     int height = 1080;
     bool verbose = false;

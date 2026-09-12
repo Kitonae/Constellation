@@ -6,8 +6,8 @@
 
 #pragma comment(lib, "winhttp.lib")
 
-StatusReporter::StatusReporter(const std::string& host, int port)
-    : m_host(host), m_port(port) {
+StatusReporter::StatusReporter(const std::string& host, int port, const std::string& token)
+    : m_host(host), m_port(port), m_token(token) {
     m_thread = std::thread(&StatusReporter::threadMain, this);
 }
 
@@ -98,6 +98,10 @@ void StatusReporter::post(const std::string& body) {
     }
 
     WinHttpAddRequestHeaders(hRequest, L"Content-Type: application/json", (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
+    if (!m_token.empty()) {
+        std::wstring auth = L"X-Constellation-Token: " + std::wstring(m_token.begin(), m_token.end());
+        WinHttpAddRequestHeaders(hRequest, auth.c_str(), (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
+    }
 
     WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
         (LPVOID)body.c_str(), (DWORD)body.size(), (DWORD)body.size(), 0);

@@ -108,9 +108,7 @@ func probeNameFor(path string, size int64, modTimeNanos int64) string {
 // resolve turns the request's `uri` into a validated local file, writing the
 // right status when it cannot. Returns ok=false after responding.
 func (s *ThumbnailService) resolve(w http.ResponseWriter, r *http.Request) (src string, info os.FileInfo, ok bool) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "*")
+	setCORS(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return "", nil, false

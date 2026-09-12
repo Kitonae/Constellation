@@ -162,11 +162,12 @@ bool App::init(const AppConfig& config) {
     m_mediaLoader.start();
 
     // Start SSE client
-    m_sseClient = std::make_unique<SSEClient>(m_eventQueue, m_config.host, m_config.port, m_config.screenId);
+    m_sseClient = std::make_unique<SSEClient>(m_eventQueue, m_config.host, m_config.port,
+                                              m_config.screenId, m_config.token);
     m_sseClient->start();
 
     // Start status reporter
-    m_statusReporter = std::make_unique<StatusReporter>(m_config.host, m_config.port);
+    m_statusReporter = std::make_unique<StatusReporter>(m_config.host, m_config.port, m_config.token);
 
     // Create initial window from CLI args
     if (!m_config.screenId.empty() && m_config.width > 0 && m_config.height > 0) {

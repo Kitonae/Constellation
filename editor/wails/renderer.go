@@ -33,6 +33,14 @@ type RendererManager struct {
 	procs   map[string]*rendererProc
 	hub     Broadcaster
 	exePath string
+	token   string // handed to each renderer for its sidecar requests
+}
+
+// SetToken records the session token renderers must present to the sidecar.
+func (rm *RendererManager) SetToken(token string) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.token = token
 }
 
 // NewRendererManager creates a new renderer manager.
@@ -110,6 +118,7 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 		"--screen", screenID,
 		"--width", fmt.Sprintf("%d", width),
 		"--height", fmt.Sprintf("%d", height),
+		"--token", rm.token,
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

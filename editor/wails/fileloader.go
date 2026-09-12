@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -41,24 +40,17 @@ func validateFSPath(path string) error {
 }
 
 func (h *FileLoader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// CORS for dev mode sidecar
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "*")
+	setCORS(w, r)
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	if strings.HasPrefix(r.URL.Path, "/fs/") {
-		rawPath := r.URL.Path[4:]
-		// Unescape path to handle spaces and special characters
-		path, err := url.PathUnescape(rawPath)
-		if err != nil {
-			log.Printf("Error unescaping path %s: %v", rawPath, err)
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
+		// net/http has already decoded the path once. Decoding it again
+		// turned a legal "100% done.png" into a 400, because the second pass
+		// read "% d" as an escape.
+		path := r.URL.Path[4:]
 
 		// Handle Windows drive letters: /C:/... -> C:/...
 		if len(path) > 2 && path[0] == '/' && path[2] == ':' {

@@ -47,6 +47,15 @@ export function GetFileServerPort() {
 }
 
 /**
+ * GetFileServerToken returns the session token every sidecar request for
+ * local media or the event stream must carry.
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetFileServerToken() {
+    return $Call.ByID(1383479731);
+}
+
+/**
  * GetInitError returns any initialization error (empty string if all OK).
  * @returns {$CancellablePromise<string>}
  */

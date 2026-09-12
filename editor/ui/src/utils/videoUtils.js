@@ -1,8 +1,8 @@
 import { setFileServerBase, resolveUriSync } from '../media/uri.js'
 
 // Re-export for backward compatibility. New code should import from media/uri.js directly.
-export function setFileServerBaseUrl(url) {
-  setFileServerBase(url)
+export function setFileServerBaseUrl(url, token) {
+  setFileServerBase(url, token)
 }
 
 export function resolveFileUrl(uri) {
@@ -48,14 +48,14 @@ export async function fetchNativeMetadata(src) {
 // the probe need the same base, the same refusal of non-file sources and the
 // same error text.
 export async function nativeFetch(endpoint, src, extraQuery = '') {
-  const { getFileServerBase } = await import('../media/uri.js')
+  const { getFileServerBase, withSidecarToken } = await import('../media/uri.js')
   const base = getFileServerBase()
   if (!base) throw new Error('no sidecar to ask')
   const u = String(src)
   if (u.startsWith('blob:') || u.startsWith('data:') || /^https?:/.test(u)) {
     throw new Error('the sidecar can only read files on disk')
   }
-  const res = await fetch(`${base}${endpoint}?uri=${encodeURIComponent(u)}${extraQuery}`)
+  const res = await fetch(withSidecarToken(`${base}${endpoint}?uri=${encodeURIComponent(u)}${extraQuery}`))
   if (!res.ok) {
     const text = (await res.text().catch(() => '')).trim()
     throw new Error(text || `sidecar ${endpoint} failed (${res.status})`)
