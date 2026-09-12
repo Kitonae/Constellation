@@ -9,11 +9,17 @@ import (
 
 // NewAPIMux builds the http.Handler for the sidecar server.
 // It composes the existing FileLoader with SSE and status endpoints.
-func NewAPIMux(fileLoader http.Handler, hub http.Handler, rm ProcessManager) http.Handler {
+func NewAPIMux(fileLoader http.Handler, hub http.Handler, rm ProcessManager, thumbnails http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	// SSE endpoint — renderer connects here
 	mux.Handle("/sse/renderer", hub)
+
+	// One frame of a video as a PNG, from the renderer, for files the browser
+	// cannot decode. Optional: tests build the mux without it.
+	if thumbnails != nil {
+		mux.Handle("/api/thumbnail", thumbnails)
+	}
 
 	// Status POST — renderer reports back
 	mux.HandleFunc("/api/renderer/status", func(w http.ResponseWriter, r *http.Request) {

@@ -26,6 +26,7 @@ add_executable(constellation-renderer
     src/d3d12_video_decoder.cpp
     src/snappy_decode.cpp
     src/hap_decoder.cpp
+    src/thumbnail.cpp
     src/video_buffer.cpp
     src/media_loader.cpp
     src/audio_player.cpp

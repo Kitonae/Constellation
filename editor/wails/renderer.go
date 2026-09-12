@@ -36,6 +36,10 @@ type RendererManager struct {
 }
 
 // NewRendererManager creates a new renderer manager.
+// ExePath is where the renderer executable was found, for callers that run
+// it in modes other than a live output (thumbnails).
+func (rm *RendererManager) ExePath() string { return rm.exePath }
+
 func NewRendererManager(hub Broadcaster) *RendererManager {
 	exe := resolveRendererExe()
 	return &RendererManager{

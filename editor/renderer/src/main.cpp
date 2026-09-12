@@ -1,4 +1,5 @@
 #include "app.h"
+#include "thumbnail.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -33,9 +34,25 @@ static void printUsage() {
     printf("Usage: constellation-renderer --port <port> --screen <screenId> --width <w> --height <h>\n");
     printf("       [--host <host>] [--ndi-screen <screenId>] [--verbose] [--console]\n");
     printf("  --ndi-screen  which screen feeds the NDI output (default: --screen)\n");
+    printf("\n");
+    printf("       constellation-renderer --thumbnail <video> <out.png> [--time <s>] [--max <px>]\n");
+    printf("  Decode one frame headlessly and write it as a PNG (for the media bin).\n");
 }
 
 int main(int argc, char* argv[]) {
+    // Headless thumbnail mode: no window, no log file, no sidecar. The editor
+    // runs this for files the browser cannot decode, so it has to stay quick
+    // and quiet and report through the exit code.
+    if (argc >= 4 && strcmp(argv[1], "--thumbnail") == 0) {
+        double time = 0.0;
+        uint32_t maxDim = 256;
+        for (int i = 4; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "--time") == 0) time = atof(argv[++i]);
+            else if (strcmp(argv[i], "--max") == 0) maxDim = (uint32_t)atoi(argv[++i]);
+        }
+        return runThumbnail(argv[2], argv[3], time, maxDim > 0 ? maxDim : 256);
+    }
+
     AppConfig config;
     config.host = "localhost";
     bool useLogFile = true;

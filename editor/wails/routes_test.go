@@ -23,7 +23,7 @@ func TestRoutes_StatusPost_Valid(t *testing.T) {
 	}
 	rm.mu.Unlock()
 
-	mux := NewAPIMux(http.NotFoundHandler(), hub, rm)
+	mux := NewAPIMux(http.NotFoundHandler(), hub, rm, nil)
 
 	body := `{"screenId":"test-screen","state":"ready","fps":60}`
 	req := httptest.NewRequest("POST", "/api/renderer/status", strings.NewReader(body))
@@ -43,7 +43,7 @@ func TestRoutes_StatusPost_Valid(t *testing.T) {
 func TestRoutes_StatusPost_BadJSON(t *testing.T) {
 	hub := NewSSEHub()
 	rm := &RendererManager{procs: make(map[string]*rendererProc), hub: hub}
-	mux := NewAPIMux(http.NotFoundHandler(), hub, rm)
+	mux := NewAPIMux(http.NotFoundHandler(), hub, rm, nil)
 
 	req := httptest.NewRequest("POST", "/api/renderer/status", strings.NewReader("not json"))
 	w := httptest.NewRecorder()
@@ -57,7 +57,7 @@ func TestRoutes_StatusPost_BadJSON(t *testing.T) {
 func TestRoutes_StatusPost_WrongMethod(t *testing.T) {
 	hub := NewSSEHub()
 	rm := &RendererManager{procs: make(map[string]*rendererProc), hub: hub}
-	mux := NewAPIMux(http.NotFoundHandler(), hub, rm)
+	mux := NewAPIMux(http.NotFoundHandler(), hub, rm, nil)
 
 	req := httptest.NewRequest("GET", "/api/renderer/status", nil)
 	w := httptest.NewRecorder()
@@ -71,7 +71,7 @@ func TestRoutes_StatusPost_WrongMethod(t *testing.T) {
 func TestRoutes_StatusPost_CORS(t *testing.T) {
 	hub := NewSSEHub()
 	rm := &RendererManager{procs: make(map[string]*rendererProc), hub: hub}
-	mux := NewAPIMux(http.NotFoundHandler(), hub, rm)
+	mux := NewAPIMux(http.NotFoundHandler(), hub, rm, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/renderer/status", nil)
 	w := httptest.NewRecorder()
@@ -89,7 +89,7 @@ func TestRoutes_SSEEndpoint(t *testing.T) {
 	hub := NewSSEHub()
 	hub.BroadcastSnapshot([]byte(`{"test":true}`)) // cache a snapshot so client gets data immediately
 	rm := &RendererManager{procs: make(map[string]*rendererProc), hub: hub}
-	mux := NewAPIMux(http.NotFoundHandler(), hub, rm)
+	mux := NewAPIMux(http.NotFoundHandler(), hub, rm, nil)
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

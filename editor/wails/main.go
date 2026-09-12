@@ -120,7 +120,8 @@ func NewApp() *App {
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	sseHub := NewSSEHub()
 	a.hub = sseHub
-	a.renderers = NewRendererManager(sseHub)
+	rendererManager := NewRendererManager(sseHub)
+	a.renderers = rendererManager
 	a.files = &FileService{}
 
 	// Start a sidecar file server for dev mode access and renderer communication
@@ -129,7 +130,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		a.fileServerPort = listener.Addr().(*net.TCPAddr).Port
 		subAssets, _ := fs.Sub(assets, "frontend/dist")
 		fileLoader := NewFileLoader(subAssets)
-		mux := NewAPIMux(fileLoader, sseHub, a.renderers)
+		mux := NewAPIMux(fileLoader, sseHub, a.renderers, NewThumbnailService(rendererManager.ExePath()))
 		a.fileServer = &http.Server{Handler: mux}
 		go func() {
 			if err := a.fileServer.Serve(listener); err != nil && err != http.ErrServerClosed {
