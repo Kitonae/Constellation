@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -67,26 +68,33 @@ func NewRendererManager(hub Broadcaster) *RendererManager {
 // Checks multiple locations: next to the editor binary (production),
 // and common dev build paths relative to the working directory.
 func resolveRendererExe() string {
+	exe := rendererExeName()
 	candidates := []string{}
 
-	// 1. Next to the running binary (production layout)
+	// 1. Next to the running binary (production layout; Contents/MacOS in
+	//    an app bundle)
 	if self, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), "constellation-renderer.exe"))
+		candidates = append(candidates, filepath.Join(filepath.Dir(self), exe))
 	}
 
-	// 2. Dev build paths relative to working directory
+	// 2. Dev build paths relative to working directory. Multi-config
+	//    generators (Visual Studio) nest the binary under the configuration;
+	//    single-config ones (Ninja, Makefiles on macOS) put it in build/.
 	if wd, err := os.Getwd(); err == nil {
 		candidates = append(candidates,
-			filepath.Join(wd, "..", "renderer", "build", "Release", "constellation-renderer.exe"),
-			filepath.Join(wd, "..", "renderer", "build", "Debug", "constellation-renderer.exe"),
-			filepath.Join(wd, "build", "bin", "constellation-renderer.exe"),
+			filepath.Join(wd, "..", "renderer", "build", exe),
+			filepath.Join(wd, "..", "renderer", "build", "Release", exe),
+			filepath.Join(wd, "..", "renderer", "build", "Debug", exe),
+			filepath.Join(wd, "build", "bin", exe),
 		)
 	}
 
 	// 3. Common absolute dev path
-	candidates = append(candidates,
-		`C:\src\Constellation\editor\renderer\build\Release\constellation-renderer.exe`,
-	)
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates,
+			`C:\src\Constellation\editor\renderer\build\Release\constellation-renderer.exe`,
+		)
+	}
 
 	for _, c := range candidates {
 		if abs, err := filepath.Abs(c); err == nil {
@@ -98,7 +106,15 @@ func resolveRendererExe() string {
 	}
 
 	log.Printf("Warning: renderer executable not found in any known location")
-	return "constellation-renderer.exe"
+	return exe
+}
+
+// rendererExeName is the renderer binary's file name on this platform.
+func rendererExeName() string {
+	if runtime.GOOS == "windows" {
+		return "constellation-renderer.exe"
+	}
+	return "constellation-renderer"
 }
 
 // LaunchRenderer starts a renderer process for the given screen.

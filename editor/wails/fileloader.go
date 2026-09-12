@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -19,6 +20,22 @@ func NewFileLoader(assets fs.FS) *FileLoader {
 	}
 }
 
+// hasDotDotSegment reports whether any slash- or backslash-separated
+// component of path is "..".
+func hasDotDotSegment(path string) bool {
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDriveLetter reports whether path starts like C:\ or C:/.
+func hasDriveLetter(path string) bool {
+	return len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
+}
+
 // validateFSPath checks that a cleaned filesystem path is safe to serve.
 // Rejects traversal attempts, UNC paths, and relative paths.
 func validateFSPath(path string) error {
@@ -26,9 +43,13 @@ func validateFSPath(path string) error {
 	if strings.HasPrefix(path, `\\`) {
 		return fmt.Errorf("UNC paths not allowed")
 	}
-	// Require absolute path with drive letter on Windows (e.g. C:\...)
-	if len(path) < 3 || path[1] != ':' || (path[2] != '\\' && path[2] != '/') {
-		return fmt.Errorf("path must be absolute with drive letter")
+	// Windows needs a drive letter (C:\...). Elsewhere a rooted POSIX path
+	// is the absolute form; the drive-letter rule alone refused every file
+	// on macOS.
+	if !hasDriveLetter(path) {
+		if runtime.GOOS == "windows" || !filepath.IsAbs(path) {
+			return fmt.Errorf("path must be absolute")
+		}
 	}
 	// Reject any remaining .. components after filepath.Clean
 	for _, part := range strings.Split(path, string(filepath.Separator)) {
@@ -52,9 +73,22 @@ func (h *FileLoader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// read "% d" as an escape.
 		path := r.URL.Path[4:]
 
+		// Traversal and UNC are refused on the request as written, before
+		// any rooting or cleaning can turn them into something that looks
+		// legitimate.
+		if strings.HasPrefix(path, `\\`) || hasDotDotSegment(path) {
+			log.Printf("Rejected file path %q: traversal or UNC", path)
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
 		// Handle Windows drive letters: /C:/... -> C:/...
 		if len(path) > 2 && path[0] == '/' && path[2] == ':' {
 			path = path[1:]
+		} else if runtime.GOOS != "windows" && !strings.HasPrefix(path, "/") {
+			// The editor writes /fs/Users/x for /Users/x, and the mux
+			// collapses a doubled slash anyway; every POSIX path is rooted.
+			path = "/" + path
 		}
 
 		// Clean path to use native separators (e.g. \ on Windows)

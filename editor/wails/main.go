@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -270,6 +271,9 @@ func (a *App) RevealInExplorer(path string) error {
 	}
 	if _, err := os.Stat(clean); err != nil {
 		return fmt.Errorf("file not found: %w", err)
+	}
+	if runtime.GOOS == "darwin" {
+		return exec.Command("open", "-R", clean).Start()
 	}
 	// explorer.exe returns exit status 1 even when it succeeds, so the error
 	// from Run is not meaningful here; Start avoids waiting on it at all.
