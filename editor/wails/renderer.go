@@ -25,6 +25,12 @@ type rendererProc struct {
 	screenID string
 	cancel   context.CancelFunc
 	status   RendererStatus
+	audio    bool // this process plays the soundtrack
+}
+
+// live reports whether the process is still expected to be running.
+func (p *rendererProc) live() bool {
+	return p != nil && p.cmd != nil && p.cmd.Process != nil && p.status.State != "stopped"
 }
 
 // RendererManager owns all renderer processes and the SSE hub.
@@ -96,14 +102,22 @@ func resolveRendererExe() string {
 }
 
 // LaunchRenderer starts a renderer process for the given screen.
+//
+// Launching a screen that already has a live process restarts it. Both of the
+// editor's relaunch paths -- the Inspector's Relaunch and Re-open Displays --
+// forget what they had open and simply open again, and the old answer of
+// "already running" left the previous process in place and the new request
+// refused.
 func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, height int) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if p, ok := rm.procs[screenID]; ok {
-		if p.cmd != nil && p.cmd.Process != nil && p.status.State != "stopped" {
-			return fmt.Errorf("renderer already running for screen %s (PID %d)", screenID, p.cmd.Process.Pid)
+	if p, ok := rm.procs[screenID]; ok && p.live() {
+		log.Printf("Restarting renderer for screen %s (PID %d)", screenID, p.cmd.Process.Pid)
+		if p.cancel != nil {
+			p.cancel()
 		}
+		delete(rm.procs, screenID)
 	}
 
 	// Check if executable exists
@@ -112,14 +126,31 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 		return fmt.Errorf("renderer executable not found: %s", rm.exePath)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, rm.exePath,
+	// One process owns the soundtrack. Every process receives the whole
+	// timeline, so without this each screen played its own copy of the audio,
+	// independently timed. The first live process keeps it; a later launch
+	// takes it over only when no live owner remains.
+	audio := true
+	for _, other := range rm.procs {
+		if other.live() && other.audio {
+			audio = false
+			break
+		}
+	}
+
+	args := []string{
 		"--port", fmt.Sprintf("%d", serverPort),
 		"--screen", screenID,
 		"--width", fmt.Sprintf("%d", width),
 		"--height", fmt.Sprintf("%d", height),
 		"--token", rm.token,
-	)
+	}
+	if !audio {
+		args = append(args, "--no-audio")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, rm.exePath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -132,6 +163,7 @@ func (rm *RendererManager) LaunchRenderer(screenID string, serverPort, width, he
 		cmd:      cmd,
 		screenID: screenID,
 		cancel:   cancel,
+		audio:    audio,
 		status: RendererStatus{
 			ScreenID: screenID,
 			State:    "launching",

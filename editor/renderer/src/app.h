@@ -38,6 +38,11 @@ struct AppConfig {
     int width = 1920;
     int height = 1080;
     bool verbose = false;
+    // Whether this process plays the soundtrack. The editor launches one
+    // process per screen and every one of them received the whole timeline,
+    // so two native outputs meant two copies of the audio, independently
+    // timed. The editor now names exactly one owner.
+    bool audio = true;
 };
 
 // Everything one in-flight frame owns. The command allocator may only be
@@ -152,9 +157,11 @@ private:
     NDISender m_ndiSender;
     bool m_ndiEnabled = true;
 
-    // Debug overlay
+    // Debug overlay. Off by default: it is composited onto the output, so it
+    // reached the audience -- and the NDI feed -- on every new screen until
+    // someone pressed F3.
     DebugText m_debugText;
-    bool m_showDebug = true;
+    bool m_showDebug = false;
 
     // Frame stats
     int m_frameCount = 0;

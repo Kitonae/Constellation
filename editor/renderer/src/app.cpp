@@ -326,7 +326,10 @@ void App::render() {
     // Players are keyed by timeline item, not by URI: two clips of the same
     // file at different offsets need two players, and one shared player was
     // asked for two different positions every frame.
-    {
+    //
+    // Only the process the editor named as the audio owner does any of this;
+    // every other screen's process leaves the soundtrack alone.
+    if (m_config.audio) {
         std::unordered_set<std::string> activeAudioKeys;
 
         for (const auto& ac : activeClips) {
@@ -340,7 +343,7 @@ void App::render() {
             AudioPlayer* audio = getAudioPlayer(key, uri);
             if (!audio) continue;
 
-            double timeInClip = m_currentTime - ac.tm->start;
+            const double timeInClip = m_currentTime - ac.tm->start + ac.tm->inSeconds;
 
             if (m_playing) {
                 // Sync: if audio drifts >200ms from expected position, seek
@@ -437,7 +440,9 @@ void App::render() {
                     continue;
                 }
 
-                double timeInClip = m_currentTime - ac.tm->start;
+                // Source time, not timeline time: an item that starts its
+                // media at in_seconds asks for that much further in.
+                const double timeInClip = m_currentTime - ac.tm->start + ac.tm->inSeconds;
                 const VideoFrame* frame2 = decoder->getFrameAtTime(timeInClip, thisFrameFence);
                 if (!frame2) {
                     static int fMiss = 0;
@@ -563,6 +568,16 @@ void App::render() {
             renderMs += (float)std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
         }
 
+        // NDI: capture the designated screen's back buffer now, with the
+        // picture complete and before the operator overlay is composited
+        // onto it. The feed used to carry frame graphs and filenames.
+#if HAS_NDI
+        if (m_ndiEnabled && m_ndiSender.isActive() &&
+            (m_ndiSender.sourceScreen().empty() || m_ndiSender.sourceScreen() == id)) {
+            m_ndiSender.capture(m_cmdList.Get(), screen->currentBackBuffer());
+        }
+#endif
+
         // Debug overlay
         if (m_showDebug) {
             if (m_debugText.width() != (uint32_t)sw || m_debugText.height() != (uint32_t)sh) {
@@ -679,15 +694,6 @@ void App::render() {
                 m_pipeline.drawQuad(m_cmdList.Get(), dt, de, dbgTex->srvGpu);
             }
         }
-
-        // NDI: capture the designated screen's back buffer before it
-        // transitions to PRESENT
-#if HAS_NDI
-        if (m_ndiEnabled && m_ndiSender.isActive() &&
-            (m_ndiSender.sourceScreen().empty() || m_ndiSender.sourceScreen() == id)) {
-            m_ndiSender.capture(m_cmdList.Get(), screen->currentBackBuffer());
-        }
-#endif
 
         screen->endFrame(m_cmdList.Get());
     }

@@ -27,6 +27,10 @@ struct TimelineClip {
     std::string clipId;
     double start = 0;
     double duration = 0;
+    // Where in the source this item begins. The right half of a split, or a
+    // clip trimmed from the left, starts its media later than frame zero;
+    // ignoring this restarted the content at every cut.
+    double inSeconds = 0;
     Vec2 position;
     Vec2 scale;       // 0 = use natural dimensions
     double opacity = 1.0;

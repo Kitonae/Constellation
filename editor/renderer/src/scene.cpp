@@ -80,12 +80,12 @@ TimelineClip Scene::parseTimelineClip(const json& j) {
 
     // Timing: prefer new fields, fall back to legacy
     c.start = j.value("start", j.value("start_at_seconds", 0.0));
+    c.inSeconds = std::max(0.0, j.value("in_seconds", 0.0));
     if (j.contains("duration")) {
         c.duration = j["duration"].get<double>();
     } else {
-        double inSec = j.value("in_seconds", 0.0);
         double outSec = j.value("out_seconds", 0.0);
-        c.duration = std::max(0.0, outSec - inSec);
+        c.duration = std::max(0.0, outSec - c.inSeconds);
     }
 
     // Position
