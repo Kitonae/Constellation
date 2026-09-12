@@ -69,6 +69,46 @@ func TestThumbnail_NoRendererIs503(t *testing.T) {
 	}
 }
 
+func TestProbe_NoRendererIs503(t *testing.T) {
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "clip.mov")
+	if err := os.WriteFile(clip, []byte("movie"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewThumbnailService(filepath.Join(dir, "no-such-renderer.exe"))
+	svc.cacheDir = dir
+	req := httptest.NewRequest("GET", "/api/probe?uri="+clip, nil)
+	w := httptest.NewRecorder()
+	svc.ServeProbe(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 without a renderer, got %d", w.Code)
+	}
+}
+
+func TestProbe_ServesCachedJSON(t *testing.T) {
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "clip.mov")
+	if err := os.WriteFile(clip, []byte("movie"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewThumbnailService(filepath.Join(dir, "no-such-renderer.exe"))
+	svc.cacheDir = dir
+	info, _ := os.Stat(clip)
+	name := probeNameFor(filepath.Clean(clip), info.Size(), info.ModTime().UnixNano())
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"duration":5.0}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/api/probe?uri="+clip, nil)
+	w := httptest.NewRecorder()
+	svc.ServeProbe(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from cache, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %q", ct)
+	}
+}
+
 func TestThumbnail_ServesCachedPNG(t *testing.T) {
 	// With the result already in the cache the renderer is never consulted,
 	// so a missing executable must not matter.

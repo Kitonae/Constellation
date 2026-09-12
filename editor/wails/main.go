@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -95,10 +96,26 @@ func main() {
 		app.Event.Emit(FilesDroppedEvent, files)
 	})
 
+	// The title-bar close button bypassed the editor's dirty check: New and
+	// Quit asked before discarding an unsaved show, the window's own close
+	// did not. Cancel the native close and let the frontend decide; it calls
+	// QuitConfirmed once the user has answered (or there was nothing to ask).
+	window.OnWindowEvent(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if appService.quitConfirmed.Load() {
+			return
+		}
+		e.Cancel()
+		app.Event.Emit(CloseRequestedEvent, nil)
+	})
+
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
+
+// CloseRequestedEvent tells the frontend the user asked to close the window;
+// the frontend runs its dirty check and calls QuitConfirmed to proceed.
+const CloseRequestedEvent = "app:closeRequested"
 
 // App struct
 type App struct {
@@ -109,6 +126,18 @@ type App struct {
 	hub            Broadcaster
 	renderers      ProcessManager
 	files          FileReader
+
+	// Set by QuitConfirmed so the next WindowClosing is allowed through.
+	quitConfirmed atomic.Bool
+}
+
+// QuitConfirmed ends the application after the frontend has confirmed that
+// unsaved work may be discarded (or found there was none).
+func (a *App) QuitConfirmed() {
+	a.quitConfirmed.Store(true)
+	if a.app != nil {
+		a.app.Quit()
+	}
 }
 
 // NewApp creates a new App application struct

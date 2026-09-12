@@ -181,6 +181,31 @@ bool writePng(const std::string& path, const std::vector<uint8_t>& bgra, uint32_
 
 }  // namespace
 
+int runProbe(const std::string& inPath) {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    MFStartup(MF_VERSION);
+
+    int rc = 1;
+    {
+        VideoDecoder dec;
+        if (!dec.open(inPath)) {
+            fprintf(stderr, "probe: cannot open %s\n", inPath.c_str());
+        } else {
+            // open() has already read everything asked for here; the decode
+            // thread it started is simply joined again by close().
+            printf("{\"duration\":%.3f,\"width\":%u,\"height\":%u,\"fps\":%.3f,\"codec\":\"%s\"}\n",
+                dec.duration(), dec.width(), dec.height(), dec.fps(), dec.codecName());
+            fflush(stdout);
+            dec.close();
+            rc = 0;
+        }
+    }
+
+    MFShutdown();
+    CoUninitialize();
+    return rc;
+}
+
 int runThumbnail(const std::string& inPath, const std::string& outPng,
                  double timeSeconds, uint32_t maxDim) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);

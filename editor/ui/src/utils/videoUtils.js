@@ -9,7 +9,61 @@ export function resolveFileUrl(uri) {
   return resolveUriSync(uri)
 }
 
+/**
+ * Duration and size of a video, from the browser when it can decode the file
+ * and from the native renderer when it cannot.
+ *
+ * Without the fallback a HAP clip landed on the timeline at a default
+ * length, because the browser's media element has nothing to say about a
+ * codec it lacks.
+ */
 export function getVideoMetadata(src) {
+  return getBrowserVideoMetadata(src).catch(async (browserErr) => {
+    try {
+      const m = await fetchNativeMetadata(src)
+      return { duration: m.duration, width: m.width, height: m.height, native: true }
+    } catch (nativeErr) {
+      const err = new Error(`${browserErr.message}; ${nativeErr.message}`)
+      err.mediaErrorCode = browserErr.mediaErrorCode
+      throw err
+    }
+  })
+}
+
+/** GET /api/probe on the sidecar: the renderer's own reading of the file. */
+export async function fetchNativeMetadata(src) {
+  const res = await nativeFetch('/api/probe', src)
+  const m = await res.json()
+  if (!(Number(m?.duration) > 0)) throw new Error('native probe returned no duration')
+  return {
+    duration: Number(m.duration),
+    width: Number(m.width) || 0,
+    height: Number(m.height) || 0,
+    fps: Number(m.fps) || 0,
+    codec: String(m.codec || ''),
+  }
+}
+
+// One place for "ask the sidecar about this local file": the thumbnail and
+// the probe need the same base, the same refusal of non-file sources and the
+// same error text.
+export async function nativeFetch(endpoint, src, extraQuery = '') {
+  const { getFileServerBase } = await import('../media/uri.js')
+  const base = getFileServerBase()
+  if (!base) throw new Error('no sidecar to ask')
+  const u = String(src)
+  if (u.startsWith('blob:') || u.startsWith('data:') || /^https?:/.test(u)) {
+    throw new Error('the sidecar can only read files on disk')
+  }
+  const res = await fetch(`${base}${endpoint}?uri=${encodeURIComponent(u)}${extraQuery}`)
+  if (!res.ok) {
+    const text = (await res.text().catch(() => '')).trim()
+    throw new Error(text || `sidecar ${endpoint} failed (${res.status})`)
+  }
+  return res
+}
+
+function getBrowserVideoMetadata(src) {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     video.preload = 'metadata';
@@ -60,19 +114,7 @@ export function isCodecUnsupported(err) {
  * URL like the browser path does, so callers need not know which produced it.
  */
 export async function fetchNativeThumbnail(src, time = 0) {
-  const { getFileServerBase } = await import('../media/uri.js')
-  const base = getFileServerBase()
-  if (!base) throw new Error('no sidecar to ask for a native thumbnail')
-  const u = String(src)
-  if (u.startsWith('blob:') || u.startsWith('data:') || /^https?:/.test(u)) {
-    throw new Error('native thumbnails need a file on disk')
-  }
-  const url = `${base}/api/thumbnail?uri=${encodeURIComponent(u)}&t=${encodeURIComponent(time)}`
-  const res = await fetch(url)
-  if (!res.ok) {
-    const text = (await res.text().catch(() => '')).trim()
-    throw new Error(text || `native thumbnail failed (${res.status})`)
-  }
+  const res = await nativeFetch('/api/thumbnail', src, `&t=${encodeURIComponent(time)}`)
   const blob = await res.blob()
   return await new Promise((resolve, reject) => {
     const reader = new FileReader()

@@ -43,6 +43,9 @@ int main(int argc, char* argv[]) {
     // Headless thumbnail mode: no window, no log file, no sidecar. The editor
     // runs this for files the browser cannot decode, so it has to stay quick
     // and quiet and report through the exit code.
+    if (argc >= 3 && strcmp(argv[1], "--probe") == 0) {
+        return runProbe(argv[2]);
+    }
     if (argc >= 4 && strcmp(argv[1], "--thumbnail") == 0) {
         double time = 0.0;
         uint32_t maxDim = 256;

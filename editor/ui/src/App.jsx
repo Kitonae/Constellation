@@ -29,11 +29,12 @@ import { selectSelectionSummary, selectDirty, clipInstancesOf, findAsset } from 
 import { timelineExtent } from './utils/clipTime.js'
 import { loadLayout, clampLayout, startLayoutPersistence, layoutBounds } from './layout/persistLayout.js'
 import { Application, Events } from '@wailsio/runtime'
-import { CloseRendererScreen, OpenRendererScreen } from '@bindings/app.js'
+import { CloseRendererScreen, OpenRendererScreen, QuitConfirmed } from '@bindings/app.js'
 import { isWails } from './wails/env.js'
 
-// Must match FilesDroppedEvent in editor/wails/main.go.
+// Must match FilesDroppedEvent and CloseRequestedEvent in editor/wails/main.go.
 const FILES_DROPPED_EVENT = 'media:filesDropped'
+const CLOSE_REQUESTED_EVENT = 'app:closeRequested'
 
 /** Sink id for a web display window, so open/close can address it. */
 const sinkIdFor = (screenId) => `screen-${screenId}`
@@ -175,9 +176,19 @@ export default function App() {
       })
       if (!ok) return
     }
-    try { if (isWails()) Application.Quit() } catch { }
+    // Go cancels every native close until this has been called, so the
+    // window's own close button gets the same dirty check as the menu.
+    try { if (isWails()) { await QuitConfirmed(); return } } catch { }
+    try { Application.Quit() } catch { }
     try { window.close() } catch { }
   }, [])
+
+  // The title-bar close arrives from Go as an event; answer it the way the
+  // Quit menu item is answered.
+  useEffect(() => {
+    if (!isWails()) return
+    return Events.On(CLOSE_REQUESTED_EVENT, () => { requestQuit() })
+  }, [requestQuit])
 
   /**
    * Delete whatever is selected.
@@ -420,6 +431,23 @@ export default function App() {
     e.target.value = ''
   }
 
+  // Open goes through the same guard as New and Quit. It used to replace the
+  // document and clear its history straight from the file picker, so an
+  // unsaved show was gone with no confirmation and nothing to undo into.
+  const requestOpenShow = useCallback(async () => {
+    const st = useEditorStore.getState()
+    if (selectDirty(st)) {
+      const ok = await st.askConfirm({
+        title: 'Open Show',
+        message: 'Discard unsaved changes and open another show?',
+        confirmLabel: 'Discard',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    fileRef.current?.click()
+  }, [])
+
   const viewport = viewMode === '2d' ? <Viewport2D /> : (viewMode === '3d' ? <Viewport3D /> : <DisplaysPanel />)
 
   return (
@@ -427,7 +455,7 @@ export default function App() {
       <header>
         <MenuBar
           onNewShow={requestNewShow}
-          onOpenProject={() => fileRef.current?.click()}
+          onOpenProject={requestOpenShow}
           onSaveShow={() => setShowSaveDialog(true)}
           onQuit={requestQuit}
           onReopenDisplays={() => {

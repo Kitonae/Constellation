@@ -136,6 +136,15 @@ export function PushTime(t) {
 }
 
 /**
+ * QuitConfirmed ends the application after the frontend has confirmed that
+ * unsaved work may be discarded (or found there was none).
+ * @returns {$CancellablePromise<void>}
+ */
+export function QuitConfirmed() {
+    return $Call.ByID(1997179935);
+}
+
+/**
  * ReadFileBase64 delegates to the FileService for Wails binding.
  * @param {string} path
  * @returns {$CancellablePromise<string>}

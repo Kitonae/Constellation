@@ -199,6 +199,13 @@ export function createNativeSink(opts = {}) {
       const json = _serialize(snapshot)
       if (json) _pushSnapshot(json)
     } catch {}
+    // The serialised document deliberately carries no transport state, and a
+    // sink attached mid-show has missed every clock event before it. Hand it
+    // the position and the playing state along with the document, or a
+    // renderer launched while paused sits at zero and one launched while
+    // playing never hears the play that starts its audio.
+    _pushTime(Number(snapshot.time) || 0)
+    _pushControl(snapshot.playing ? 'play' : 'pause')
   }
 
   function dispose() {

@@ -21,3 +21,13 @@
  */
 int runThumbnail(const std::string& inPath, const std::string& outPng,
                  double timeSeconds, uint32_t maxDim);
+
+/**
+ * Print the stream's duration, size, frame rate and codec as one JSON
+ * object on stdout, without decoding a frame.
+ *
+ * The editor reads these off a browser media element, and for HAP the
+ * browser has nothing to say; a clip then lands on the timeline at a
+ * default length.
+ */
+int runProbe(const std::string& inPath);

@@ -225,6 +225,11 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
         return t
       })
     }
+    // Replacing the document replaces the show. The transport used to keep
+    // running against the old clock: the UI showed zero while the session
+    // sat at 42 s and still playing, and the next tick and the next snapshot
+    // both carried the old time to every output.
+    resetTransport()
     set({ project: proj, scene: proj.scene, selectedId: null, selectedClipId: null, selectedClipIds: [], selectedMediaId: null, time: 0, _undoLabel: 'Load Project' })
     // Opening a document starts a new history. Undo used to walk back into
     // the *previous* document, and at startup one Ctrl+Z could restore the
@@ -235,6 +240,7 @@ export const useEditorStore = create(withUndo((set, get, api) => ({
   newProject: () => {
     const scene = { id: 'scene', name: 'Scene', materials: [], meshes: [], roots: [] }
     const proj = defaultProject(scene)
+    resetTransport()
     set({ project: proj, scene: proj.scene, selectedId: null, selectedClipId: null, selectedClipIds: [], selectedMediaId: null, time: 0, _undoLabel: 'New Project' })
     resetHistory('New Project')
     get().markClean()
@@ -1032,6 +1038,20 @@ function updateNode(node, id, fn) {
   if (node.id === id) return fn(node)
   if (!node.children?.length) return node
   return { ...node, children: node.children.map((c) => updateNode(c, id, fn)) }
+}
+
+/**
+ * Stop and rewind the authoritative clock, so a document change does not
+ * inherit the previous show's position or playing state.
+ *
+ * stop() alone is not enough: a session that has only ever been scrubbed is
+ * still `idle`, and stop() ignores that state while the clock holds the
+ * scrubbed time. Seeking to zero afterwards covers it.
+ */
+function resetTransport() {
+  const session = getMediaSession()
+  try { session.stop() } catch { }
+  try { session.seek(0) } catch { }
 }
 
 // --- Media Session singleton ---
